@@ -1,9 +1,56 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { motion, AnimatePresence } from 'motion/react';
-import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw } from 'lucide-react';
+import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Attachment } from '@/services/geminiService';
+
+const FilePreview = ({ attachment }: { attachment: Attachment }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+  if (!attachment.content) return null;
+
+  const isText = attachment.type.includes('text') || 
+                 attachment.type.includes('javascript') || 
+                 attachment.type.includes('typescript') || 
+                 attachment.type.includes('json') ||
+                 attachment.type.includes('markdown') ||
+                 attachment.type === 'code' ||
+                 attachment.type === 'repo';
+
+  if (!isText) return null;
+
+  return (
+    <div className="w-full mt-2 border border-zinc-800/50 rounded-xl overflow-hidden bg-zinc-950/20">
+      <button 
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-mono text-zinc-500 hover:bg-zinc-800/20 transition-all border-b border-zinc-800/30"
+      >
+        <div className="flex items-center gap-2">
+          <Eye size={12} className="text-cyan-500" />
+          <span className="uppercase tracking-widest font-bold">{attachment.name}</span>
+          <span className="text-[8px] text-zinc-700">({attachment.type})</span>
+        </div>
+        {isExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+      </button>
+      <AnimatePresence>
+        {isExpanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="overflow-hidden"
+          >
+            <div className="p-3 bg-[#0d0d0f]">
+              <pre className="text-[11px] font-mono leading-relaxed text-zinc-400 overflow-x-auto custom-scrollbar max-h-64">
+                {attachment.content}
+              </pre>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 interface ChatMessageProps {
   role: 'user' | 'model';
@@ -259,12 +306,17 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                 {content}
               </ReactMarkdown>
               {attachments && attachments.length > 0 && (
-                <div className="flex flex-wrap gap-2 pt-2 border-t border-zinc-800/50">
+                <div className="flex flex-col gap-2 pt-4 mt-2 border-t border-zinc-800/50">
+                  <div className="flex flex-wrap gap-2">
+                    {attachments.map((a, i) => (
+                      <div key={i} className="flex items-center gap-2 bg-[#0c0c0e] border border-zinc-800 px-2 py-1 rounded text-[10px] font-mono text-zinc-400">
+                        {a.type === 'repo' ? <LinkIcon size={10} className="text-purple-500" /> : <FileText size={10} className="text-cyan-500" />}
+                        <span className="truncate max-w-[150px]">{a.name}</span>
+                      </div>
+                    ))}
+                  </div>
                   {attachments.map((a, i) => (
-                    <div key={i} className="flex items-center gap-2 bg-[#0c0c0e] border border-zinc-800 px-2 py-1 rounded text-[10px] font-mono text-zinc-400">
-                      {a.type === 'repo' ? <LinkIcon size={10} className="text-purple-500" /> : <FileText size={10} className="text-cyan-500" />}
-                      <span className="truncate max-w-[150px]">{a.name}</span>
-                    </div>
+                    <FilePreview key={i} attachment={a} />
                   ))}
                 </div>
               )}

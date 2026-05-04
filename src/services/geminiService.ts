@@ -60,6 +60,13 @@ export const DEFAULT_SKILLS: Skill[] = [
     description: "Expert in Node.js, Express, and Database design.",
     icon: "Server",
     systemPrompt: "You are a senior Full-Stack Engineer. Provide robust backend logic, API designs, and database schemas using Node.js and Express."
+  },
+  {
+    id: "code-explainer",
+    name: "Code Explainer",
+    description: "Expert in dissecting and explaining complex code logic.",
+    icon: "Cpu",
+    systemPrompt: "You are a senior Code Analyst. Your goal is to provide deep, architectural, and line-by-line explanations of any code snippet provided. Focus on 'why' behind implementation choices, identified patterns, and potential optimizations."
   }
 ];
 

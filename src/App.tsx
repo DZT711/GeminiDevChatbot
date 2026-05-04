@@ -806,217 +806,216 @@ export default function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className="bg-[#0d0d0f] border border-[#222] rounded-2xl p-4 shadow-2xl relative transition-all focus-within:border-cyan-800/50 shadow-cyan-500/5 group scale-in-center">
+                <div className="bg-[#0f0f12]/90 backdrop-blur-xl border border-white/5 rounded-3xl p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative transition-all focus-within:border-cyan-500/20 group scale-in-center overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/5 to-transparent pointer-events-none" />
                   
                   {/* Attachments List */}
                   {attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-4 animate-in slide-in-from-bottom-2">
+                    <div className="flex flex-wrap gap-2 mb-2 p-2 relative z-10">
                       {attachments.map((a, i) => (
-                        <div key={i} className="flex items-center gap-2 bg-[#121216] border border-zinc-800 px-2 py-1 rounded-lg">
-                          <FileText size={10} className="text-cyan-500" />
-                          <span className="text-[9px] font-mono text-zinc-400 truncate max-w-[100px]">{a.name}</span>
-                          <button onClick={() => removeAttachment(i)} className="text-zinc-600 hover:text-red-500">
-                            <X size={10} />
+                        <div key={i} className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl group/att animate-in zoom-in-95 duration-200">
+                          <FileText size={12} className="text-cyan-400/80" />
+                          <span className="text-[10px] font-mono text-zinc-300 truncate max-w-[120px]">{a.name}</span>
+                          <button onClick={() => removeAttachment(i)} className="text-zinc-600 hover:text-red-400 transition-colors">
+                            <X size={12} />
                           </button>
                         </div>
                       ))}
                     </div>
                   )}
 
-                  {/* Context Control Bar */}
-                  <div className="flex items-center gap-4 mb-4 border-b border-border-dim pb-3">
-                    <div className="flex items-center gap-2 flex-1 overflow-hidden">
-                      <button 
-                        onClick={() => setIsSkillsExpanded(!isSkillsExpanded)}
-                        className={cn(
-                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider shrink-0",
-                          isSkillsExpanded ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400" : "border-zinc-800 text-zinc-600 hover:text-cyan-400/80"
-                        )}
-                      >
-                        <Sparkles size={10} />
-                        Skills {isSkillsExpanded ? 'ON' : 'OFF'}
-                      </button>
-                      
-                      <div className={cn(
-                        "flex items-center gap-2 overflow-hidden transition-all duration-300",
-                        isSkillsExpanded ? "flex-1 opacity-100" : "w-0 opacity-0"
-                      )}>
-                        {[...DEFAULT_SKILLS, ...customSkills].map(skill => {
-                          const Icon = ICON_MAP[skill.icon] || Code2;
-                          const isActive = activeSkillIds.includes(skill.id);
-                          return (
-                            <button
-                              key={skill.id}
-                              onClick={() => toggleSkill(skill.id)}
-                              className={cn(
-                                "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider whitespace-nowrap",
-                                isActive 
-                                  ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.1)]" 
-                                  : "bg-[#0a0a0c] border-[#222] text-[#444] hover:text-zinc-400 hover:border-zinc-700"
-                              )}
-                            >
-                              <Icon size={10} />
-                              {skill.name}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    <button 
-                      onClick={() => {
-                        const input = document.createElement('input');
-                        input.type = 'file';
-                        input.multiple = true;
-                        input.onchange = (e) => {
-                          const files = (e.target as HTMLInputElement).files;
-                          if (files) onDrop(Array.from(files));
-                        };
-                        input.click();
-                      }}
-                      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-zinc-800 text-[9px] font-bold uppercase tracking-wider text-zinc-600 hover:text-zinc-300 hover:border-zinc-700 transition-all"
-                    >
-                      <Paperclip size={10} />
-                      Attach
-                    </button>
-
-                    <button 
-                      onClick={() => setUseSearch(!useSearch)}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                        useSearch ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400" : "border-zinc-800 text-zinc-600"
-                      )}
-                    >
-                      <Search size={10} />
-                      Search
-                    </button>
-
-                    <button 
-                      onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
-                      className={cn(
-                        "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                        thinkingMode === ThinkingLevel.HIGH ? "bg-amber-900/20 border-amber-500/40 text-amber-500" : "border-zinc-800 text-zinc-600"
-                      )}
-                    >
-                      <Brain size={10} />
-                      Thinking
-                    </button>
-
-                    <div className="relative">
-                      <button 
-                        onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
-                        className={cn(
-                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                          isRepoModalOpen ? "bg-purple-900/20 border-purple-500/40 text-purple-400" : "border-zinc-800 text-zinc-600 hover:text-purple-400/80"
-                        )}
-                      >
-                        <Github size={10} />
-                        Repo
-                      </button>
-                      
-                      <AnimatePresence>
-                        {isRepoModalOpen && (
-                          <motion.div 
-                            initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                            animate={{ opacity: 1, y: 0, scale: 1 }}
-                            exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                            className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-xl shadow-2xl p-3 z-50 overflow-hidden"
+                  <div className="flex flex-col gap-1 relative z-10">
+                    <div className="flex items-center justify-between px-2 pt-1 border-b border-white/5 pb-2 mb-1">
+                      <div className="flex items-center gap-2 overflow-hidden flex-1">
+                        <div className="flex bg-black/40 rounded-full border border-white/5 p-1 shrink-0">
+                          <button 
+                            onClick={() => setIsSkillsExpanded(!isSkillsExpanded)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider shrink-0",
+                              isSkillsExpanded ? "bg-cyan-500 text-black shadow-lg shadow-cyan-500/20" : "text-zinc-500 hover:text-zinc-300"
+                            )}
                           >
-                            <div className="flex items-center justify-between mb-3 border-b border-zinc-800 pb-2">
-                              <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Repository Sync</span>
-                              <button onClick={() => setIsRepoModalOpen(false)} className="text-zinc-700 hover:text-zinc-400">
-                                <X size={10} />
-                              </button>
-                            </div>
-                            <div className="space-y-2">
-                              <div className="text-[8px] text-zinc-600 uppercase font-mono tracking-tighter">Enter GitHub URL</div>
-                              <input 
-                                type="text"
-                                placeholder="https://github.com/owner/repo"
-                                value={repoUrl}
-                                onChange={(e) => setRepoUrl(e.target.value)}
-                                className="w-full bg-[#0a0a0c] border border-zinc-800 rounded-lg px-3 py-2 text-[10px] font-mono outline-none focus:border-purple-500/50 text-purple-300"
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
-                                    e.preventDefault();
-                                    handleAddRepo();
-                                  }
-                                }}
-                                autoFocus
-                              />
-                              <button 
-                                onClick={handleAddRepo}
-                                disabled={isLoading || !repoUrl.trim()}
-                                className="w-full py-2 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-600 disabled:opacity-20 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all shadow-lg"
+                            <Sparkles size={12} />
+                            Skills
+                          </button>
+                          
+                          <button 
+                            onClick={() => setUseSearch(!useSearch)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                              useSearch ? "bg-zinc-800 text-cyan-400 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
+                            )}
+                          >
+                            <Search size={12} />
+                            Search
+                          </button>
+
+                          <button 
+                            onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
+                            className={cn(
+                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                              thinkingMode === ThinkingLevel.HIGH ? "bg-zinc-800 text-amber-500 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
+                            )}
+                          >
+                            <Brain size={12} />
+                            Deep
+                          </button>
+                        </div>
+
+                        <div className={cn(
+                          "flex items-center gap-1.5 overflow-x-auto custom-scrollbar transition-all duration-500 no-scrollbar",
+                          isSkillsExpanded ? "max-w-[400px] opacity-100 px-2" : "max-w-0 opacity-0 px-0"
+                        )}>
+                          {[...DEFAULT_SKILLS, ...customSkills].map(skill => {
+                            const Icon = ICON_MAP[skill.icon] || Code2;
+                            const isActive = activeSkillIds.includes(skill.id);
+                            return (
+                              <button
+                                key={skill.id}
+                                onClick={() => toggleSkill(skill.id)}
+                                className={cn(
+                                  "flex items-center gap-2 px-3 py-1 rounded-full border transition-all text-[9px] font-bold uppercase tracking-widest whitespace-nowrap",
+                                  isActive 
+                                    ? "bg-cyan-950/30 border-cyan-500/30 text-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.1)]" 
+                                    : "bg-transparent border-transparent text-zinc-600 hover:text-zinc-400"
+                                )}
                               >
-                                {isLoading ? 'Syncing...' : 'Link Repository'}
+                                <Icon size={10} />
+                                {skill.name.split(' ')[0]}
                               </button>
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
-                    </div>
-                  </div>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-                  <div className="flex items-center gap-4 mb-3">
-                    <div className="flex gap-2 min-w-0 flex-1 overflow-hidden pointer-events-none cursor-default">
-                      {[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => (
-                        <span key={s.id} className="text-[9px] font-mono text-zinc-600 bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-800/50 truncate">
-                          {s.name.split(' ')[0].toLowerCase()}
-                        </span>
-                      ))}
-                    </div>
-
-                    <button 
-                      onClick={() => setInput('Generate image of ')}
-                      className="text-zinc-600 hover:text-cyan-500 transition-all p-1"
-                      title="Generate Image"
-                    >
-                      <ImageIcon size={14} />
-                    </button>
-                  </div>
-
-                  <form onSubmit={handleSubmit} className="flex items-end gap-3 pb-2 pt-1 border-t border-zinc-900/50 mt-2">
-                    <div className="flex-1 flex flex-col gap-2 relative">
-                      <div className="absolute right-2 top-0 flex items-center gap-2">
+                      <div className="flex items-center gap-1 shrink-0">
                         <button 
-                          type="button"
-                          onClick={handleEnhancePrompt}
-                          disabled={!input.trim() || isEnhancingPrompt}
-                          className={cn(
-                            "p-1.5 rounded-lg border transition-all active:scale-90",
-                            isEnhancingPrompt ? "bg-amber-900/20 border-amber-500/40 text-amber-400 animate-pulse" : "border-zinc-800 text-zinc-600 hover:text-amber-400/80 hover:bg-amber-900/10"
-                          )}
-                          title="Magic Enhance Input"
+                          onClick={() => {
+                            const input = document.createElement('input');
+                            input.type = 'file';
+                            input.multiple = true;
+                            input.onchange = (e) => {
+                              const files = (e.target as HTMLInputElement).files;
+                              if (files) onDrop(Array.from(files));
+                            };
+                            input.click();
+                          }}
+                          className="p-2 text-zinc-600 hover:text-zinc-300 transition-colors hover:bg-white/5 rounded-full"
+                          title="Attach Files"
                         >
-                          <Sparkles size={14} className={isEnhancingPrompt ? "animate-spin" : ""} />
+                          <Paperclip size={16} />
+                        </button>
+                        <button 
+                          onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
+                          className={cn(
+                            "p-2 transition-all rounded-full hover:bg-white/5",
+                            isRepoModalOpen ? "text-purple-400" : "text-zinc-600 hover:text-purple-400/80"
+                          )}
+                          title="Link Repository"
+                        >
+                          <Github size={16} />
                         </button>
                       </div>
-                      <textarea 
-                        value={input}
-                        onChange={(e) => setInput(e.target.value)}
-                        placeholder="Input development command or 'Generate image of...'"
-                        className="bg-transparent flex-1 resize-none font-mono text-[13px] leading-relaxed outline-none min-h-[40px] max-h-48 custom-scrollbar py-1 pr-10"
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleSubmit();
-                          }
-                        }}
-                      />
                     </div>
-                    <button 
-                      type="submit"
-                      disabled={isLoading || !input.trim()}
-                      className={cn(
-                        "flex items-center gap-2 h-10 px-4 rounded-xl transition-all bg-gradient-to-br from-cyan-600 to-blue-700 text-white shadow-lg",
-                        (isLoading || !input.trim()) && "opacity-20 grayscale cursor-not-allowed"
-                      )}
-                    >
-                      <span className="text-[10px] font-bold uppercase tracking-wider hidden sm:inline">Send Prompt</span>
-                      <Send size={16} strokeWidth={2.5} />
-                    </button>
-                  </form>
+
+                    <form onSubmit={handleSubmit} className="flex items-end gap-3 p-1">
+                      <div className="flex-1 bg-black/40 rounded-2xl border border-white/5 focus-within:border-white/10 transition-all p-2 group-focus:bg-black/60">
+                        <div className="flex items-center justify-between mb-1 px-2">
+                          <div className="flex gap-2 items-center h-4">
+                            {activeSkillIds.length > 0 ? (
+                              activeSkillIds.slice(0, 2).map(id => (
+                                <span key={id} className="text-[9px] font-mono font-bold text-cyan-500/50 uppercase tracking-tighter flex items-center gap-1">
+                                  <div className="w-1 h-1 rounded-full bg-cyan-500/40" />
+                                  {id.split('-')[0]}
+                                </span>
+                              ))
+                            ) : (
+                               <span className="text-[9px] font-mono text-zinc-800 uppercase tracking-widest font-bold">Standard Logic</span>
+                            )}
+                          </div>
+                          <button 
+                            type="button"
+                            onClick={handleEnhancePrompt}
+                            disabled={!input.trim() || isEnhancingPrompt}
+                            className={cn(
+                              "p-1.5 rounded-lg transition-all active:scale-90",
+                              isEnhancingPrompt ? "text-amber-400 animate-spin" : "text-zinc-600 hover:text-amber-400 shadow-inner"
+                            )}
+                            title="Magic AI Refine"
+                          >
+                            <Sparkles size={14} />
+                          </button>
+                        </div>
+                        <textarea 
+                          value={input}
+                          onChange={(e) => setInput(e.target.value)}
+                          placeholder="Inject instructions..."
+                          className="bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[44px] max-h-48 custom-scrollbar px-2 py-1 placeholder:text-zinc-800 text-zinc-200"
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' && !e.shiftKey) {
+                              e.preventDefault();
+                              handleSubmit();
+                            }
+                          }}
+                        />
+                      </div>
+                      
+                      <button 
+                        type="submit"
+                        disabled={isLoading || !input.trim()}
+                        className="w-12 h-12 rounded-2xl bg-cyan-600 text-black flex items-center justify-center transition-all enabled:hover:bg-cyan-400 enabled:hover:scale-105 enabled:active:scale-95 disabled:opacity-5 shadow-[0_0_30px_rgba(6,182,212,0.2)] mb-0.5"
+                      >
+                        <Terminal size={22} strokeWidth={2.5} />
+                      </button>
+                    </form>
+                  </div>
+
+                  <AnimatePresence>
+                    {isRepoModalOpen && (
+                      <motion.div 
+                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                        className="absolute bottom-full right-0 mb-4 w-80 bg-[#0f0f12]/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-[0_30px_60px_rgba(0,0,0,0.8)] p-5 z-50 overflow-hidden"
+                      >
+                         <div className="absolute inset-0 bg-gradient-to-br from-purple-500/10 to-transparent pointer-events-none" />
+                        <div className="flex items-center justify-between mb-4 border-b border-white/5 pb-3">
+                          <div className="flex items-center gap-2">
+                            <Github size={16} className="text-purple-400" />
+                            <span className="text-xs font-bold uppercase tracking-widest text-zinc-300">Repository Sync</span>
+                          </div>
+                          <button onClick={() => setIsRepoModalOpen(false)} className="text-zinc-600 hover:text-zinc-400 transition-colors">
+                            <X size={14} />
+                          </button>
+                        </div>
+                        <div className="space-y-4 relative z-10">
+                          <div className="bg-black/60 rounded-xl border border-white/5 p-1 focus-within:border-purple-500/30 transition-all">
+                            <input 
+                              type="text"
+                              placeholder="https://github.com/owner/repo"
+                              value={repoUrl}
+                              onChange={(e) => setRepoUrl(e.target.value)}
+                              className="w-full bg-transparent px-4 py-3 text-xs font-mono outline-none text-purple-300 placeholder:text-zinc-700"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddRepo();
+                                }
+                              }}
+                              autoFocus
+                            />
+                          </div>
+                          <button 
+                            onClick={handleAddRepo}
+                            disabled={isLoading || !repoUrl.trim()}
+                            className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-600 disabled:opacity-20 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_10px_20px_rgba(0,0,0,0.3)] shadow-purple-900/10"
+                          >
+                            {isLoading ? 'Establishing Link...' : 'Link Repository'}
+                          </button>
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             </div>
@@ -1164,7 +1163,17 @@ export default function App() {
                   <div className="space-y-6">
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Manage API Keys</label>
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Manage API Keys</label>
+                          {activeKeyId && (
+                            <button 
+                              onClick={() => setActiveKeyId('')}
+                              className="text-[8px] bg-zinc-900 border border-zinc-800 text-zinc-500 px-2 py-0.5 rounded-full hover:text-cyan-400 hover:border-cyan-900/50 transition-all flex items-center gap-1 uppercase font-bold tracking-tighter"
+                            >
+                              <RotateCcw size={8} /> Use System Default
+                            </button>
+                          )}
+                        </div>
                         <button 
                           onClick={() => setIsAddingKey(true)}
                           className="text-[9px] font-mono text-cyan-500 hover:text-cyan-400 uppercase flex items-center gap-1"
@@ -1229,20 +1238,21 @@ export default function App() {
                         {apiKeys.map(k => (
                           <div 
                             key={k.id} 
+                            onClick={() => setActiveKeyId(k.id)}
                             className={cn(
-                              "flex items-center justify-between p-4 rounded-2xl border transition-all group/key relative overflow-hidden",
-                              activeKeyId === k.id ? "bg-cyan-900/10 border-cyan-500/30" : "bg-black/40 border-zinc-900 hover:border-zinc-800"
+                              "flex items-center justify-between p-4 rounded-2xl border transition-all group/key relative overflow-hidden cursor-pointer",
+                              activeKeyId === k.id ? "bg-cyan-900/10 border-cyan-500/30 ring-1 ring-cyan-500/20" : "bg-black/40 border-zinc-900 hover:border-zinc-800"
                             )}
                           >
-                            <div className="flex items-center gap-4 flex-1 min-w-0" onClick={() => setActiveKeyId(k.id)}>
+                            <div className="flex items-center gap-4 flex-1 min-w-0">
                               <div className={cn(
                                 "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-inner",
-                                activeKeyId === k.id ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "bg-zinc-900 text-zinc-600"
+                                activeKeyId === k.id ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "bg-zinc-900 text-zinc-600 group-hover/key:bg-zinc-800"
                               )}>
                                 <Shield size={18} />
                               </div>
                               <div className="flex-1 min-w-0">
-                                <div className={cn("text-xs font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-400")}>
+                                <div className={cn("text-xs font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-400 transition-colors group-hover/key:text-zinc-200")}>
                                   {k.name}
                                 </div>
                                 <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
@@ -1250,13 +1260,16 @@ export default function App() {
                                 </div>
                               </div>
                             </div>
-                            <div className="flex items-center gap-1">
-                              <div className={cn(
-                                "text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded transition-all",
-                                activeKeyId === k.id ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30" : "opacity-0"
-                              )}>
-                                Active
-                              </div>
+                            <div className="flex items-center gap-2">
+                              {activeKeyId === k.id && (
+                                <motion.div 
+                                  initial={{ opacity: 0, x: 5 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
+                                >
+                                  Active
+                                </motion.div>
+                              )}
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();
