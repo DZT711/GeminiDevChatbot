@@ -41,7 +41,9 @@ import {
   Skill, 
   ChatSession, 
   Message,
-  Attachment
+  Attachment,
+  Provider,
+  PROVIDER_CONFIGS
 } from '@/services/geminiService';
 import { ChatMessage } from '@/components/ChatMessage';
 import { cn } from '@/lib/utils';
@@ -50,6 +52,14 @@ import { useDropzone } from 'react-dropzone';
 import JSZip from 'jszip';
 
 const ICON_MAP: Record<string, any> = { Code2, Palette, Server, Cpu, Database, Cloud, Shield };
+
+interface ApiKey {
+  name: string;
+  key: string;
+  id: string;
+  provider: Provider;
+  models?: string[];
+}
 
 export default function App() {
   // Persistence States
@@ -61,9 +71,18 @@ export default function App() {
     const saved = localStorage.getItem('dg_custom_skills');
     return saved ? JSON.parse(saved) : [];
   });
-  const [apiKeys, setApiKeys] = useState<{name: string, key: string, id: string, models?: string[]}[]>(() => {
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>(() => {
     const saved = localStorage.getItem('dg_api_keys');
-    return saved ? JSON.parse(saved) : [];
+    if (!saved) return [];
+    try {
+      const parsed = JSON.parse(saved);
+      return parsed.map((k: any) => ({
+        ...k,
+        provider: k.provider || Provider.GOOGLE
+      }));
+    } catch (e) {
+      return [];
+    }
   });
   const [activeKeyId, setActiveKeyId] = useState<string>(() => localStorage.getItem('dg_active_key_id') || '');
   
@@ -101,6 +120,7 @@ export default function App() {
   const [validationStatus, setValidationStatus] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyVal, setNewKeyVal] = useState('');
+  const [newKeyProvider, setNewKeyProvider] = useState<Provider>(Provider.GOOGLE);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme'>('keys');
@@ -404,6 +424,8 @@ export default function App() {
       setAttachments([]);
     }
     
+    const activeKey = apiKeys.find(k => k.id === activeKeyId);
+    
     setIsLoading(true);
     abortControllerRef.current = new AbortController();
 
@@ -414,11 +436,12 @@ export default function App() {
     }
 
     try {
-      let assistantMessage: Message = { 
+      const effectiveModel = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
+      const assistantMessage: Message = { 
         id: `msg-${Date.now() + 1}`,
         role: 'model', 
         content: '', 
-        modelName: `${geminiService.getCurrentModel()}${activeApiKey ? ' (Custom Key)' : ''}`
+        modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ''}`
       };
       
       setMessages(prev => [...prev, assistantMessage]);
@@ -441,14 +464,15 @@ export default function App() {
           thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
           signal: abortControllerRef.current.signal,
           attachments: userMessage.attachments,
-          customKey: activeApiKey,
+          customKey: activeKey?.key,
+          provider: activeKey?.provider,
           onModelSwitch: (newModel) => {
             setCurrentModel(newModel);
             setMessages(prev => {
               const last = [...prev];
               const msg = last[last.length - 1];
               if (msg && msg.role === 'model') {
-                msg.modelName = `${newModel}${activeApiKey ? ' (Custom Key)' : ''}`;
+                msg.modelName = `${newModel}${activeKey ? ` (${activeKey.name})` : ''}`;
                 msg.content += "\n\n*(Auto-failover: Switched to " + newModel.split('-')[2] + " due to limits)*";
               }
               return last;
@@ -461,7 +485,8 @@ export default function App() {
             const msg = last[last.length - 1];
             if (msg && msg.role === 'model') {
               msg.content = fullContent;
-              msg.modelName = `${geminiService.getCurrentModel()}${activeApiKey ? ' (Custom Key)' : ''}`;
+              const currentEffective = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
+              msg.modelName = `${currentEffective}${activeKey ? ` (${activeKey.name})` : ''}`;
             }
             return last;
           });
@@ -894,6 +919,66 @@ export default function App() {
                             Search
                           </button>
 
+                          <div className="relative">
+                            <button 
+                              onClick={() => setIsModelSelectorOpen(!isModelSelectorOpen)}
+                              className={cn(
+                                "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                                isModelSelectorOpen ? "bg-cyan-500 text-black px-5" : "text-zinc-500 hover:text-zinc-300"
+                              )}
+                            >
+                              <Cpu size={12} />
+                              {currentModel === ModelId.HYBRID ? "Hybrid" : 
+                               [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) 
+                                 ? (currentModel === ModelId.PRO ? "Pro" : currentModel === ModelId.FLASH ? "Flash" : "Lite")
+                                 : currentModel.split('/').pop()?.replace('gemini-', '').toUpperCase()}
+                            </button>
+                            
+                            <AnimatePresence>
+                              {isModelSelectorOpen && (
+                                <motion.div 
+                                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                                  className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-[200] overflow-hidden"
+                                >
+                                  <div className="p-3 border-b border-zinc-800 bg-zinc-900/30 flex justify-between items-center">
+                                    <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Neural Node Setup</span>
+                                    <X size={10} className="text-zinc-700 cursor-pointer" onClick={() => setIsModelSelectorOpen(false)} />
+                                  </div>
+                                  <div className="p-1.5 space-y-1 max-h-[300px] overflow-y-auto custom-scrollbar">
+                                    {[
+                                      { id: ModelId.HYBRID, name: 'Hybrid Node', color: 'text-amber-400' },
+                                      ...geminiService.getCurrentQueue().map(id => ({
+                                        id,
+                                        name: id === ModelId.PRO ? 'Pro 3.1' : id === ModelId.FLASH ? 'Flash 3.0' : id === ModelId.LITE ? 'Lite 3.1' : id.replace('models/', '').toUpperCase(),
+                                        color: id === ModelId.PRO ? 'text-cyan-400' : id === ModelId.FLASH ? 'text-purple-400' : 'text-zinc-300'
+                                      }))
+                                    ].map((m) => (
+                                      <button
+                                        key={m.id}
+                                        onClick={() => {
+                                          setCurrentModel(m.id);
+                                          setIsModelSelectorOpen(false);
+                                        }}
+                                        className={cn(
+                                          "w-full text-left p-2.5 rounded-xl transition-all flex flex-col gap-0.5 border border-transparent hover:bg-white/5",
+                                          currentModel === m.id ? "bg-cyan-950/10 border-cyan-500/20" : ""
+                                        )}
+                                      >
+                                        <div className="flex items-center justify-between pointer-events-none">
+                                          <span className={cn("text-[11px] font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
+                                          {currentModel === m.id && <Sparkles size={10} className="text-cyan-500" />}
+                                        </div>
+                                        <p className="text-[8px] text-zinc-600 leading-relaxed pointer-events-none truncate">{m.id}</p>
+                                      </button>
+                                    ))}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
                           <button 
                             onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
                             className={cn(
@@ -1242,6 +1327,19 @@ export default function App() {
                           </div>
                           
                           <div className="space-y-3 relative z-10">
+                            <div className="space-y-1.5">
+                              <label className="text-[8px] font-mono text-zinc-500 uppercase">AI Provider Platform</label>
+                              <select 
+                                value={newKeyProvider}
+                                onChange={(e) => setNewKeyProvider(e.target.value as Provider)}
+                                className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono appearance-none"
+                              >
+                                {Object.entries(PROVIDER_CONFIGS).map(([id, config]) => (
+                                  <option key={id} value={id} className="bg-zinc-950">{config.name}</option>
+                                ))}
+                              </select>
+                            </div>
+
                             <div className="grid grid-cols-2 gap-3">
                               <div className="space-y-1.5">
                                 <label className="text-[8px] font-mono text-zinc-500 uppercase">Provider Alias</label>
@@ -1257,7 +1355,7 @@ export default function App() {
                                 <label className="text-[8px] font-mono text-zinc-500 uppercase">Input Secret Key</label>
                                 <input 
                                   type="password"
-                                  placeholder="AIzaSy..."
+                                  placeholder={newKeyProvider === Provider.GOOGLE ? "AIzaSy..." : "sk-..."}
                                   value={newKeyVal}
                                   onChange={(e) => setNewKeyVal(e.target.value)}
                                   className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
@@ -1281,16 +1379,17 @@ export default function App() {
                                     setValidationStatus({ type: 'error', message: 'ERROR: Key cannot be empty' });
                                     return;
                                   }
-                                  setValidationStatus({ type: 'success', message: 'VALIDATING NEURAL LINK...' });
-                                  const result = await geminiService.checkKey(newKeyVal);
+                                  setValidationStatus({ type: 'success', message: `CONNECTING TO ${newKeyProvider.toUpperCase()}...` });
+                                  const result = await geminiService.checkKey(newKeyVal, newKeyProvider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
                                     setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES DISCOVERED` });
                                     
-                                    const keyObj = { 
+                                    const keyObj: ApiKey = { 
                                       id: `key-${Date.now()}`, 
-                                      name: newKeyName || 'External Link', 
+                                      name: newKeyName || PROVIDER_CONFIGS[newKeyProvider].name, 
                                       key: newKeyVal,
+                                      provider: newKeyProvider,
                                       models: discovered.map(m => m.id)
                                     };
                                     setApiKeys(prev => [...prev, keyObj]);
@@ -1305,9 +1404,9 @@ export default function App() {
                                     setValidationStatus({ type: 'error', message: `REJECTED: ${result.error}` });
                                   }
                                 }}
-                                className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-[0.98]"
+                                className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-[0.98]"
                               >
-                                Authenticate & Discover
+                                Authenticate & Discover Nodes
                               </button>
                             </div>
                           </div>
@@ -1338,7 +1437,7 @@ export default function App() {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className={cn("text-xs font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-400 transition-colors group-hover/key:text-zinc-200")}>
-                                  {k.name}
+                                  {k.name} <span className="text-[8px] opacity-40 ml-2 font-mono">[{PROVIDER_CONFIGS[k.provider]?.name || k.provider}]</span>
                                 </div>
                                 <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
                                   ••••••••{k.key.slice(-4)}
@@ -1355,7 +1454,7 @@ export default function App() {
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   setValidationStatus({ type: 'success', message: `REFRESHING NODES FOR ${k.name.toUpperCase()}...` });
-                                  const result = await geminiService.checkKey(k.key);
+                                  const result = await geminiService.checkKey(k.key, k.provider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
                                     setApiKeys(prev => prev.map(prevK => 

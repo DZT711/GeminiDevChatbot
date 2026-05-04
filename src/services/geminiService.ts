@@ -8,6 +8,34 @@ export enum ModelId {
   HYBRID = "hybrid"
 }
 
+export enum Provider {
+  GOOGLE = "google",
+  OPENAI = "openai",
+  ANTHROPIC = "anthropic",
+  XAI = "xai",
+  GROQ = "groq",
+  NVIDIA = "nvidia",
+  OPENROUTER = "openrouter",
+  TOGETHER = "together",
+  CEREBRAS = "cerebras",
+  DEEPSEEK = "deepseek",
+  MISTRAL = "mistral"
+}
+
+export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, isGoogle?: boolean }> = {
+  [Provider.GOOGLE]: { name: "Google AI Studio", isGoogle: true },
+  [Provider.OPENAI]: { name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
+  [Provider.ANTHROPIC]: { name: "Anthropic", baseUrl: "https://api.anthropic.com/v1" },
+  [Provider.XAI]: { name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1" },
+  [Provider.GROQ]: { name: "Groq", baseUrl: "https://api.groq.com/openai/v1" },
+  [Provider.NVIDIA]: { name: "NVIDIA NIM", baseUrl: "https://integrate.api.nvidia.com/v1" },
+  [Provider.OPENROUTER]: { name: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
+  [Provider.TOGETHER]: { name: "Together AI", baseUrl: "https://api.together.xyz/v1" },
+  [Provider.CEREBRAS]: { name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1" },
+  [Provider.DEEPSEEK]: { name: "DeepSeek", baseUrl: "https://api.deepseek.com" },
+  [Provider.MISTRAL]: { name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
+};
+
 export interface Skill {
   id: string;
   name: string;
@@ -125,28 +153,52 @@ class GeminiService {
     console.log(`Rotating to: ${this.getCurrentModel()}`);
   }
 
-  async checkKey(key: string) {
+  async checkKey(key: string, provider: Provider = Provider.GOOGLE) {
     try {
-      const ai = new GoogleGenAI({ apiKey: key });
-      const models = [];
-      const pager = await ai.models.list();
-      for await (const m of pager as any) {
-        models.push({
-          id: m.name,
-          displayName: m.displayName,
-          description: m.description,
-          supportedGenerationMethods: m.supportedGenerationMethods || []
+      if (provider === Provider.GOOGLE) {
+        const ai = new GoogleGenAI({ apiKey: key });
+        const models = [];
+        const pager = await ai.models.list();
+        for await (const m of pager as any) {
+          models.push({
+            id: m.name,
+            displayName: m.displayName,
+            description: m.description,
+            supportedGenerationMethods: m.supportedGenerationMethods || []
+          });
+        }
+        return { valid: true, models };
+      } else {
+        const config = PROVIDER_CONFIGS[provider];
+        if (!config?.baseUrl) throw new Error("Provider base URL not configured");
+        
+        const response = await fetch(`${config.baseUrl}/models`, {
+          headers: {
+            "Authorization": `Bearer ${key}`,
+            "Content-Type": "application/json"
+          }
         });
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({ error: { message: "Failed to fetch models" } }));
+          throw new Error(err.error?.message || err.message || "Invalid API Key");
+        }
+
+        const data = await response.json();
+        const models = (data.data || []).map((m: any) => ({
+          id: m.id,
+          displayName: m.id,
+          description: `Node from ${config.name}`,
+          supportedGenerationMethods: ["generateContent"]
+        }));
+
+        return { valid: true, models };
       }
-      return {
-        valid: true,
-        models
-      };
     } catch (error: any) {
-      console.error("Key Validation Error:", error);
+      console.error(`${provider} Key Validation Error:`, error);
       return {
         valid: false,
-        error: error.message || "Invalid API Key or Network Error"
+        error: error.message || "Authentication Failed"
       };
     }
   }
@@ -163,17 +215,22 @@ class GeminiService {
       signal?: AbortSignal;
       attachments?: Attachment[];
       customKey?: string;
+      provider?: Provider;
       onModelSwitch?: (model: string) => void;
     } = {},
     onChunk?: (chunk: string) => void
   ) {
-    const ai = this.getAI(config.customKey);
-    const allSkills = [...DEFAULT_SKILLS, ...customSkills];
-    const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
-    
-    let contextStr = config.attachments?.map(a => `[File Attachment: ${a.name}]\n${a.content}`).join('\n\n') || '';
+    const provider = config.provider || Provider.GOOGLE;
+    const isGoogle = provider === Provider.GOOGLE;
 
-    const systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
+    if (isGoogle) {
+      const ai = this.getAI(config.customKey);
+      const allSkills = [...DEFAULT_SKILLS, ...customSkills];
+      const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
+      
+      let contextStr = config.attachments?.map(a => `[File Attachment: ${a.name}]\n${a.content}`).join('\n\n') || '';
+
+      const systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
 ${activeSkills.map(s => `[Skill: ${s.name}] ${s.systemPrompt}`).join('\n')}
 
 ${contextStr ? `ATTACHED FILES FOR ANALYSIS:\n${contextStr}\n` : ''}
@@ -181,68 +238,122 @@ ${contextStr ? `ATTACHED FILES FOR ANALYSIS:\n${contextStr}\n` : ''}
 Current project context: A web application using React, Vite, and Tailwind.
 Always provide full, runnable code blocks where applicable. Use Markdown for formatting.`;
 
-    let attempts = 0;
-    const isHybrid = config.model === ModelId.HYBRID;
-    
-    // If a specific model is requested, we start there. 
-    // If it hits a rate limit, we then fallback through the rest of the queue.
-    const startModel = isHybrid ? this.getCurrentModel() : (config.model || this.getCurrentModel());
-    let startIndex = this.modelQueue.indexOf(startModel);
-    
-    // Fallback to first model if the requested model is not in the queue
-    if (startIndex === -1) startIndex = 0;
-    
-    while (attempts < this.modelQueue.length) {
-      if (config.signal?.aborted) throw new Error("Operation aborted");
+      let attempts = 0;
+      const isHybrid = config.model === ModelId.HYBRID;
+      const startModel = isHybrid ? this.getCurrentModel() : (config.model || this.getCurrentModel());
+      let startIndex = this.modelQueue.indexOf(startModel);
+      if (startIndex === -1) startIndex = 0;
+      
+      while (attempts < this.modelQueue.length) {
+        if (config.signal?.aborted) throw new Error("Operation aborted");
+        const model = this.modelQueue[(startIndex + attempts) % this.modelQueue.length];
 
-      const model = this.modelQueue[(startIndex + attempts) % this.modelQueue.length];
+        try {
+          if (attempts > 0) config.onModelSwitch?.(model);
+          this.usage[model] = Math.min(100, this.usage[model] + 2);
+          
+          const tools = config.useSearch ? [{ googleSearch: {} }] : undefined;
 
-      try {
-        if (attempts > 0) {
-          config.onModelSwitch?.(model);
-        }
-        this.usage[model] = Math.min(100, this.usage[model] + 2); // Simulated usage
-        
-        const tools = config.useSearch ? [{ googleSearch: {} }] : undefined;
+          const stream = await ai.models.generateContentStream({
+            model,
+            contents: history,
+            config: {
+              systemInstruction: systemPrompt,
+              thinkingConfig: (model.includes('thinking') || model === ModelId.PRO) ? { 
+                thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW,
+                includeThoughts: true 
+              } : undefined,
+              tools: tools
+            }
+          });
 
-        const stream = await ai.models.generateContentStream({
-          model,
-          contents: history, // history should already include the latest message
-          config: {
-            systemInstruction: systemPrompt,
-            thinkingConfig: model === ModelId.PRO ? undefined : { thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW },
-            tools: tools
+          let accumulatedText = "";
+          for await (const chunk of stream) {
+            if (config.signal?.aborted) throw new Error("Operation aborted");
+            const chunkText = chunk.text;
+            if (chunkText) {
+              accumulatedText += chunkText;
+              onChunk?.(accumulatedText);
+            }
           }
-        });
-
-        let accumulatedText = "";
-        for await (const chunk of stream) {
-          if (config.signal?.aborted) throw new Error("Operation aborted");
-          const chunkText = chunk.text;
-          if (chunkText) {
-            accumulatedText += chunkText;
-            onChunk?.(accumulatedText);
-          }
-        }
-        return accumulatedText;
-
-      } catch (error: any) {
-        if (error.message === "Operation aborted") throw error;
-
-        if (
-          error?.message?.toLowerCase().includes("429") || 
-          error?.message?.toLowerCase().includes("quota") || 
-          error?.message?.toLowerCase().includes("limit") ||
-          error?.message?.toLowerCase().includes("rate_limit")
-        ) {
-          this.rotateModel();
-          attempts++;
-        } else {
-          throw error;
+          return accumulatedText;
+        } catch (error: any) {
+          if (error.message === "Operation aborted") throw error;
+          if (error?.message?.toLowerCase().includes("429") || error?.message?.toLowerCase().includes("quota")) {
+            this.rotateModel();
+            attempts++;
+          } else throw error;
         }
       }
+      throw new Error("All models limits reached.");
+    } else {
+      // Non-Google Providers (OpenAI-compatible)
+      const providerConfig = PROVIDER_CONFIGS[provider];
+      const model = config.model || this.modelQueue[0];
+      const apiKey = config.customKey;
+      
+      if (!apiKey) throw new Error(`API Key required for ${providerConfig.name}`);
+
+      const messages = history.map(h => ({
+        role: h.role === 'model' ? 'assistant' : 'user',
+        content: h.parts[0].text
+      }));
+
+      // Add system prompt for non-Google providers
+      const allSkills = [...DEFAULT_SKILLS, ...customSkills];
+      const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
+      const systemPrompt = `You are DevGenie, a highly capable AI developer assistant. ${activeSkills.map(s => s.systemPrompt).join(' ')}`;
+      
+      messages.unshift({ role: 'system', content: systemPrompt });
+
+      const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: model,
+          messages,
+          stream: true
+        }),
+        signal: config.signal
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: { message: "Request failed" } }));
+        throw new Error(err.error?.message || "Provider error");
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let accumulatedText = "";
+
+      if (!reader) throw new Error("Response body is not readable");
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+        for (const line of lines) {
+          if (line.includes('[DONE]')) break;
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              const content = data.choices?.[0]?.delta?.content || "";
+              accumulatedText += content;
+              onChunk?.(accumulatedText);
+            } catch (e) {
+              console.warn("Error parsing chunk", e);
+            }
+          }
+        }
+      }
+      return accumulatedText;
     }
-    throw new Error("All models limits reached.");
   }
 
   async generateImage(prompt: string, customKey?: string): Promise<string> {

@@ -144,8 +144,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
               </span>
             )}
             {modelName && (
-              <span className={cn("text-[9px] px-1.5 py-0.5 rounded border font-mono italic", themeClasses.modelTag)}>
-                USING {modelName}
+              <span className={cn(
+                "text-[9px] px-2 py-0.5 rounded border font-mono font-bold tracking-wider", 
+                theme === 'cyberpunk' ? "bg-[#00ffcc]/20 text-[#00ffcc] border-[#00ffcc]/40 shadow-[0_0_10px_rgba(0,255,204,0.1)]" :
+                theme === 'monochrome' ? "bg-white text-black border-white" :
+                "bg-cyan-950/40 text-cyan-400 border-cyan-800/50 shadow-[0_4px_12px_rgba(6,182,212,0.1)]"
+              )}>
+                NODE: {modelName.toUpperCase()}
               </span>
             )}
           </div>
