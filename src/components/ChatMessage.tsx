@@ -56,6 +56,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
     }
   };
 
+  const handleEditClick = () => {
+    setEditValue(content);
+    setIsEditing(true);
+  };
+
   const themeClasses = getThemeClasses();
 
   return (
@@ -111,7 +116,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                 </button>
               )}
               <button 
-                onClick={() => setIsEditing(true)}
+                onClick={handleEditClick}
                 className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-cyan-400"
               >
                 <Pencil size={12} />

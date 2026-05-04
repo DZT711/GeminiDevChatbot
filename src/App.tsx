@@ -79,6 +79,7 @@ export default function App() {
   const [currentModel, setCurrentModel] = useState<ModelId>(geminiService.getCurrentModel());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
+  const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme'>('keys');
@@ -308,17 +309,19 @@ export default function App() {
       const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
       if (match) {
         const [, owner, repo] = match;
-        const apiUrl = `https://api.github.com/repos/${owner}/${repo.replace(/\.git$/, '')}/contents`;
+        const cleanRepo = repo.replace(/\.git$/, '');
+        const apiUrl = `https://api.github.com/repos/${owner}/${cleanRepo}/contents`;
         const res = await fetch(apiUrl);
         if (res.ok) {
           const data = await res.json();
           const files = (data as any[]).map(f => f.name).join(', ');
           const repoContent: Attachment = {
-            name: `Repo: ${owner}/${repo}`,
-            content: `Repository linked: ${repoUrl}\nTop-level files: ${files}`,
+            name: `Repo: ${owner}/${cleanRepo}`,
+            content: `Repository linked: https://github.com/${owner}/${cleanRepo}\nTop-level files: ${files}`,
             type: 'repo'
           };
           setAttachments(prev => [...prev, repoContent]);
+          setIsRepoModalOpen(false);
         } else {
           throw new Error("Could not fetch repo info");
         }
@@ -329,6 +332,7 @@ export default function App() {
           type: 'repo'
         };
         setAttachments(prev => [...prev, simpleContent]);
+        setIsRepoModalOpen(false);
       }
       setRepoUrl('');
     } catch (err) {
@@ -830,6 +834,62 @@ export default function App() {
                         <Brain size={10} />
                         Thinking
                       </button>
+
+                      {/* GitHub Link Button */}
+                      <div className="relative">
+                        <button 
+                          onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
+                          className={cn(
+                            "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
+                            isRepoModalOpen ? "bg-purple-900/20 border-purple-500/40 text-purple-400" : "border-zinc-800 text-zinc-600 hover:text-purple-400/80"
+                          )}
+                        >
+                          <Github size={10} />
+                          Repo
+                        </button>
+                        
+                        <AnimatePresence>
+                          {isRepoModalOpen && (
+                            <motion.div 
+                              initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                              className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-xl shadow-2xl p-3 z-50 overflow-hidden"
+                            >
+                              <div className="flex items-center justify-between mb-3 border-b border-zinc-800 pb-2">
+                                <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Repository Sync</span>
+                                <button onClick={() => setIsRepoModalOpen(false)} className="text-zinc-700 hover:text-zinc-400">
+                                  <X size={10} />
+                                </button>
+                              </div>
+                              <div className="space-y-2">
+                                <div className="text-[8px] text-zinc-600 uppercase font-mono tracking-tighter">Enter GitHub URL</div>
+                                <input 
+                                  type="text"
+                                  placeholder="https://github.com/owner/repo"
+                                  value={repoUrl}
+                                  onChange={(e) => setRepoUrl(e.target.value)}
+                                  className="w-full bg-[#0a0a0c] border border-zinc-800 rounded-lg px-3 py-2 text-[10px] font-mono outline-none focus:border-purple-500/50 text-purple-300"
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleAddRepo();
+                                    }
+                                  }}
+                                  autoFocus
+                                />
+                                <button 
+                                  onClick={handleAddRepo}
+                                  disabled={isLoading || !repoUrl.trim()}
+                                  className="w-full py-2 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-600 disabled:opacity-20 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all shadow-lg"
+                                >
+                                  {isLoading ? 'Syncing...' : 'Link Repository'}
+                                </button>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
                     </div>
 
                     <div className="h-4 w-px bg-zinc-800" />
