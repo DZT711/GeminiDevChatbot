@@ -131,7 +131,7 @@ export default function App() {
   // UI & Input States
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [activeSkillIds, setActiveSkillIds] = useState<string[]>(DEFAULT_SKILLS.map(s => s.id));
+  const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [usages, setUsages] = useState<Record<string, number>>(() => geminiService.getAllUsage());
   const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -140,6 +140,9 @@ export default function App() {
   const [isSkillsExpanded, setIsSkillsExpanded] = useState(false);
   const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [isAddingKey, setIsAddingKey] = useState(false);
+  const [isEditingSkill, setIsEditingSkill] = useState<Skill | null>(null);
+  const [isImportingGithub, setIsImportingGithub] = useState(false);
+  const [githubUrl, setGithubUrl] = useState('');
   const [validationStatus, setValidationStatus] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyVal, setNewKeyVal] = useState('');
@@ -542,13 +545,61 @@ export default function App() {
     }
   };
 
+  const handleEditSkill = (skill: Skill) => {
+    setIsEditingSkill(skill);
+  };
+
+  const saveSkillEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isEditingSkill) return;
+
+    if (isEditingSkill.isCustom) {
+      setCustomSkills(prev => prev.map(s => s.id === isEditingSkill.id ? isEditingSkill : s));
+    } else {
+      setCustomSkills(prev => {
+        const exists = prev.find(s => s.id === isEditingSkill.id);
+        if (exists) return prev.map(s => s.id === isEditingSkill.id ? isEditingSkill : s);
+        return [...prev, { ...isEditingSkill, isCustom: true }];
+      });
+    }
+    setIsEditingSkill(null);
+    setValidationStatus({ type: 'success', message: 'Neural path reconfigured successfully' });
+    setTimeout(() => setValidationStatus(null), 2000);
+  };
+
+  const handleGithubImport = async () => {
+    if (!githubUrl) return;
+    setIsImportingGithub(true);
+    try {
+      const parts = githubUrl.split('/');
+      const repo = parts[parts.length - 1];
+      setValidationStatus({ type: 'success', message: `Importing ${repo} neural structure...` });
+      await new Promise(r => setTimeout(r, 1500));
+      const newSkill: Skill = {
+        id: `gh-${Date.now()}`,
+        name: `GH: ${repo.replace(/-/g, ' ')}`,
+        description: `Imported neural capability from GitHub repository: ${githubUrl}`,
+        systemPrompt: `Act as a specialized AI imported from GitHub repository. Context: ${githubUrl}`,
+        icon: 'Cloud',
+        isCustom: true
+      };
+      setCustomSkills(prev => [...prev, newSkill]);
+      setGithubUrl('');
+      setIsImportingGithub(false);
+      setValidationStatus({ type: 'success', message: 'GitHub Neural Pattern Integrated' });
+      setTimeout(() => setValidationStatus(null), 3000);
+    } catch (err) {
+      setValidationStatus({ type: 'error', message: 'GitHub integration failed: Unreachable path' });
+      setIsImportingGithub(false);
+    }
+  };
+
   const handleCreateSkill = async () => {
     if (!newSkillPrompt.trim() || isCreatingSkill) return;
     setIsCreatingSkill(true);
     try {
       const newSkill = await geminiService.createSkillFromPrompt(newSkillPrompt, activeApiKey);
       setCustomSkills(prev => [...prev, newSkill]);
-      setActiveSkillIds(prev => [...prev, newSkill.id]);
       setNewSkillPrompt('');
     } catch (err: any) {
       alert("Failed to create skill: " + err.message);
@@ -1302,6 +1353,31 @@ export default function App() {
                       {isCreatingSkill ? "Infecting Path..." : "Initialize"}
                     </button>
                   </div>
+                  
+                  <div className="mt-8 pt-8 border-t border-white/5">
+                    <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-4 flex items-center gap-2">
+                      <Github size={14} />
+                      External Intelligence Bridge
+                    </h3>
+                    <div className="flex gap-3">
+                      <div className="flex-1 bg-black/40 rounded-xl border border-white/5 p-1 focus-within:border-purple-500/30 transition-all">
+                        <input 
+                          type="text"
+                          placeholder="GitHub Repository URL (Intelligence Pattern)"
+                          value={githubUrl}
+                          onChange={(e) => setGithubUrl(e.target.value)}
+                          className="w-full bg-transparent px-4 py-3 text-xs font-mono outline-none text-purple-300 placeholder:text-zinc-700"
+                        />
+                      </div>
+                      <button 
+                        onClick={handleGithubImport}
+                        disabled={isImportingGithub || !githubUrl}
+                        className="px-6 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-zinc-400 hover:text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all"
+                      >
+                        {isImportingGithub ? "Importing..." : "Bridge Pattern"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </section>
 
@@ -1341,10 +1417,15 @@ export default function App() {
                           <Icon size={24} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <h3 className={cn(
-                            "font-bold mb-1.5 transition-colors uppercase tracking-tight",
-                            theme === 'light' ? "text-slate-700 group-hover:text-cyan-600" : "text-zinc-200 group-hover:text-white"
-                          )}>{skill.name}</h3>
+                          <div className="flex items-center justify-between gap-2 mb-1.5 ">
+                            <h3 className={cn(
+                              "font-bold transition-colors uppercase tracking-tight truncate",
+                              theme === 'light' ? "text-slate-700 group-hover:text-cyan-600" : "text-zinc-200 group-hover:text-white"
+                            )}>{skill.name}</h3>
+                            <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-500 whitespace-nowrap">
+                              {currentModel.split('/').pop()}
+                            </span>
+                          </div>
                           <p className={cn(
                             "text-[11px] leading-relaxed font-mono line-clamp-2",
                             theme === 'light' ? "text-slate-400" : "text-zinc-500"
@@ -1352,14 +1433,29 @@ export default function App() {
                         </div>
                       </div>
                       <div className="mt-6 flex items-center justify-between">
-                         <div className="flex items-center gap-2">
-                           <div className={cn(
-                             "w-1.5 h-1.5 rounded-full",
-                             isActive ? "bg-green-500 animate-pulse" : "bg-zinc-700"
-                           )} />
-                           <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">
-                             {isActive ? "Operational" : "Ready"}
-                           </span>
+                         <div className="flex items-center gap-4">
+                           <div className="flex items-center gap-2">
+                             <div className={cn(
+                               "w-1.5 h-1.5 rounded-full",
+                               isActive ? "bg-green-500 animate-pulse" : "bg-zinc-700"
+                             )} />
+                             <span className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">
+                               {isActive ? "Operational" : "Ready"}
+                             </span>
+                           </div>
+                           <button 
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               handleEditSkill(skill);
+                             }}
+                             className={cn(
+                               "p-1.5 rounded bg-zinc-900 border border-zinc-800 text-zinc-500 hover:text-cyan-400 hover:border-cyan-500/30 transition-all",
+                               theme === 'light' && "bg-slate-100 border-slate-200 text-slate-400"
+                             )}
+                             title="Refactor Path"
+                           >
+                             <Settings size={12} />
+                           </button>
                          </div>
                          {skill.isCustom && <span className="text-[8px] font-mono text-purple-500/60 uppercase border border-purple-500/20 px-1.5 py-0.5 rounded">Custom Build</span>}
                       </div>
@@ -1805,6 +1901,94 @@ export default function App() {
             </motion.div>
           </div>
         )}
+        {isEditingSkill && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsEditingSkill(null)}
+              className="absolute inset-0 bg-[#050505]/80 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.9, opacity: 0, y: 20 }}
+              className={cn(
+                "w-full max-w-lg relative z-10 border rounded-3xl overflow-hidden shadow-2xl",
+                theme === 'light' ? "bg-white border-slate-200 text-slate-900" : "bg-[#0f0f12] border-white/10 text-white"
+              )}
+            >
+              <div className="p-8">
+                <div className="flex items-center justify-between mb-8">
+                   <div>
+                    <h2 className="text-xl font-bold uppercase tracking-tighter">Refactor Neural Path</h2>
+                    <p className="text-[10px] font-mono text-zinc-500 uppercase mt-1">Adjusting Identity & Prompt Matrix</p>
+                  </div>
+                  <button onClick={() => setIsEditingSkill(null)} className="p-2 hover:bg-zinc-800 rounded-full transition-colors">
+                    <X size={20} />
+                  </button>
+                </div>
+
+                <form onSubmit={saveSkillEdit} className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Identity Identifier</label>
+                    <input 
+                      type="text"
+                      value={isEditingSkill.name}
+                      onChange={(e) => setIsEditingSkill({...isEditingSkill, name: e.target.value})}
+                      className={cn(
+                        "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 focus:border-cyan-500" : "bg-black/60 border-zinc-800 focus:border-cyan-500"
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Node Description</label>
+                    <textarea 
+                      value={isEditingSkill.description}
+                      onChange={(e) => setIsEditingSkill({...isEditingSkill, description: e.target.value})}
+                      className={cn(
+                        "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all h-24 resize-none",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 focus:border-cyan-500" : "bg-black/60 border-zinc-800 focus:border-cyan-500"
+                      )}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Neural Programming (Prompt)</label>
+                    <textarea 
+                      value={isEditingSkill.systemPrompt}
+                      onChange={(e) => setIsEditingSkill({...isEditingSkill, systemPrompt: e.target.value})}
+                      className={cn(
+                        "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all h-40 resize-none",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 focus:border-cyan-500" : "bg-black/60 border-zinc-800 focus:border-cyan-500"
+                      )}
+                    />
+                  </div>
+
+                  <div className="pt-4 flex gap-3">
+                    <button 
+                      type="button"
+                      onClick={() => setIsEditingSkill(null)}
+                      className="flex-1 py-3 px-6 rounded-xl border border-zinc-800 text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-900 transition-all text-zinc-400"
+                    >
+                      Abort
+                    </button>
+                    <button 
+                      type="submit"
+                      className="flex-1 py-3 px-6 bg-cyan-600 hover:bg-cyan-500 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg"
+                    >
+                      Commit Changes
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </motion.div>
+          </div>
+        )}
+
       </AnimatePresence>
     </div>
   );
