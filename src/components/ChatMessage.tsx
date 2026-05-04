@@ -104,7 +104,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
           </div>
 
           {isUser && !isEditing && (
-            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex items-center gap-1 opacity-20 group-hover:opacity-100 transition-opacity">
                {history.length > 0 && (
                 <button 
                   onClick={() => setShowHistoryModal(!showHistoryModal)}
@@ -202,7 +202,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                       return (
                         <div className="relative group/code my-4">
                           <div className="absolute right-3 top-3 z-10 opacity-0 group-hover/code:opacity-100 transition-opacity">
-                            <button
+                            <motion.button
+                              whileTap={{ scale: 0.9 }}
+                              initial={false}
+                              animate={copied ? { scale: [1, 1.1, 1] } : {}}
                               onClick={handleCopy}
                               className={cn(
                                 "flex items-center gap-1.5 p-2 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition-all backdrop-blur-sm",
@@ -211,15 +214,30 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                                   : "bg-zinc-900/80 border-zinc-700/50 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800"
                               )}
                             >
-                              {copied ? (
-                                <>
-                                  <Check size={12} strokeWidth={3} />
-                                  <span>Copied!</span>
-                                </>
-                              ) : (
-                                <Copy size={12} strokeWidth={2.5} />
-                              )}
-                            </button>
+                              <AnimatePresence mode="wait">
+                                {copied ? (
+                                  <motion.div 
+                                    key="check"
+                                    initial={{ opacity: 0, scale: 0.5 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.5 }}
+                                    className="flex items-center gap-1.5"
+                                  >
+                                    <Check size={12} strokeWidth={3} />
+                                    <span>Copied!</span>
+                                  </motion.div>
+                                ) : (
+                                  <motion.div
+                                    key="copy"
+                                    initial={{ opacity: 0, scale: 0.5 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.5 }}
+                                  >
+                                    <Copy size={12} strokeWidth={2.5} />
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </motion.button>
                           </div>
                           <pre className={cn("overflow-x-auto p-4 rounded-xl bg-[#0d0d0f] border border-zinc-800/50 font-mono text-[13px] custom-scrollbar", className)}>
                             <code className={className} {...props}>

@@ -80,6 +80,11 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
+  const [isSkillsExpanded, setIsSkillsExpanded] = useState(false);
+  const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
+  const [isAddingKey, setIsAddingKey] = useState(false);
+  const [newKeyName, setNewKeyName] = useState('');
+  const [newKeyVal, setNewKeyVal] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme'>('keys');
@@ -232,7 +237,7 @@ export default function App() {
     setMessages(prev => [...prev, systemMsg]);
 
     try {
-      const imageUrl = await geminiService.generateImage(prompt);
+      const imageUrl = await geminiService.generateImage(prompt, activeApiKey);
       setMessages(prev => {
         const last = [...prev];
         if (last.length > 0) {
@@ -337,9 +342,21 @@ export default function App() {
       setRepoUrl('');
     } catch (err) {
       console.error(err);
-      alert("Failed to sync repo. Please check the URL.");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleEnhancePrompt = async () => {
+    if (!input.trim() || isEnhancingPrompt) return;
+    setIsEnhancingPrompt(true);
+    try {
+      const enhanced = await geminiService.enhancePrompt(input, activeApiKey);
+      setInput(enhanced);
+    } catch (err) {
+      console.error("Failed to enhance prompt:", err);
+    } finally {
+      setIsEnhancingPrompt(false);
     }
   };
 
@@ -408,7 +425,19 @@ export default function App() {
           thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
           signal: abortControllerRef.current.signal,
           attachments: userMessage.attachments,
-          customKey: activeApiKey
+          customKey: activeApiKey,
+          onModelSwitch: (newModel) => {
+            setCurrentModel(newModel);
+            setMessages(prev => {
+              const last = [...prev];
+              const msg = last[last.length - 1];
+              if (msg && msg.role === 'model') {
+                msg.modelName = newModel;
+                msg.content += "\n\n*(Auto-failover: Switched to " + newModel.split('-')[2] + " due to limits)*";
+              }
+              return last;
+            });
+          }
         },
         (fullContent) => {
           setMessages(prev => {
@@ -632,8 +661,9 @@ export default function App() {
                 <div className="hidden min-[450px]:flex items-center gap-1.5 whitespace-nowrap">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                   <span className="text-[9px] sm:text-[10px] font-mono text-green-500/80 uppercase tracking-tighter transition-all">
-                    Link: Active
+                    Link: {activeApiKey ? 'Custom Key' : 'System Key'}
                   </span>
+                  {activeApiKey && <Shield size={10} className="text-cyan-500" />}
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -756,7 +786,7 @@ export default function App() {
             </div>
 
             {/* Float Input Bar */}
-            <div className="absolute bottom-0 left-0 right-0 p-8 pt-0 pointer-events-none">
+            <div className="absolute bottom-0 left-0 right-0 p-8 pt-0 pointer-events-none z-30">
               <div className="max-w-4xl mx-auto pointer-events-auto">
                 <AnimatePresence>
                   {isLoading && (
@@ -768,7 +798,7 @@ export default function App() {
                     >
                       <button 
                         onClick={handleStop}
-                        className="flex items-center gap-2 px-4 py-2 bg-red-950/30 border border-red-900/50 text-red-500 rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-red-900/50 transition-all shadow-xl backdrop-blur-sm"
+                        className="flex items-center gap-2 px-4 py-2 bg-red-950/30 border border-red-900/50 text-red-500 rounded-full text-[10px] font-bold uppercase tracking-widest hover:bg-red-900/50 transition-all shadow-xl backdrop-blur-sm active:scale-95"
                       >
                         <X size={12} />
                         Stop Generation
@@ -795,105 +825,140 @@ export default function App() {
 
                   {/* Context Control Bar */}
                   <div className="flex items-center gap-4 mb-4 border-b border-border-dim pb-3">
-                    <div className="flex items-center gap-2">
-                       <button 
-                        onClick={() => {
-                          const input = document.createElement('input');
-                          input.type = 'file';
-                          input.multiple = true;
-                          input.onchange = (e) => {
-                            const files = (e.target as HTMLInputElement).files;
-                            if (files) onDrop(Array.from(files));
-                          };
-                          input.click();
-                        }}
-                        className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-zinc-800 text-[9px] font-bold uppercase tracking-wider text-zinc-600 hover:text-zinc-300 hover:border-zinc-700 transition-all"
-                      >
-                        <Paperclip size={10} />
-                        Attach
-                      </button>
-
+                    <div className="flex items-center gap-2 flex-1 overflow-hidden">
                       <button 
-                        onClick={() => setUseSearch(!useSearch)}
+                        onClick={() => setIsSkillsExpanded(!isSkillsExpanded)}
                         className={cn(
-                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                          useSearch ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400" : "border-zinc-800 text-zinc-600"
+                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider shrink-0",
+                          isSkillsExpanded ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400" : "border-zinc-800 text-zinc-600 hover:text-cyan-400/80"
                         )}
                       >
-                        <Search size={10} />
-                        Search
+                        <Sparkles size={10} />
+                        Skills {isSkillsExpanded ? 'ON' : 'OFF'}
                       </button>
-
-                      <button 
-                        onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
-                        className={cn(
-                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                          thinkingMode === ThinkingLevel.HIGH ? "bg-amber-900/20 border-amber-500/40 text-amber-500" : "border-zinc-800 text-zinc-600"
-                        )}
-                      >
-                        <Brain size={10} />
-                        Thinking
-                      </button>
-
-                      {/* GitHub Link Button */}
-                      <div className="relative">
-                        <button 
-                          onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
-                          className={cn(
-                            "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
-                            isRepoModalOpen ? "bg-purple-900/20 border-purple-500/40 text-purple-400" : "border-zinc-800 text-zinc-600 hover:text-purple-400/80"
-                          )}
-                        >
-                          <Github size={10} />
-                          Repo
-                        </button>
-                        
-                        <AnimatePresence>
-                          {isRepoModalOpen && (
-                            <motion.div 
-                              initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                              animate={{ opacity: 1, y: 0, scale: 1 }}
-                              exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                              className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-xl shadow-2xl p-3 z-50 overflow-hidden"
+                      
+                      <div className={cn(
+                        "flex items-center gap-2 overflow-hidden transition-all duration-300",
+                        isSkillsExpanded ? "flex-1 opacity-100" : "w-0 opacity-0"
+                      )}>
+                        {[...DEFAULT_SKILLS, ...customSkills].map(skill => {
+                          const Icon = ICON_MAP[skill.icon] || Code2;
+                          const isActive = activeSkillIds.includes(skill.id);
+                          return (
+                            <button
+                              key={skill.id}
+                              onClick={() => toggleSkill(skill.id)}
+                              className={cn(
+                                "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider whitespace-nowrap",
+                                isActive 
+                                  ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.1)]" 
+                                  : "bg-[#0a0a0c] border-[#222] text-[#444] hover:text-zinc-400 hover:border-zinc-700"
+                              )}
                             >
-                              <div className="flex items-center justify-between mb-3 border-b border-zinc-800 pb-2">
-                                <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Repository Sync</span>
-                                <button onClick={() => setIsRepoModalOpen(false)} className="text-zinc-700 hover:text-zinc-400">
-                                  <X size={10} />
-                                </button>
-                              </div>
-                              <div className="space-y-2">
-                                <div className="text-[8px] text-zinc-600 uppercase font-mono tracking-tighter">Enter GitHub URL</div>
-                                <input 
-                                  type="text"
-                                  placeholder="https://github.com/owner/repo"
-                                  value={repoUrl}
-                                  onChange={(e) => setRepoUrl(e.target.value)}
-                                  className="w-full bg-[#0a0a0c] border border-zinc-800 rounded-lg px-3 py-2 text-[10px] font-mono outline-none focus:border-purple-500/50 text-purple-300"
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      e.preventDefault();
-                                      handleAddRepo();
-                                    }
-                                  }}
-                                  autoFocus
-                                />
-                                <button 
-                                  onClick={handleAddRepo}
-                                  disabled={isLoading || !repoUrl.trim()}
-                                  className="w-full py-2 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-600 disabled:opacity-20 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all shadow-lg"
-                                >
-                                  {isLoading ? 'Syncing...' : 'Link Repository'}
-                                </button>
-                              </div>
-                            </motion.div>
-                          )}
-                        </AnimatePresence>
+                              <Icon size={10} />
+                              {skill.name}
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
-                    <div className="h-4 w-px bg-zinc-800" />
-                    
+                    <button 
+                      onClick={() => {
+                        const input = document.createElement('input');
+                        input.type = 'file';
+                        input.multiple = true;
+                        input.onchange = (e) => {
+                          const files = (e.target as HTMLInputElement).files;
+                          if (files) onDrop(Array.from(files));
+                        };
+                        input.click();
+                      }}
+                      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-zinc-800 text-[9px] font-bold uppercase tracking-wider text-zinc-600 hover:text-zinc-300 hover:border-zinc-700 transition-all"
+                    >
+                      <Paperclip size={10} />
+                      Attach
+                    </button>
+
+                    <button 
+                      onClick={() => setUseSearch(!useSearch)}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
+                        useSearch ? "bg-cyan-900/20 border-cyan-500/40 text-cyan-400" : "border-zinc-800 text-zinc-600"
+                      )}
+                    >
+                      <Search size={10} />
+                      Search
+                    </button>
+
+                    <button 
+                      onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
+                      className={cn(
+                        "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
+                        thinkingMode === ThinkingLevel.HIGH ? "bg-amber-900/20 border-amber-500/40 text-amber-500" : "border-zinc-800 text-zinc-600"
+                      )}
+                    >
+                      <Brain size={10} />
+                      Thinking
+                    </button>
+
+                    <div className="relative">
+                      <button 
+                        onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
+                        className={cn(
+                          "flex items-center gap-1.5 px-2 py-0.5 rounded border transition-all text-[9px] font-bold uppercase tracking-wider",
+                          isRepoModalOpen ? "bg-purple-900/20 border-purple-500/40 text-purple-400" : "border-zinc-800 text-zinc-600 hover:text-purple-400/80"
+                        )}
+                      >
+                        <Github size={10} />
+                        Repo
+                      </button>
+                      
+                      <AnimatePresence>
+                        {isRepoModalOpen && (
+                          <motion.div 
+                            initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                            animate={{ opacity: 1, y: 0, scale: 1 }}
+                            exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                            className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-xl shadow-2xl p-3 z-50 overflow-hidden"
+                          >
+                            <div className="flex items-center justify-between mb-3 border-b border-zinc-800 pb-2">
+                              <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Repository Sync</span>
+                              <button onClick={() => setIsRepoModalOpen(false)} className="text-zinc-700 hover:text-zinc-400">
+                                <X size={10} />
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              <div className="text-[8px] text-zinc-600 uppercase font-mono tracking-tighter">Enter GitHub URL</div>
+                              <input 
+                                type="text"
+                                placeholder="https://github.com/owner/repo"
+                                value={repoUrl}
+                                onChange={(e) => setRepoUrl(e.target.value)}
+                                className="w-full bg-[#0a0a0c] border border-zinc-800 rounded-lg px-3 py-2 text-[10px] font-mono outline-none focus:border-purple-500/50 text-purple-300"
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    handleAddRepo();
+                                  }
+                                }}
+                                autoFocus
+                              />
+                              <button 
+                                onClick={handleAddRepo}
+                                disabled={isLoading || !repoUrl.trim()}
+                                className="w-full py-2 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-600 disabled:opacity-20 text-white rounded-lg text-[9px] font-bold uppercase tracking-widest transition-all shadow-lg"
+                              >
+                                {isLoading ? 'Syncing...' : 'Link Repository'}
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-4 mb-3">
                     <div className="flex gap-2 min-w-0 flex-1 overflow-hidden pointer-events-none cursor-default">
                       {[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => (
                         <span key={s.id} className="text-[9px] font-mono text-zinc-600 bg-zinc-950 px-1.5 py-0.5 rounded border border-zinc-800/50 truncate">
@@ -911,19 +976,35 @@ export default function App() {
                     </button>
                   </div>
 
-                  <form onSubmit={handleSubmit} className="flex items-end gap-3">
-                    <textarea 
-                      value={input}
-                      onChange={(e) => setInput(e.target.value)}
-                      placeholder="Input development command or 'Generate image of...'"
-                      className="bg-transparent flex-1 resize-none font-mono text-[13px] leading-relaxed outline-none min-h-[40px] max-h-48 custom-scrollbar py-1"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          handleSubmit();
-                        }
-                      }}
-                    />
+                  <form onSubmit={handleSubmit} className="flex items-end gap-3 pb-2 pt-1 border-t border-zinc-900/50 mt-2">
+                    <div className="flex-1 flex flex-col gap-2 relative">
+                      <div className="absolute right-2 top-0 flex items-center gap-2">
+                        <button 
+                          type="button"
+                          onClick={handleEnhancePrompt}
+                          disabled={!input.trim() || isEnhancingPrompt}
+                          className={cn(
+                            "p-1.5 rounded-lg border transition-all active:scale-90",
+                            isEnhancingPrompt ? "bg-amber-900/20 border-amber-500/40 text-amber-400 animate-pulse" : "border-zinc-800 text-zinc-600 hover:text-amber-400/80 hover:bg-amber-900/10"
+                          )}
+                          title="Magic Enhance Input"
+                        >
+                          <Sparkles size={14} className={isEnhancingPrompt ? "animate-spin" : ""} />
+                        </button>
+                      </div>
+                      <textarea 
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        placeholder="Input development command or 'Generate image of...'"
+                        className="bg-transparent flex-1 resize-none font-mono text-[13px] leading-relaxed outline-none min-h-[40px] max-h-48 custom-scrollbar py-1 pr-10"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            handleSubmit();
+                          }
+                        }}
+                      />
+                    </div>
                     <button 
                       type="submit"
                       disabled={isLoading || !input.trim()}
@@ -1085,39 +1166,109 @@ export default function App() {
                       <div className="flex items-center justify-between">
                         <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Manage API Keys</label>
                         <button 
-                          onClick={() => {
-                            const name = prompt("Key Label (e.g. Work Key):");
-                            const key = prompt("API Key:");
-                            if (name && key) setApiKeys(prev => [...prev, { name, key, id: `key-${Date.now()}` }]);
-                          }}
+                          onClick={() => setIsAddingKey(true)}
                           className="text-[9px] font-mono text-cyan-500 hover:text-cyan-400 uppercase flex items-center gap-1"
                         >
                           <Plus size={10} /> Add New
                         </button>
                       </div>
-                      <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                        {apiKeys.length === 0 && <div className="text-[10px] text-zinc-600 italic p-4 bg-zinc-950/50 rounded border border-dashed border-zinc-800">No custom keys mapped...</div>}
+
+                      {isAddingKey && (
+                        <div className="p-4 bg-zinc-950 border border-cyan-900/30 rounded-2xl animate-in fade-in slide-in-from-top-2">
+                          <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-3">Add Security Token</div>
+                          <div className="space-y-3">
+                            <input 
+                              type="text"
+                              value={newKeyName}
+                              onChange={(e) => setNewKeyName(e.target.value)}
+                              placeholder="Key Name (e.g. Master Cluster)"
+                              className="w-full bg-surface-dark border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-cyan-500 transition-all"
+                            />
+                            <input 
+                              type="password"
+                              value={newKeyVal}
+                              onChange={(e) => setNewKeyVal(e.target.value)}
+                              placeholder="Paste Key Hash"
+                              className="w-full bg-surface-dark border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-cyan-500 transition-all"
+                            />
+                            <div className="flex gap-2 pt-1">
+                              <button 
+                                onClick={() => {
+                                  if (newKeyName && newKeyVal) {
+                                    setApiKeys(prev => [...prev, { name: newKeyName, key: newKeyVal, id: `key-${Date.now()}` }]);
+                                    setNewKeyName('');
+                                    setNewKeyVal('');
+                                    setIsAddingKey(false);
+                                  }
+                                }}
+                                className="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
+                              >
+                                Save Key
+                              </button>
+                              <button 
+                                onClick={() => {
+                                  setIsAddingKey(false);
+                                  setNewKeyName('');
+                                  setNewKeyVal('');
+                                }}
+                                className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar pr-2">
+                        {apiKeys.length === 0 && (
+                          <div className="text-[10px] text-zinc-600 italic p-8 bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-800 text-center">
+                            No security tokens mapped to this terminal.
+                          </div>
+                        )}
                         {apiKeys.map(k => (
-                          <div key={k.id} className={cn(
-                            "flex items-center justify-between p-3 rounded-xl border transition-all cursor-pointer",
-                            activeKeyId === k.id ? "bg-cyan-900/10 border-cyan-500/50" : "bg-[#0a0a0c] border-zinc-800"
-                          )} onClick={() => setActiveKeyId(k.id)}>
-                            <div className="flex items-center gap-3">
-                              <Shield size={14} className={activeKeyId === k.id ? "text-cyan-500" : "text-zinc-600"} />
-                              <div>
-                                <div className="text-xs font-bold text-zinc-200">{k.name}</div>
-                                <div className="text-[9px] font-mono text-zinc-500">••••••••{k.key.slice(-4)}</div>
+                          <div 
+                            key={k.id} 
+                            className={cn(
+                              "flex items-center justify-between p-4 rounded-2xl border transition-all group/key relative overflow-hidden",
+                              activeKeyId === k.id ? "bg-cyan-900/10 border-cyan-500/30" : "bg-black/40 border-zinc-900 hover:border-zinc-800"
+                            )}
+                          >
+                            <div className="flex items-center gap-4 flex-1 min-w-0" onClick={() => setActiveKeyId(k.id)}>
+                              <div className={cn(
+                                "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-inner",
+                                activeKeyId === k.id ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "bg-zinc-900 text-zinc-600"
+                              )}>
+                                <Shield size={18} />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className={cn("text-xs font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-400")}>
+                                  {k.name}
+                                </div>
+                                <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
+                                  ••••••••{k.key.slice(-4)}
+                                </div>
                               </div>
                             </div>
-                            <button 
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setApiKeys(prev => prev.filter(ik => ik.id !== k.id));
-                              }}
-                              className="text-zinc-700 hover:text-red-500 transition-colors p-2"
-                            >
-                              <Trash2 size={14} />
-                            </button>
+                            <div className="flex items-center gap-1">
+                              <div className={cn(
+                                "text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded transition-all",
+                                activeKeyId === k.id ? "bg-cyan-500/20 text-cyan-400 border border-cyan-500/30" : "opacity-0"
+                              )}>
+                                Active
+                              </div>
+                              <button 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setApiKeys(prev => prev.filter(ik => ik.id !== k.id));
+                                  if (activeKeyId === k.id) setActiveKeyId('');
+                                }}
+                                className="p-2 text-zinc-700 hover:text-red-500 transition-all opacity-0 group-hover/key:opacity-100"
+                                title="Revoke Access"
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </div>
                           </div>
                         ))}
                       </div>

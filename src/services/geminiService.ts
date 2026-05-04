@@ -114,6 +114,7 @@ class GeminiService {
       signal?: AbortSignal;
       attachments?: Attachment[];
       customKey?: string;
+      onModelSwitch?: (model: ModelId) => void;
     } = {},
     onChunk?: (chunk: string) => void
   ) {
@@ -137,8 +138,11 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
     while (attempts < (config.model ? 1 : this.modelQueue.length)) {
       if (config.signal?.aborted) throw new Error("Operation aborted");
 
+      const model = attempts === 0 ? modelToUse : this.getCurrentModel();
       try {
-        const model = attempts === 0 ? modelToUse : this.getCurrentModel();
+        if (attempts > 0) {
+          config.onModelSwitch?.(model);
+        }
         this.usage[model] = Math.min(100, this.usage[model] + 2); // Simulated usage
         
         const tools = config.useSearch ? [{ googleSearch: {} }] : undefined;
@@ -223,6 +227,15 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       id: `custom-${Date.now()}`,
       isCustom: true
     };
+  }
+
+  async enhancePrompt(prompt: string, customKey?: string): Promise<string> {
+    const ai = this.getAI(customKey);
+    const response = await ai.models.generateContent({
+      model: ModelId.LITE,
+      contents: `You are a prompt engineering expert. Rewrite the user's prompt to be more descriptive, detailed, and structured for an LLM to follow perfectly. Do not change the intent, just improve clarity and depth. Output ONLY the improved prompt text. User prompt: "${prompt}"`
+    });
+    return response.text.trim();
   }
 }
 
