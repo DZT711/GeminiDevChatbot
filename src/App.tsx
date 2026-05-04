@@ -10,6 +10,8 @@ import {
   Server,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
+  RefreshCw,
   Info,
   Bot,
   Search,
@@ -59,11 +61,24 @@ export default function App() {
     const saved = localStorage.getItem('dg_custom_skills');
     return saved ? JSON.parse(saved) : [];
   });
-  const [apiKeys, setApiKeys] = useState<{name: string, key: string, id: string}[]>(() => {
+  const [apiKeys, setApiKeys] = useState<{name: string, key: string, id: string, models?: string[]}[]>(() => {
     const saved = localStorage.getItem('dg_api_keys');
     return saved ? JSON.parse(saved) : [];
   });
   const [activeKeyId, setActiveKeyId] = useState<string>(() => localStorage.getItem('dg_active_key_id') || '');
+  
+  // Model Queue Sync
+  useEffect(() => {
+    const activeKey = apiKeys.find(k => k.id === activeKeyId);
+    if (activeKey && activeKey.models && activeKey.models.length > 0) {
+      geminiService.setCustomQueue(activeKey.models);
+    } else {
+      geminiService.resetQueue();
+    }
+    // Force currentModel state to sync with the new queue
+    setCurrentModel(geminiService.getCurrentModel());
+  }, [activeKeyId, apiKeys]);
+
   const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome'>(() => 
     (localStorage.getItem('dg_theme') as any) || 'midnight'
   );
@@ -76,13 +91,14 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>(DEFAULT_SKILLS.map(s => s.id));
-  const [currentModel, setCurrentModel] = useState<ModelId>(geminiService.getCurrentModel());
+  const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
   const [isSkillsExpanded, setIsSkillsExpanded] = useState(false);
   const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [isAddingKey, setIsAddingKey] = useState(false);
+  const [validationStatus, setValidationStatus] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyVal, setNewKeyVal] = useState('');
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -402,7 +418,7 @@ export default function App() {
         id: `msg-${Date.now() + 1}`,
         role: 'model', 
         content: '', 
-        modelName: geminiService.getCurrentModel() 
+        modelName: `${geminiService.getCurrentModel()}${activeApiKey ? ' (Custom Key)' : ''}`
       };
       
       setMessages(prev => [...prev, assistantMessage]);
@@ -432,7 +448,7 @@ export default function App() {
               const last = [...prev];
               const msg = last[last.length - 1];
               if (msg && msg.role === 'model') {
-                msg.modelName = newModel;
+                msg.modelName = `${newModel}${activeApiKey ? ' (Custom Key)' : ''}`;
                 msg.content += "\n\n*(Auto-failover: Switched to " + newModel.split('-')[2] + " due to limits)*";
               }
               return last;
@@ -445,7 +461,7 @@ export default function App() {
             const msg = last[last.length - 1];
             if (msg && msg.role === 'model') {
               msg.content = fullContent;
-              msg.modelName = geminiService.getCurrentModel();
+              msg.modelName = `${geminiService.getCurrentModel()}${activeApiKey ? ' (Custom Key)' : ''}`;
             }
             return last;
           });
@@ -480,7 +496,7 @@ export default function App() {
     if (!newSkillPrompt.trim() || isCreatingSkill) return;
     setIsCreatingSkill(true);
     try {
-      const newSkill = await geminiService.createSkillFromPrompt(newSkillPrompt);
+      const newSkill = await geminiService.createSkillFromPrompt(newSkillPrompt, activeApiKey);
       setCustomSkills(prev => [...prev, newSkill]);
       setActiveSkillIds(prev => [...prev, newSkill.id]);
       setNewSkillPrompt('');
@@ -598,20 +614,32 @@ export default function App() {
         </div>
         
         <div className="mt-auto p-4 border-t border-border-dim bg-[#0a0a0c] space-y-4">
-          <div className="space-y-3">
-            {[ModelId.PRO, ModelId.FLASH, ModelId.LITE].map(model => (
-              <div key={model} className="space-y-1">
-                <div className="flex justify-between items-center opacity-60">
-                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-tighter">
-                    {model.replace('gemini-3.1-', '')}
+          <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar pr-2 mb-4">
+            <div className="flex items-center justify-between mb-2 sticky top-0 bg-[#0a0a0c] z-10 py-1">
+              <div className="flex items-center gap-2">
+                <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
+                <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">Neural Sync</span>
+              </div>
+              <span className="text-[9px] font-mono text-zinc-700 uppercase">
+                {activeKeyId ? 'Custom_Link' : 'System_Node'}
+              </span>
+            </div>
+            
+            {geminiService.getCurrentQueue().map(model => (
+              <div key={model} className="space-y-1.5 group">
+                <div className="flex justify-between items-center">
+                  <span className="text-[9px] font-mono text-zinc-500 group-hover:text-cyan-400/80 transition-colors uppercase tracking-tighter truncate max-w-[140px]">
+                    {model.split('/').pop()?.replace('gemini-1.5-', '').replace('gemini-3.1-', '')}
                   </span>
-                  <span className="text-[8px] font-mono text-cyan-400">{Math.round(usage[model] || 0)}%</span>
+                  <span className="text-[9px] font-mono text-cyan-500/80">{Math.round(usage[model] || 0)}%</span>
                 </div>
-                <div className="w-full bg-border-dim/30 h-1 rounded-full overflow-hidden">
+                <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden shadow-inner border border-white/5">
                   <div 
                     className={cn(
-                      "h-full transition-all duration-500",
-                      usage[model] > 80 ? "bg-red-500" : usage[model] > 50 ? "bg-amber-500" : "bg-cyan-500"
+                      "h-full transition-all duration-700 ease-out",
+                      (usage[model] || 0) > 80 ? "bg-red-500/80" : 
+                      (usage[model] || 0) > 50 ? "bg-amber-500/80" : 
+                      "bg-cyan-500/80"
                     )}
                     style={{ width: `${usage[model] || 0}%` }} 
                   />
@@ -621,12 +649,12 @@ export default function App() {
           </div>
 
           <div className="pt-2 border-t border-border-dim/30">
-            <div className="flex justify-between items-center mb-1.5 opacity-60">
-              <span className="text-[9px] font-mono text-zinc-600 tracking-tighter uppercase">Memory Status</span>
-              <span className="text-[9px] font-mono text-cyan-400">Stable</span>
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-[9px] font-mono text-zinc-600 tracking-tighter uppercase font-bold">Node Integrity</span>
+              <span className="text-[8px] font-mono text-green-500 uppercase tracking-widest">Optimized</span>
             </div>
-            <div className="w-full bg-border-dim h-0.5 rounded-full overflow-hidden">
-              <div className="bg-cyan-500 h-full w-[45%]" />
+            <div className="w-full bg-zinc-950 h-0.5 rounded-full overflow-hidden">
+              <div className="bg-green-500/40 h-full w-[85%] animate-pulse" />
             </div>
           </div>
         </div>
@@ -661,9 +689,9 @@ export default function App() {
                 <div className="hidden min-[450px]:flex items-center gap-1.5 whitespace-nowrap">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
                   <span className="text-[9px] sm:text-[10px] font-mono text-green-500/80 uppercase tracking-tighter transition-all">
-                    Link: {activeApiKey ? 'Custom Key' : 'System Key'}
+                    NEURAL LINK: {activeApiKey ? 'ENCRYPTED_CUSTOM' : 'SYSTEM_NODE'}
                   </span>
-                  {activeApiKey && <Shield size={10} className="text-cyan-500" />}
+                  {activeApiKey && <Shield size={10} className="text-cyan-500 animate-pulse" />}
                 </div>
               </div>
               <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -679,10 +707,16 @@ export default function App() {
                   >
                     <Cpu size={12} className={cn("shrink-0 transition-colors", isModelSelectorOpen ? "text-cyan-400" : "text-cyan-600")} />
                     <span className="text-zinc-300 font-bold uppercase tracking-tight hidden xs:inline">
-                      {currentModel === ModelId.PRO ? "PRO 3.1" : currentModel === ModelId.FLASH ? "FLASH 3.0" : "LITE 3.1"}
+                      {currentModel === ModelId.HYBRID ? "HYBRID AUTO" : 
+                       [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) 
+                         ? (currentModel === ModelId.PRO ? "PRO 3.1" : currentModel === ModelId.FLASH ? "FLASH 3.0" : "LITE 3.1")
+                         : currentModel.split('/').pop()?.replace('gemini-', '').toUpperCase()}
                     </span>
                     <span className="text-zinc-300 font-bold uppercase tracking-tight xs:hidden">
-                      {currentModel === ModelId.PRO ? "PRO" : currentModel === ModelId.FLASH ? "FLS" : "LTE"}
+                      {currentModel === ModelId.HYBRID ? "HYB" : 
+                       [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(currentModel as any)
+                         ? (currentModel === ModelId.PRO ? "PRO" : currentModel === ModelId.FLASH ? "FLS" : "LTE")
+                         : "EXT"}
                     </span>
                     <ChevronDown size={10} className={cn("text-zinc-600 transition-transform duration-300", isModelSelectorOpen && "rotate-180 text-cyan-400")} />
                   </button>
@@ -694,7 +728,7 @@ export default function App() {
                         initial={{ opacity: 0, y: 10, scale: 0.95 }}
                         animate={{ opacity: 1, y: 0, scale: 1 }}
                         exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                        className="absolute top-full right-0 mt-3 w-48 sm:w-56 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-[100] overflow-hidden"
+                        className="absolute top-full right-0 mt-3 w-48 sm:w-64 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-[100] overflow-hidden"
                       >
                         <div className="p-3 border-b border-zinc-800 bg-zinc-900/30">
                           <div className="flex items-center justify-between mb-1">
@@ -703,13 +737,22 @@ export default function App() {
                               <X size={10} />
                             </button>
                           </div>
-                          <p className="text-[8px] text-zinc-600 leading-tight">Switch backend processing engine for optimized response.</p>
+                          <p className="text-[8px] text-zinc-600 leading-tight">
+                            {activeApiKey ? "Custom Neural Link active. Discovered nodes shown below." : "Switch backend processing engine for optimized response."}
+                          </p>
                         </div>
-                        <div className="p-1.5 space-y-1">
+                        <div className="p-1.5 space-y-1 max-h-[400px] overflow-y-auto custom-scrollbar">
                           {[
-                            { id: ModelId.PRO, name: 'Pro 3.1', desc: 'Complex reasoning & code synthesis', color: 'text-cyan-400', bg: 'hover:bg-cyan-500/5' },
-                            { id: ModelId.FLASH, name: 'Flash 3.0', desc: 'Real-time task & stream processing', color: 'text-purple-400', bg: 'hover:bg-purple-500/5' },
-                            { id: ModelId.LITE, name: 'Lite 3.1', desc: 'Low-latency conversational logic', color: 'text-zinc-400', bg: 'hover:bg-zinc-500/5' }
+                            { id: ModelId.HYBRID, name: 'Hybrid Node', desc: 'Auto-rotating failover mechanism', color: 'text-amber-400', bg: 'hover:bg-amber-500/5' },
+                            ...geminiService.getCurrentQueue().map(id => ({
+                              id,
+                              name: id === ModelId.PRO ? 'Pro 3.1' : id === ModelId.FLASH ? 'Flash 3.0' : id === ModelId.LITE ? 'Lite 3.1' : id.replace('models/', '').toUpperCase(),
+                              desc: [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(id as any) 
+                                ? (id === ModelId.PRO ? 'Complex reasoning' : id === ModelId.FLASH ? 'Real-time task' : 'Low-latency logic')
+                                : 'External Discovered Node',
+                              color: id === ModelId.PRO ? 'text-cyan-400' : id === ModelId.FLASH ? 'text-purple-400' : 'text-zinc-300',
+                              bg: 'hover:bg-cyan-500/5'
+                            }))
                           ].map((m) => (
                             <button
                               key={m.id}
@@ -724,10 +767,10 @@ export default function App() {
                               )}
                             >
                               <div className="flex items-center justify-between pointer-events-none">
-                                <span className={cn("text-xs font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
+                                <span className={cn("text-[11px] font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
                                 {currentModel === m.id && <Sparkles size={10} className="text-cyan-500" />}
                               </div>
-                              <p className="text-[9px] text-zinc-500 leading-relaxed pointer-events-none">{m.desc}</p>
+                              <p className="text-[8px] text-zinc-600 leading-relaxed pointer-events-none italic">{m.id}</p>
                             </button>
                           ))}
                         </div>
@@ -806,14 +849,15 @@ export default function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className="bg-[#0f0f12]/90 backdrop-blur-xl border border-white/5 rounded-3xl p-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] relative transition-all focus-within:border-cyan-500/20 group scale-in-center overflow-hidden">
-                  <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/5 to-transparent pointer-events-none" />
+                <div className="bg-[#0f0f12]/95 backdrop-blur-3xl border border-white/5 rounded-[2rem] p-2 shadow-[0_25px_60px_rgba(0,0,0,0.6)] relative transition-all focus-within:border-cyan-500/30 group scale-in-center overflow-hidden">
+                  <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/[0.03] to-transparent pointer-events-none" />
+                  <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/10 via-transparent to-purple-500/10 opacity-0 group-focus-within:opacity-100 blur-2xl transition-opacity duration-1000 pointer-events-none" />
                   
                   {/* Attachments List */}
                   {attachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2 mb-2 p-2 relative z-10">
+                    <div className="flex flex-wrap gap-2 mb-2 p-3 relative z-10">
                       {attachments.map((a, i) => (
-                        <div key={i} className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl group/att animate-in zoom-in-95 duration-200">
+                        <div key={i} className="flex items-center gap-2 bg-white/5 border border-white/10 px-3 py-1.5 rounded-xl group/att animate-in zoom-in-95 duration-200 hover:border-cyan-500/20">
                           <FileText size={12} className="text-cyan-400/80" />
                           <span className="text-[10px] font-mono text-zinc-300 truncate max-w-[120px]">{a.name}</span>
                           <button onClick={() => removeAttachment(i)} className="text-zinc-600 hover:text-red-400 transition-colors">
@@ -825,13 +869,13 @@ export default function App() {
                   )}
 
                   <div className="flex flex-col gap-1 relative z-10">
-                    <div className="flex items-center justify-between px-2 pt-1 border-b border-white/5 pb-2 mb-1">
-                      <div className="flex items-center gap-2 overflow-hidden flex-1">
-                        <div className="flex bg-black/40 rounded-full border border-white/5 p-1 shrink-0">
+                    <div className="flex items-center justify-between px-3 pt-2 border-b border-white/5 pb-3 mb-2">
+                      <div className="flex items-center gap-3 overflow-hidden flex-1">
+                        <div className="flex bg-black/60 rounded-full border border-white/5 p-1 shrink-0 shadow-inner">
                           <button 
                             onClick={() => setIsSkillsExpanded(!isSkillsExpanded)}
                             className={cn(
-                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider shrink-0",
+                              "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider shrink-0",
                               isSkillsExpanded ? "bg-cyan-500 text-black shadow-lg shadow-cyan-500/20" : "text-zinc-500 hover:text-zinc-300"
                             )}
                           >
@@ -842,7 +886,7 @@ export default function App() {
                           <button 
                             onClick={() => setUseSearch(!useSearch)}
                             className={cn(
-                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                              "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
                               useSearch ? "bg-zinc-800 text-cyan-400 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
                             )}
                           >
@@ -853,7 +897,7 @@ export default function App() {
                           <button 
                             onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
                             className={cn(
-                              "flex items-center gap-2 px-3 py-1 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                              "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
                               thinkingMode === ThinkingLevel.HIGH ? "bg-zinc-800 text-amber-500 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
                             )}
                           >
@@ -919,18 +963,18 @@ export default function App() {
                     </div>
 
                     <form onSubmit={handleSubmit} className="flex items-end gap-3 p-1">
-                      <div className="flex-1 bg-black/40 rounded-2xl border border-white/5 focus-within:border-white/10 transition-all p-2 group-focus:bg-black/60">
-                        <div className="flex items-center justify-between mb-1 px-2">
-                          <div className="flex gap-2 items-center h-4">
+                      <div className="flex-1 bg-black/60 backdrop-blur-xl rounded-2xl border border-white/5 focus-within:border-cyan-500/30 transition-all p-2 group-focus:bg-black/80 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]">
+                        <div className="flex items-center justify-between mb-1 px-2 relative z-10">
+                          <div className="flex gap-3 items-center h-4">
                             {activeSkillIds.length > 0 ? (
-                              activeSkillIds.slice(0, 2).map(id => (
-                                <span key={id} className="text-[9px] font-mono font-bold text-cyan-500/50 uppercase tracking-tighter flex items-center gap-1">
-                                  <div className="w-1 h-1 rounded-full bg-cyan-500/40" />
+                              activeSkillIds.slice(0, 3).map(id => (
+                                <span key={id} className="text-[9px] font-mono font-bold text-cyan-500/40 uppercase tracking-tighter flex items-center gap-1.5 hover:text-cyan-400 transition-colors cursor-default">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-500/20 shadow-[0_0_5px_rgba(6,182,212,0.3)]" />
                                   {id.split('-')[0]}
                                 </span>
                               ))
                             ) : (
-                               <span className="text-[9px] font-mono text-zinc-800 uppercase tracking-widest font-bold">Standard Logic</span>
+                               <span className="text-[9px] font-mono text-zinc-800 uppercase tracking-widest font-bold">Standard Compute</span>
                             )}
                           </div>
                           <button 
@@ -938,10 +982,10 @@ export default function App() {
                             onClick={handleEnhancePrompt}
                             disabled={!input.trim() || isEnhancingPrompt}
                             className={cn(
-                              "p-1.5 rounded-lg transition-all active:scale-90",
-                              isEnhancingPrompt ? "text-amber-400 animate-spin" : "text-zinc-600 hover:text-amber-400 shadow-inner"
+                              "p-1.5 rounded-lg transition-all active:scale-95",
+                              isEnhancingPrompt ? "text-amber-400 animate-spin" : "text-zinc-600 hover:text-cyan-400 hover:bg-white/5"
                             )}
-                            title="Magic AI Refine"
+                            title="Neural Refinement"
                           >
                             <Sparkles size={14} />
                           </button>
@@ -949,8 +993,8 @@ export default function App() {
                         <textarea 
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
-                          placeholder="Inject instructions..."
-                          className="bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[44px] max-h-48 custom-scrollbar px-2 py-1 placeholder:text-zinc-800 text-zinc-200"
+                          placeholder="Inject system commands..."
+                          className="bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[48px] max-h-64 custom-scrollbar px-2 py-1 placeholder:text-zinc-800 text-zinc-200 relative z-10"
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -963,9 +1007,9 @@ export default function App() {
                       <button 
                         type="submit"
                         disabled={isLoading || !input.trim()}
-                        className="w-12 h-12 rounded-2xl bg-cyan-600 text-black flex items-center justify-center transition-all enabled:hover:bg-cyan-400 enabled:hover:scale-105 enabled:active:scale-95 disabled:opacity-5 shadow-[0_0_30px_rgba(6,182,212,0.2)] mb-0.5"
+                        className="w-14 h-14 rounded-2xl bg-cyan-600 text-black flex items-center justify-center transition-all enabled:hover:bg-cyan-400 enabled:hover:scale-[1.02] enabled:active:scale-95 disabled:opacity-10 shadow-[0_0_40px_rgba(6,182,212,0.15)] mb-0.5 border border-cyan-400/20 group/send"
                       >
-                        <Terminal size={22} strokeWidth={2.5} />
+                        <Terminal size={24} strokeWidth={2.5} className="group-hover/send:rotate-12 transition-transform" />
                       </button>
                     </form>
                   </div>
@@ -1183,50 +1227,91 @@ export default function App() {
                       </div>
 
                       {isAddingKey && (
-                        <div className="p-4 bg-zinc-950 border border-cyan-900/30 rounded-2xl animate-in fade-in slide-in-from-top-2">
-                          <div className="text-[9px] font-bold uppercase tracking-widest text-zinc-500 mb-3">Add Security Token</div>
-                          <div className="space-y-3">
-                            <input 
-                              type="text"
-                              value={newKeyName}
-                              onChange={(e) => setNewKeyName(e.target.value)}
-                              placeholder="Key Name (e.g. Master Cluster)"
-                              className="w-full bg-surface-dark border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-cyan-500 transition-all"
-                            />
-                            <input 
-                              type="password"
-                              value={newKeyVal}
-                              onChange={(e) => setNewKeyVal(e.target.value)}
-                              placeholder="Paste Key Hash"
-                              className="w-full bg-surface-dark border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono outline-none focus:border-cyan-500 transition-all"
-                            />
-                            <div className="flex gap-2 pt-1">
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="space-y-4 bg-zinc-950/50 border border-zinc-800 p-6 rounded-2xl relative overflow-hidden"
+                        >
+                          <div className="absolute inset-0 bg-gradient-to-br from-cyan-500/5 to-transparent pointer-events-none" />
+                          <div className="flex items-center justify-between relative z-10">
+                            <h3 className="text-[10px] font-bold uppercase tracking-widest text-zinc-300">Register Neural Key</h3>
+                            <button onClick={() => { setIsAddingKey(false); setValidationStatus(null); }} className="text-zinc-600 hover:text-red-400">
+                              <X size={14} />
+                            </button>
+                          </div>
+                          
+                          <div className="space-y-3 relative z-10">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1.5">
+                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Provider Alias</label>
+                                <input 
+                                  type="text"
+                                  placeholder="Work Key"
+                                  value={newKeyName}
+                                  onChange={(e) => setNewKeyName(e.target.value)}
+                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
+                                />
+                              </div>
+                              <div className="space-y-1.5">
+                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Input Secret Key</label>
+                                <input 
+                                  type="password"
+                                  placeholder="AIzaSy..."
+                                  value={newKeyVal}
+                                  onChange={(e) => setNewKeyVal(e.target.value)}
+                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
+                                />
+                              </div>
+                            </div>
+                            
+                            {validationStatus && (
+                              <div className={cn(
+                                "p-3 rounded-xl border text-[9px] font-mono animate-in slide-in-from-top-1",
+                                validationStatus.type === 'error' ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-green-500/10 border-green-500/20 text-green-400"
+                              )}>
+                                {validationStatus.message}
+                              </div>
+                            )}
+
+                            <div className="flex gap-2 pt-2">
                               <button 
-                                onClick={() => {
-                                  if (newKeyName && newKeyVal) {
-                                    setApiKeys(prev => [...prev, { name: newKeyName, key: newKeyVal, id: `key-${Date.now()}` }]);
-                                    setNewKeyName('');
-                                    setNewKeyVal('');
-                                    setIsAddingKey(false);
+                                onClick={async () => {
+                                  if (!newKeyVal.trim()) {
+                                    setValidationStatus({ type: 'error', message: 'ERROR: Key cannot be empty' });
+                                    return;
+                                  }
+                                  setValidationStatus({ type: 'success', message: 'VALIDATING NEURAL LINK...' });
+                                  const result = await geminiService.checkKey(newKeyVal);
+                                  if (result.valid) {
+                                    const discovered = result.models || [];
+                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES DISCOVERED` });
+                                    
+                                    const keyObj = { 
+                                      id: `key-${Date.now()}`, 
+                                      name: newKeyName || 'External Link', 
+                                      key: newKeyVal,
+                                      models: discovered.map(m => m.id)
+                                    };
+                                    setApiKeys(prev => [...prev, keyObj]);
+                                    setActiveKeyId(keyObj.id);
+                                    setTimeout(() => {
+                                      setIsAddingKey(false);
+                                      setNewKeyName('');
+                                      setNewKeyVal('');
+                                      setValidationStatus(null);
+                                    }, 1500);
+                                  } else {
+                                    setValidationStatus({ type: 'error', message: `REJECTED: ${result.error}` });
                                   }
                                 }}
-                                className="flex-1 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
+                                className="flex-1 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-[0.98]"
                               >
-                                Save Key
-                              </button>
-                              <button 
-                                onClick={() => {
-                                  setIsAddingKey(false);
-                                  setNewKeyName('');
-                                  setNewKeyVal('');
-                                }}
-                                className="px-4 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-400 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all"
-                              >
-                                Cancel
+                                Authenticate & Discover
                               </button>
                             </div>
                           </div>
-                        </div>
+                        </motion.div>
                       )}
 
                       <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar pr-2">
@@ -1258,9 +1343,35 @@ export default function App() {
                                 <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
                                   ••••••••{k.key.slice(-4)}
                                 </div>
+                                {k.models && (
+                                  <div className="text-[8px] font-mono text-cyan-500/50 mt-1 uppercase">
+                                    {k.models.length} Nodes Mapped
+                                  </div>
+                                )}
                               </div>
                             </div>
                             <div className="flex items-center gap-2">
+                              <button 
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  setValidationStatus({ type: 'success', message: `REFRESHING NODES FOR ${k.name.toUpperCase()}...` });
+                                  const result = await geminiService.checkKey(k.key);
+                                  if (result.valid) {
+                                    const discovered = result.models || [];
+                                    setApiKeys(prev => prev.map(prevK => 
+                                      prevK.id === k.id ? { ...prevK, models: discovered.map(m => m.id) } : prevK
+                                    ));
+                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES RE-SYNCHRONIZED` });
+                                    setTimeout(() => setValidationStatus(null), 2000);
+                                  } else {
+                                    setValidationStatus({ type: 'error', message: `SYNC FAILED: ${result.error}` });
+                                  }
+                                }}
+                                className="p-2 text-zinc-700 hover:text-cyan-400 transition-all opacity-0 group-hover/key:opacity-100"
+                                title="Re-sync Nodes"
+                              >
+                                <RefreshCw size={14} />
+                              </button>
                               {activeKeyId === k.id && (
                                 <motion.div 
                                   initial={{ opacity: 0, x: 5 }}
@@ -1285,6 +1396,76 @@ export default function App() {
                           </div>
                         ))}
                       </div>
+
+                      {activeKeyId && apiKeys.find(k => k.id === activeKeyId)?.models && (
+                        <div className="pt-6 border-t border-zinc-900/50 space-y-4">
+                          <div className="flex items-center justify-between">
+                            <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Node Queue Management</label>
+                            <span className="text-[10px] font-mono text-zinc-600">Active Priority</span>
+                          </div>
+                          <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+                            {(apiKeys.find(k => k.id === activeKeyId)?.models || []).map((modelId, idx) => (
+                              <div key={`${modelId}-${idx}`} className="flex items-center justify-between p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node">
+                                <div className="flex items-center gap-3 overflow-hidden">
+                                  <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
+                                    {idx + 1}
+                                  </div>
+                                  <span className="text-[10px] font-mono text-zinc-300 truncate uppercase tracking-tight">
+                                    {modelId.split('/').pop()}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
+                                  <button 
+                                    disabled={idx === 0}
+                                    onClick={() => {
+                                      setApiKeys(prev => prev.map(k => {
+                                        if (k.id === activeKeyId && k.models) {
+                                          const next = [...k.models];
+                                          [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                          return { ...k, models: next };
+                                        }
+                                        return k;
+                                      }));
+                                    }}
+                                    className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                  >
+                                    <ChevronUp size={14} />
+                                  </button>
+                                  <button 
+                                    disabled={idx === (apiKeys.find(k => k.id === activeKeyId)?.models?.length || 1) - 1}
+                                    onClick={() => {
+                                      setApiKeys(prev => prev.map(k => {
+                                        if (k.id === activeKeyId && k.models) {
+                                          const next = [...k.models];
+                                          [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                          return { ...k, models: next };
+                                        }
+                                        return k;
+                                      }));
+                                    }}
+                                    className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                  >
+                                    <ChevronDown size={14} />
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      setApiKeys(prev => prev.map(k => {
+                                        if (k.id === activeKeyId && k.models) {
+                                          return { ...k, models: k.models.filter((_, i) => i !== idx) };
+                                        }
+                                        return k;
+                                      }));
+                                    }}
+                                    className="p-1 text-zinc-600 hover:text-red-500"
+                                  >
+                                    <X size={14} />
+                                  </button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 )}

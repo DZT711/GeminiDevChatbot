@@ -4,7 +4,8 @@ export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
   FLASH = "gemini-3-flash-preview",
   LITE = "gemini-3.1-flash-lite-preview",
-  IMAGE = "gemini-2.5-flash-image"
+  IMAGE = "gemini-2.5-flash-image",
+  HYBRID = "hybrid"
 }
 
 export interface Skill {
@@ -70,23 +71,34 @@ export const DEFAULT_SKILLS: Skill[] = [
   }
 ];
 
-export interface UsageData {
-  [ModelId.PRO]: number;
-  [ModelId.FLASH]: number;
-  [ModelId.LITE]: number;
-  [ModelId.IMAGE]: number;
-}
-
 class GeminiService {
   private aiInstance: GoogleGenAI | null = null;
-  private modelQueue: ModelId[] = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
+  private modelQueue: string[] = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
   private currentModelIndex: number = 0;
-  private usage: UsageData = {
+  private usage: Record<string, number> = {
     [ModelId.PRO]: 0,
     [ModelId.FLASH]: 0,
     [ModelId.LITE]: 0,
     [ModelId.IMAGE]: 0
   };
+
+  setCustomQueue(models: string[]) {
+    if (models.length > 0) {
+      this.modelQueue = models;
+      this.currentModelIndex = 0;
+      // Initialize usage for new models if they don't exist
+      models.forEach(m => {
+        if (this.usage[m] === undefined) {
+          this.usage[m] = 0;
+        }
+      });
+    }
+  }
+
+  resetQueue() {
+    this.modelQueue = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
+    this.currentModelIndex = 0;
+  }
 
   private getAI(customKey?: string): GoogleGenAI {
     const apiKey = customKey || process.env.GEMINI_API_KEY;
@@ -96,11 +108,15 @@ class GeminiService {
     return new GoogleGenAI({ apiKey });
   }
 
-  getCurrentModel(): ModelId {
+  getCurrentModel(): string {
     return this.modelQueue[this.currentModelIndex];
   }
 
-  getUsage(): UsageData {
+  getCurrentQueue(): string[] {
+    return [...this.modelQueue];
+  }
+
+  getUsage(): Record<string, number> {
     return { ...this.usage };
   }
 
@@ -109,19 +125,45 @@ class GeminiService {
     console.log(`Rotating to: ${this.getCurrentModel()}`);
   }
 
+  async checkKey(key: string) {
+    try {
+      const ai = new GoogleGenAI({ apiKey: key });
+      const models = [];
+      const pager = await ai.models.list();
+      for await (const m of pager as any) {
+        models.push({
+          id: m.name,
+          displayName: m.displayName,
+          description: m.description,
+          supportedGenerationMethods: m.supportedGenerationMethods || []
+        });
+      }
+      return {
+        valid: true,
+        models
+      };
+    } catch (error: any) {
+      console.error("Key Validation Error:", error);
+      return {
+        valid: false,
+        error: error.message || "Invalid API Key or Network Error"
+      };
+    }
+  }
+
   async generateResponse(
     prompt: string, 
     activeSkillIds: string[], 
     customSkills: Skill[],
     history: { role: 'user' | 'model', parts: { text: string }[] }[] = [],
     config: { 
-      model?: ModelId;
+      model?: ModelId | string;
       useSearch?: boolean; 
       thinkingLevel?: ThinkingLevel; 
       signal?: AbortSignal;
       attachments?: Attachment[];
       customKey?: string;
-      onModelSwitch?: (model: ModelId) => void;
+      onModelSwitch?: (model: string) => void;
     } = {},
     onChunk?: (chunk: string) => void
   ) {
@@ -140,12 +182,21 @@ Current project context: A web application using React, Vite, and Tailwind.
 Always provide full, runnable code blocks where applicable. Use Markdown for formatting.`;
 
     let attempts = 0;
-    const modelToUse = config.model || this.getCurrentModel();
+    const isHybrid = config.model === ModelId.HYBRID;
     
-    while (attempts < (config.model ? 1 : this.modelQueue.length)) {
+    // If a specific model is requested, we start there. 
+    // If it hits a rate limit, we then fallback through the rest of the queue.
+    const startModel = isHybrid ? this.getCurrentModel() : (config.model || this.getCurrentModel());
+    let startIndex = this.modelQueue.indexOf(startModel);
+    
+    // Fallback to first model if the requested model is not in the queue
+    if (startIndex === -1) startIndex = 0;
+    
+    while (attempts < this.modelQueue.length) {
       if (config.signal?.aborted) throw new Error("Operation aborted");
 
-      const model = attempts === 0 ? modelToUse : this.getCurrentModel();
+      const model = this.modelQueue[(startIndex + attempts) % this.modelQueue.length];
+
       try {
         if (attempts > 0) {
           config.onModelSwitch?.(model);
@@ -156,7 +207,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
         const stream = await ai.models.generateContentStream({
           model,
-          contents: [...history, { role: 'user', parts: [{ text: prompt }] }],
+          contents: history, // history should already include the latest message
           config: {
             systemInstruction: systemPrompt,
             thinkingConfig: model === ModelId.PRO ? undefined : { thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW },
@@ -178,7 +229,12 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       } catch (error: any) {
         if (error.message === "Operation aborted") throw error;
 
-        if (error?.message?.includes("429") || error?.message?.includes("quota")) {
+        if (
+          error?.message?.toLowerCase().includes("429") || 
+          error?.message?.toLowerCase().includes("quota") || 
+          error?.message?.toLowerCase().includes("limit") ||
+          error?.message?.toLowerCase().includes("rate_limit")
+        ) {
           this.rotateModel();
           attempts++;
         } else {
