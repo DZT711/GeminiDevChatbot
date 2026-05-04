@@ -23,11 +23,20 @@ export interface ChatSession {
   updatedAt: number;
 }
 
+export interface Attachment {
+  name: string;
+  content: string;
+  type: string;
+}
+
 export interface Message {
   role: 'user' | 'model';
   content: string;
   modelName?: string;
   imageUrl?: string;
+  attachments?: Attachment[];
+  editHistory?: string[];
+  id: string;
 }
 
 export const DEFAULT_SKILLS: Skill[] = [
@@ -54,21 +63,38 @@ export const DEFAULT_SKILLS: Skill[] = [
   }
 ];
 
+export interface UsageData {
+  [ModelId.PRO]: number;
+  [ModelId.FLASH]: number;
+  [ModelId.LITE]: number;
+  [ModelId.IMAGE]: number;
+}
+
 class GeminiService {
-  private ai: GoogleGenAI;
+  private aiInstance: GoogleGenAI | null = null;
   private modelQueue: ModelId[] = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
   private currentModelIndex: number = 0;
+  private usage: UsageData = {
+    [ModelId.PRO]: 0,
+    [ModelId.FLASH]: 0,
+    [ModelId.LITE]: 0,
+    [ModelId.IMAGE]: 0
+  };
 
-  constructor() {
-    const apiKey = process.env.GEMINI_API_KEY;
+  private getAI(customKey?: string): GoogleGenAI {
+    const apiKey = customKey || process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      throw new Error("GEMINI_API_KEY is not defined in the environment.");
+      throw new Error("No API key provided. Go to Settings to add one.");
     }
-    this.ai = new GoogleGenAI({ apiKey });
+    return new GoogleGenAI({ apiKey });
   }
 
   getCurrentModel(): ModelId {
     return this.modelQueue[this.currentModelIndex];
+  }
+
+  getUsage(): UsageData {
+    return { ...this.usage };
   }
 
   private rotateModel() {
@@ -81,26 +107,43 @@ class GeminiService {
     activeSkillIds: string[], 
     customSkills: Skill[],
     history: { role: 'user' | 'model', parts: { text: string }[] }[] = [],
-    config: { useSearch?: boolean; thinkingLevel?: ThinkingLevel } = {},
+    config: { 
+      model?: ModelId;
+      useSearch?: boolean; 
+      thinkingLevel?: ThinkingLevel; 
+      signal?: AbortSignal;
+      attachments?: Attachment[];
+      customKey?: string;
+    } = {},
     onChunk?: (chunk: string) => void
   ) {
+    const ai = this.getAI(config.customKey);
     const allSkills = [...DEFAULT_SKILLS, ...customSkills];
     const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
     
+    let contextStr = config.attachments?.map(a => `[File Attachment: ${a.name}]\n${a.content}`).join('\n\n') || '';
+
     const systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
 ${activeSkills.map(s => `[Skill: ${s.name}] ${s.systemPrompt}`).join('\n')}
+
+${contextStr ? `ATTACHED FILES FOR ANALYSIS:\n${contextStr}\n` : ''}
+
 Current project context: A web application using React, Vite, and Tailwind.
-Always provide full, runnable code blocks where applicable. Use Markdown for formatting.
-If the user asks to generate an image, use your internal image generation tool capabilities (note: handled separately by generateImage).`;
+Always provide full, runnable code blocks where applicable. Use Markdown for formatting.`;
 
     let attempts = 0;
-    while (attempts < this.modelQueue.length) {
+    const modelToUse = config.model || this.getCurrentModel();
+    
+    while (attempts < (config.model ? 1 : this.modelQueue.length)) {
+      if (config.signal?.aborted) throw new Error("Operation aborted");
+
       try {
-        const model = this.getCurrentModel();
+        const model = attempts === 0 ? modelToUse : this.getCurrentModel();
+        this.usage[model] = Math.min(100, this.usage[model] + 2); // Simulated usage
         
         const tools = config.useSearch ? [{ googleSearch: {} }] : undefined;
 
-        const stream = await this.ai.models.generateContentStream({
+        const stream = await ai.models.generateContentStream({
           model,
           contents: [...history, { role: 'user', parts: [{ text: prompt }] }],
           config: {
@@ -110,16 +153,20 @@ If the user asks to generate an image, use your internal image generation tool c
           }
         });
 
-        let fullText = "";
+        let accumulatedText = "";
         for await (const chunk of stream) {
-          if (chunk.text) {
-            fullText += chunk.text;
-            onChunk?.(chunk.text);
+          if (config.signal?.aborted) throw new Error("Operation aborted");
+          const chunkText = chunk.text;
+          if (chunkText) {
+            accumulatedText += chunkText;
+            onChunk?.(accumulatedText);
           }
         }
-        return fullText;
+        return accumulatedText;
 
       } catch (error: any) {
+        if (error.message === "Operation aborted") throw error;
+
         if (error?.message?.includes("429") || error?.message?.includes("quota")) {
           this.rotateModel();
           attempts++;
@@ -131,8 +178,9 @@ If the user asks to generate an image, use your internal image generation tool c
     throw new Error("All models limits reached.");
   }
 
-  async generateImage(prompt: string): Promise<string> {
-    const response = await this.ai.models.generateContent({
+  async generateImage(prompt: string, customKey?: string): Promise<string> {
+    const ai = this.getAI(customKey);
+    const response = await ai.models.generateContent({
       model: ModelId.IMAGE,
       contents: { parts: [{ text: prompt }] },
       config: {
@@ -142,14 +190,16 @@ If the user asks to generate an image, use your internal image generation tool c
 
     for (const part of response.candidates?.[0]?.content?.parts || []) {
       if (part.inlineData) {
+        this.usage[ModelId.IMAGE] = Math.min(100, this.usage[ModelId.IMAGE] + 5);
         return `data:image/png;base64,${part.inlineData.data}`;
       }
     }
     throw new Error("No image data returned from model.");
   }
 
-  async createSkillFromPrompt(description: string): Promise<Skill> {
-    const response = await this.ai.models.generateContent({
+  async createSkillFromPrompt(description: string, customKey?: string): Promise<Skill> {
+    const ai = this.getAI(customKey);
+    const response = await ai.models.generateContent({
       model: ModelId.FLASH,
       config: {
         responseMimeType: "application/json",
