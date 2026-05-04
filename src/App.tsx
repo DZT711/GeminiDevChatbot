@@ -31,7 +31,15 @@ import {
   FolderOpen,
   Github,
   ChevronLeft,
-  Settings
+  Settings,
+  Sun,
+  Zap,
+  Globe,
+  Activity,
+  Network,
+  Wind,
+  Layers,
+  AlertTriangle
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -52,6 +60,20 @@ import { useDropzone } from 'react-dropzone';
 import JSZip from 'jszip';
 
 const ICON_MAP: Record<string, any> = { Code2, Palette, Server, Cpu, Database, Cloud, Shield };
+
+const PROVIDER_ICONS: Record<string, any> = {
+  [Provider.GOOGLE]: Bot,
+  [Provider.OPENAI]: Zap,
+  [Provider.ANTHROPIC]: Layers,
+  [Provider.XAI]: Shield,
+  [Provider.GROQ]: Activity,
+  [Provider.NVIDIA]: Cpu,
+  [Provider.OPENROUTER]: Globe,
+  [Provider.TOGETHER]: Network,
+  [Provider.CEREBRAS]: Server,
+  [Provider.DEEPSEEK]: Search,
+  [Provider.MISTRAL]: Wind
+};
 
 interface ApiKey {
   name: string;
@@ -98,7 +120,7 @@ export default function App() {
     setCurrentModel(geminiService.getCurrentModel());
   }, [activeKeyId, apiKeys]);
 
-  const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome'>(() => 
+  const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome' | 'light'>(() => 
     (localStorage.getItem('dg_theme') as any) || 'midnight'
   );
 
@@ -110,6 +132,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>(DEFAULT_SKILLS.map(s => s.id));
+  const [usages, setUsages] = useState<Record<string, number>>(() => geminiService.getAllUsage());
   const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
@@ -126,7 +149,8 @@ export default function App() {
   const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme'>('keys');
   const [repoUrl, setRepoUrl] = useState('');
   
-  const activeApiKey = apiKeys.find(k => k.id === activeKeyId)?.key || '';
+  const activeKey = apiKeys.find(k => k.id === activeKeyId);
+  const activeApiKey = activeKey?.key || '';
 
   // Persistence Sync
   useEffect(() => {
@@ -144,7 +168,6 @@ export default function App() {
   // Tools & Config
   const [useSearch, setUseSearch] = useState(false);
   const [thinkingMode, setThinkingMode] = useState<ThinkingLevel>(ThinkingLevel.LOW);
-  const [usage, setUsage] = useState(geminiService.getUsage());
   
   // Abort Control
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -169,7 +192,7 @@ export default function App() {
   // Usage Polling
   useEffect(() => {
     const interval = setInterval(() => {
-      setUsage(geminiService.getUsage());
+      setUsages(geminiService.getAllUsage());
     }, 2000);
     return () => clearInterval(interval);
   }, []);
@@ -493,6 +516,8 @@ export default function App() {
         }
       );
 
+      setUsages(geminiService.getAllUsage());
+
       setMessages(prev => {
         saveCurrentSession(prev, sessionId);
         return prev;
@@ -546,22 +571,30 @@ export default function App() {
 
   return (
     <div {...getRootProps()} className={cn(
-      "flex h-screen text-[#e0e0e0] font-sans overflow-hidden transition-colors duration-500",
+      "flex h-screen text-[#e0e0e0] font-sans overflow-hidden transition-all duration-500",
       theme === 'midnight' && "bg-surface-dark",
       theme === 'cyberpunk' && "bg-[#050505] text-[#00ffcc] selection:bg-[#00ffcc] selection:text-black",
-      theme === 'monochrome' && "bg-[#111] text-zinc-400 selection:bg-zinc-700 selection:text-white"
+      theme === 'monochrome' && "bg-[#111] text-zinc-400 selection:bg-zinc-700 selection:text-white",
+      theme === 'light' && "bg-[#f8fafc] text-slate-900 selection:bg-cyan-100 selection:text-slate-900"
     )}>
       <input {...getInputProps()} />
       {/* Sidebar - Context & Skills Navigation */}
       <aside className={cn(
-        "border-r border-border-dim bg-[#08080a] flex flex-col shrink-0 transition-all duration-300 relative",
+        "border-r flex flex-col shrink-0 transition-all duration-300 relative",
+        theme === 'midnight' && "bg-[#08080a] border-white/5",
+        theme === 'cyberpunk' && "bg-[#050505] border-[#00ffcc]/20",
+        theme === 'monochrome' && "bg-white border-black/10",
+        theme === 'light' && "bg-white border-slate-200",
         isSidebarCollapsed ? "w-0 opacity-0 pointer-events-none" : "w-64 opacity-100"
       )}>
         <div className="p-6">
           <div className="flex items-center justify-between mb-8 group">
             <div className="flex items-center gap-2 cursor-pointer" onClick={createNewSession}>
               <div className="w-8 h-8 rounded bg-gradient-to-br from-cyan-500 to-blue-600 flex items-center justify-center text-white font-bold text-xs shadow-[0_0_15px_rgba(6,182,212,0.3)] group-hover:scale-110 transition-transform">GG</div>
-              <h1 className="text-sm font-semibold uppercase tracking-widest text-zinc-500 group-hover:text-white transition-colors">DevGenie AI</h1>
+              <h1 className={cn(
+                "text-sm font-semibold uppercase tracking-widest transition-colors",
+                theme === 'light' ? "text-slate-400 group-hover:text-slate-900" : "text-zinc-500 group-hover:text-white"
+              )}>DevGenie AI</h1>
             </div>
           </div>
           
@@ -570,7 +603,9 @@ export default function App() {
               onClick={() => setView('chat')}
               className={cn(
                 "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === 'chat' ? "bg-cyan-900/20 text-cyan-400 border border-cyan-800/30" : "text-zinc-500 hover:text-zinc-300"
+                view === 'chat' 
+                  ? (theme === 'light' ? "bg-cyan-50 text-cyan-600 border border-cyan-200 shadow-sm" : "bg-cyan-900/20 text-cyan-400 border border-cyan-800/30") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
               )}
             >
               <MessageSquare size={14} />
@@ -580,7 +615,9 @@ export default function App() {
               onClick={() => setView('skills')}
               className={cn(
                 "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === 'skills' ? "bg-purple-900/20 text-purple-400 border border-purple-800/30" : "text-zinc-500 hover:text-zinc-300"
+                view === 'skills' 
+                  ? (theme === 'light' ? "bg-purple-50 text-purple-600 border border-purple-200 shadow-sm" : "bg-purple-900/20 text-purple-400 border border-purple-800/30") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
               )}
             >
               <Sparkles size={14} />
@@ -590,7 +627,9 @@ export default function App() {
               onClick={() => setShowHistory(!showHistory)}
               className={cn(
                 "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                showHistory ? "bg-zinc-800 text-white" : "text-zinc-500 hover:text-zinc-300"
+                showHistory 
+                  ? (theme === 'light' ? "bg-slate-200 text-slate-900" : "bg-zinc-800 text-white") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
               )}
             >
               <History size={14} />
@@ -615,14 +654,16 @@ export default function App() {
                     <div className="text-[10px] text-zinc-700 italic px-2">No archived streams...</div>
                   )}
                   {sessions.map(s => (
-                    <div 
-                      key={s.id}
-                      onClick={() => loadSession(s)}
-                      className={cn(
-                        "group flex items-center justify-between p-2 rounded text-[10px] font-mono cursor-pointer transition-all border",
-                        currentSessionId === s.id ? "bg-[#121216] border-[#222] text-zinc-200" : "text-zinc-500 border-transparent hover:bg-zinc-900/50"
-                      )}
-                    >
+                      <div 
+                        key={s.id}
+                        onClick={() => loadSession(s)}
+                        className={cn(
+                          "group flex items-center justify-between p-2 rounded text-[10px] font-mono cursor-pointer transition-all border",
+                          currentSessionId === s.id 
+                            ? (theme === 'light' ? "bg-cyan-50 border-cyan-200 text-cyan-700 shadow-sm" : "bg-[#121216] border-[#222] text-zinc-200") 
+                            : (theme === 'light' ? "text-slate-500 border-transparent hover:bg-slate-50 hover:border-slate-100" : "text-zinc-500 border-transparent hover:bg-zinc-900/50")
+                        )}
+                      >
                       <span className="truncate flex-1">{s.title}</span>
                       <button 
                         onClick={(e) => deleteSession(e, s.id)}
@@ -650,27 +691,37 @@ export default function App() {
               </span>
             </div>
             
-            {geminiService.getCurrentQueue().map(model => (
-              <div key={model} className="space-y-1.5 group">
-                <div className="flex justify-between items-center">
-                  <span className="text-[9px] font-mono text-zinc-500 group-hover:text-cyan-400/80 transition-colors uppercase tracking-tighter truncate max-w-[140px]">
-                    {model.split('/').pop()?.replace('gemini-1.5-', '').replace('gemini-3.1-', '')}
-                  </span>
-                  <span className="text-[9px] font-mono text-cyan-500/80">{Math.round(usage[model] || 0)}%</span>
+            {geminiService.getCurrentQueue().map(model => {
+              const usageVal = usages[model] || 0;
+              const isHeavy = usageVal > 90;
+              return (
+                <div key={model} className="space-y-1.5 group" title={`Current usage for ${model}: ${usageVal.toFixed(1)}%`}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex items-center gap-1">
+                      <span className="text-[9px] font-mono text-zinc-500 group-hover:text-cyan-400/80 transition-colors uppercase tracking-tighter truncate max-w-[140px]">
+                        {model.split('/').pop()?.replace('gemini-1.5-', '').replace('gemini-3.1-', '')}
+                      </span>
+                      {isHeavy && <AlertTriangle size={8} className="text-red-500 animate-pulse" />}
+                    </div>
+                    <span className={cn(
+                      "text-[9px] font-mono",
+                      isHeavy ? "text-red-500" : "text-cyan-500/80"
+                    )}>{Math.round(usageVal)}%</span>
+                  </div>
+                  <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden shadow-inner border border-white/5">
+                    <div 
+                      className={cn(
+                        "h-full transition-all duration-700 ease-out",
+                        usageVal > 90 ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]" : 
+                        usageVal > 50 ? "bg-amber-500/80" : 
+                        "bg-cyan-500/80"
+                      )}
+                      style={{ width: `${usageVal}%` }} 
+                    />
+                  </div>
                 </div>
-                <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden shadow-inner border border-white/5">
-                  <div 
-                    className={cn(
-                      "h-full transition-all duration-700 ease-out",
-                      (usage[model] || 0) > 80 ? "bg-red-500/80" : 
-                      (usage[model] || 0) > 50 ? "bg-amber-500/80" : 
-                      "bg-cyan-500/80"
-                    )}
-                    style={{ width: `${usage[model] || 0}%` }} 
-                  />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
 
           <div className="pt-2 border-t border-border-dim/30">
@@ -691,7 +742,10 @@ export default function App() {
         <button 
           onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
           className={cn(
-            "absolute left-4 top-1/2 -translate-y-1/2 z-50 w-6 h-12 bg-zinc-900 border border-zinc-800 rounded-full flex items-center justify-center text-zinc-500 hover:text-cyan-400 transition-all shadow-2xl",
+            "absolute left-4 top-1/2 -translate-y-1/2 z-50 w-6 h-12 rounded-full flex items-center justify-center transition-all shadow-2xl border",
+            theme === 'light' 
+              ? "bg-white border-slate-200 text-slate-400 hover:text-cyan-600" 
+              : "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-cyan-400",
             isSidebarCollapsed ? "left-4 rotate-180" : "-left-3"
           )}
         >
@@ -700,9 +754,18 @@ export default function App() {
 
         {view === 'chat' ? (
           <>
-            <header className="h-16 border-b border-border-dim flex items-center justify-between px-4 sm:px-8 bg-surface-dark/80 backdrop-blur-md z-10 shrink-0">
+            <header className={cn(
+              "h-16 border-b flex items-center justify-between px-4 sm:px-8 backdrop-blur-md z-10 shrink-0 transition-all",
+              theme === 'midnight' && "bg-surface-dark/80 border-white/5",
+              theme === 'cyberpunk' && "bg-[#050505]/80 border-[#00ffcc]/20",
+              theme === 'monochrome' && "bg-white/80 border-black/10",
+              theme === 'light' && "bg-white/80 border-slate-200"
+            )}>
               <div className="flex items-center gap-3 sm:gap-4 min-w-0">
-                <span className="text-[9px] sm:text-[10px] font-mono text-[#555] tracking-widest uppercase truncate">
+                <span className={cn(
+                  "text-[9px] sm:text-[10px] font-mono tracking-widest uppercase truncate",
+                  theme === 'light' ? "text-slate-400" : "text-[#555]"
+                )}>
                   {currentSessionId ? `ID: ${currentSessionId.slice(-8)}` : 'NEW_SESSION'}
                 </span>
                 {isSidebarCollapsed && (
@@ -713,8 +776,11 @@ export default function App() {
                 <div className="h-3 w-px bg-border-dim hidden sm:block" />
                 <div className="hidden min-[450px]:flex items-center gap-1.5 whitespace-nowrap">
                   <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                  <span className="text-[9px] sm:text-[10px] font-mono text-green-500/80 uppercase tracking-tighter transition-all">
-                    NEURAL LINK: {activeApiKey ? 'ENCRYPTED_CUSTOM' : 'SYSTEM_NODE'}
+                  <span className={cn(
+                    "text-[9px] sm:text-[10px] font-mono uppercase tracking-tighter transition-all",
+                    theme === 'light' ? "text-green-600" : "text-green-500/80"
+                  )}>
+                    NEURAL LINK: {activeKey ? 'ENCRYPTED_CUSTOM' : 'SYSTEM_NODE'}
                   </span>
                   {activeApiKey && <Shield size={10} className="text-cyan-500 animate-pulse" />}
                 </div>
@@ -832,6 +898,7 @@ export default function App() {
                       key={i} 
                       role={m.role} 
                       content={m.content} 
+                      theme={theme}
                       modelName={m.modelName} 
                       imageUrl={m.imageUrl}
                       onEdit={(content) => handleEditMessage(i, content)}
@@ -874,9 +941,19 @@ export default function App() {
                     </motion.div>
                   )}
                 </AnimatePresence>
-                <div className="bg-[#0f0f12]/95 backdrop-blur-3xl border border-white/5 rounded-[2rem] p-2 shadow-[0_25px_60px_rgba(0,0,0,0.6)] relative transition-all focus-within:border-cyan-500/30 group scale-in-center overflow-hidden">
-                  <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/[0.03] to-transparent pointer-events-none" />
-                  <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/10 via-transparent to-purple-500/10 opacity-0 group-focus-within:opacity-100 blur-2xl transition-opacity duration-1000 pointer-events-none" />
+                <div className={cn(
+                  "backdrop-blur-3xl border rounded-[2rem] p-2 relative transition-all focus-within:ring-2 group scale-in-center overflow-hidden shadow-2xl",
+                  theme === 'light' 
+                    ? "bg-white border-slate-200 focus-within:ring-cyan-500/20" 
+                    : "bg-[#0f0f12]/95 border-white/5 focus-within:ring-cyan-500/30",
+                  theme === 'cyberpunk' && "border-[#00ffcc]/20 focus-within:ring-[#00ffcc]/20"
+                )}>
+                  {theme !== 'light' && (
+                    <>
+                      <div className="absolute inset-0 bg-gradient-to-tr from-cyan-500/[0.03] to-transparent pointer-events-none" />
+                      <div className="absolute -inset-1 bg-gradient-to-r from-cyan-500/10 via-transparent to-purple-500/10 opacity-0 group-focus-within:opacity-100 blur-2xl transition-opacity duration-1000 pointer-events-none" />
+                    </>
+                  )}
                   
                   {/* Attachments List */}
                   {attachments.length > 0 && (
@@ -894,9 +971,15 @@ export default function App() {
                   )}
 
                   <div className="flex flex-col gap-1 relative z-10">
-                    <div className="flex items-center justify-between px-3 pt-2 border-b border-white/5 pb-3 mb-2">
-                      <div className="flex items-center gap-3 overflow-hidden flex-1">
-                        <div className="flex bg-black/60 rounded-full border border-white/5 p-1 shrink-0 shadow-inner">
+                      <div className={cn(
+                        "flex items-center justify-between px-3 pt-2 pb-3 mb-2",
+                        theme === 'light' ? "border-b border-slate-100" : "border-b border-white/5"
+                      )}>
+                        <div className="flex items-center gap-3 overflow-hidden flex-1">
+                          <div className={cn(
+                            "flex rounded-full border p-1 shrink-0 shadow-inner overflow-hidden max-w-full",
+                            theme === 'light' ? "bg-slate-50 border-slate-100" : "bg-black/60 border-white/5"
+                          )}>
                           <button 
                             onClick={() => setIsSkillsExpanded(!isSkillsExpanded)}
                             className={cn(
@@ -1047,9 +1130,23 @@ export default function App() {
                       </div>
                     </div>
 
-                    <form onSubmit={handleSubmit} className="flex items-end gap-3 p-1">
-                      <div className="flex-1 bg-black/60 backdrop-blur-xl rounded-2xl border border-white/5 focus-within:border-cyan-500/30 transition-all p-2 group-focus:bg-black/80 relative shadow-[inset_0_0_20px_rgba(0,0,0,0.5)]">
-                        <div className="flex items-center justify-between mb-1 px-2 relative z-10">
+                    <form 
+                      onSubmit={handleSubmit} 
+                      className={cn(
+                        "flex items-end gap-3 p-1 rounded-2xl transition-all",
+                        theme === 'light' ? "bg-slate-50/50" : "bg-black/20"
+                      )}
+                    >
+                        <div className={cn(
+                          "flex-1 rounded-2xl border transition-all p-2 relative shadow-inner",
+                          theme === 'light' 
+                            ? "bg-white border-slate-200 focus-within:border-cyan-500/50" 
+                            : "bg-black/60 border-white/5 focus-within:border-cyan-500/30"
+                        )}>
+                          <div className={cn(
+                            "flex items-center justify-between mb-1 px-2 relative z-10",
+                            theme === 'light' ? "border-b border-slate-50 pb-1" : ""
+                          )}>
                           <div className="flex gap-3 items-center h-4">
                             {activeSkillIds.length > 0 ? (
                               activeSkillIds.slice(0, 3).map(id => (
@@ -1079,7 +1176,10 @@ export default function App() {
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
                           placeholder="Inject system commands..."
-                          className="bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[48px] max-h-64 custom-scrollbar px-2 py-1 placeholder:text-zinc-800 text-zinc-200 relative z-10"
+                          className={cn(
+                            "bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[48px] max-h-64 custom-scrollbar px-2 py-1 relative z-10 transition-colors",
+                            theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-800 text-zinc-200"
+                          )}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
@@ -1166,12 +1266,18 @@ export default function App() {
               </header>
 
               {/* Generator Module */}
-              <section className="bg-surface-card border border-border-dim p-8 rounded-2xl shadow-xl relative overflow-hidden group">
+              <section className={cn(
+                "p-8 rounded-2xl shadow-xl relative overflow-hidden group border",
+                theme === 'light' ? "bg-white border-slate-200" : "bg-surface-card border-border-dim"
+              )}>
                 <div className="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition-opacity pointer-events-none">
-                  <Sparkles size={120} />
+                  <Sparkles size={120} className={theme === 'light' ? "text-slate-200" : ""} />
                 </div>
                 <div className="relative z-10">
-                  <h2 className="text-sm font-mono font-bold text-zinc-300 uppercase tracking-widest mb-6 flex items-center gap-2">
+                  <h2 className={cn(
+                    "text-sm font-mono font-bold uppercase tracking-widest mb-6 flex items-center gap-2",
+                    theme === 'light' ? "text-slate-500" : "text-zinc-300"
+                  )}>
                     <Plus size={16} className="text-cyan-500" />
                     Automated Neural Structuring
                   </h2>
@@ -1180,7 +1286,10 @@ export default function App() {
                       value={newSkillPrompt}
                       onChange={(e) => setNewSkillPrompt(e.target.value)}
                       placeholder="Describe a specialized role (e.g. Kubernetes Cluster Architect)..."
-                      className="flex-1 bg-surface-dark border border-zinc-800 rounded-lg px-4 py-3 text-sm font-mono outline-none focus:border-cyan-500 transition-colors shadow-inner"
+                      className={cn(
+                        "flex-1 border rounded-lg px-4 py-3 text-sm font-mono outline-none focus:border-cyan-500 transition-colors shadow-inner",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-surface-dark border-zinc-800 text-zinc-100"
+                      )}
                     />
                     <button 
                       onClick={handleCreateSkill}
@@ -1208,13 +1317,18 @@ export default function App() {
                       onClick={() => toggleSkill(skill.id)}
                       className={cn(
                         "p-6 rounded-2xl border transition-all cursor-pointer relative group",
-                        isActive ? "bg-cyan-900/10 border-cyan-800/50 shadow-[0_0_30px_rgba(6,182,212,0.05)]" : "bg-transparent border-zinc-800/30 opacity-40 grayscale hover:opacity-100 hover:border-zinc-700"
+                        isActive 
+                          ? (theme === 'light' ? "bg-cyan-50 border-cyan-200 shadow-[0_10px_30px_rgba(6,182,212,0.1)]" : "bg-cyan-900/10 border-cyan-800/50 shadow-[0_0_30px_rgba(6,182,212,0.05)]") 
+                          : (theme === 'light' ? "bg-white border-slate-100 opacity-60 hover:opacity-100 hover:border-slate-200" : "bg-transparent border-zinc-800/30 opacity-40 grayscale hover:opacity-100 hover:border-zinc-700")
                       )}
                     >
                       {skill.isCustom && (
                         <button 
                           onClick={(e) => removeCustomSkill(e, skill.id)}
-                          className="absolute top-4 right-4 text-zinc-700 hover:text-red-500 transition-colors p-2"
+                          className={cn(
+                            "absolute top-4 right-4 transition-colors p-2",
+                            theme === 'light' ? "text-slate-300 hover:text-red-500" : "text-zinc-700 hover:text-red-500"
+                          )}
                         >
                           <X size={14} />
                         </button>
@@ -1222,13 +1336,19 @@ export default function App() {
                       <div className="flex items-start gap-5">
                         <div className={cn(
                           "w-12 h-12 rounded-xl flex items-center justify-center transition-all",
-                          isActive ? "bg-cyan-500 text-surface-dark shadow-[0_0_15px_rgba(6,182,212,0.4)]" : "bg-zinc-800 text-zinc-600"
+                          isActive ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.4)]" : "bg-zinc-800 text-zinc-600"
                         )}>
                           <Icon size={24} />
                         </div>
                         <div className="min-w-0 flex-1">
-                          <h3 className="font-bold text-zinc-200 mb-1.5 group-hover:text-white transition-colors uppercase tracking-tight">{skill.name}</h3>
-                          <p className="text-[11px] text-zinc-500 leading-relaxed font-mono line-clamp-2">{skill.description}</p>
+                          <h3 className={cn(
+                            "font-bold mb-1.5 transition-colors uppercase tracking-tight",
+                            theme === 'light' ? "text-slate-700 group-hover:text-cyan-600" : "text-zinc-200 group-hover:text-white"
+                          )}>{skill.name}</h3>
+                          <p className={cn(
+                            "text-[11px] leading-relaxed font-mono line-clamp-2",
+                            theme === 'light' ? "text-slate-400" : "text-zinc-500"
+                          )}>{skill.description}</p>
                         </div>
                       </div>
                       <div className="mt-6 flex items-center justify-between">
@@ -1260,26 +1380,40 @@ export default function App() {
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-surface-card border border-border-dim w-full max-w-xl rounded-3xl p-8 shadow-2xl"
+              className={cn(
+                "w-full max-w-xl rounded-3xl p-8 shadow-2xl border transition-all",
+                theme === 'light' ? "bg-white border-slate-200" : "bg-surface-card border-border-dim"
+              )}
             >
               <div className="flex justify-between items-center mb-8">
                 <div>
-                  <h2 className="text-xl font-bold text-white uppercase tracking-tight">System Configuration</h2>
-                  <p className="text-xs text-zinc-500 font-mono mt-1">Adjust core neural path parameters</p>
+                  <h2 className={cn("text-xl font-bold uppercase tracking-tight", theme === 'light' ? "text-slate-900" : "text-white")}>System Configuration</h2>
+                  <p className={cn("text-xs font-mono mt-1", theme === 'light' ? "text-slate-500" : "text-zinc-500")}>Adjust core neural path parameters</p>
                 </div>
-                <button onClick={() => setShowSettings(false)} className="p-2 hover:bg-zinc-800 rounded-full transition-colors">
+                <button 
+                  onClick={() => setShowSettings(false)} 
+                  className={cn(
+                    "p-2 rounded-full transition-colors",
+                    theme === 'light' ? "hover:bg-slate-100 text-slate-400" : "hover:bg-zinc-800 text-zinc-500"
+                  )}
+                >
                   <X size={20} />
                 </button>
               </div>
 
-              <div className="flex gap-8 border-b border-border-dim mb-8">
+              <div className={cn(
+                "flex gap-8 border-b mb-8",
+                theme === 'light' ? "border-slate-100" : "border-border-dim"
+              )}>
                 {['keys', 'context', 'theme'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
                     className={cn(
                       "pb-4 text-[10px] font-bold uppercase tracking-widest transition-all",
-                      settingsTab === tab ? "border-b-2 border-cyan-500 text-white" : "text-zinc-500 hover:text-zinc-300"
+                      settingsTab === tab 
+                        ? (theme === 'light' ? "border-b-2 border-cyan-500 text-slate-900" : "border-b-2 border-cyan-500 text-white") 
+                        : (theme === 'light' ? "text-slate-400 hover:text-slate-600" : "text-zinc-500 hover:text-zinc-300")
                     )}
                   >
                     {tab}
@@ -1433,7 +1567,10 @@ export default function App() {
                                 "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-inner",
                                 activeKeyId === k.id ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "bg-zinc-900 text-zinc-600 group-hover/key:bg-zinc-800"
                               )}>
-                                <Shield size={18} />
+                                {(() => {
+                                  const Icon = PROVIDER_ICONS[k.provider] || Shield;
+                                  return <Icon size={18} />;
+                                })()}
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className={cn("text-xs font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-400 transition-colors group-hover/key:text-zinc-200")}>
@@ -1453,21 +1590,23 @@ export default function App() {
                               <button 
                                 onClick={async (e) => {
                                   e.stopPropagation();
-                                  setValidationStatus({ type: 'success', message: `REFRESHING NODES FOR ${k.name.toUpperCase()}...` });
+                                  setValidationStatus({ type: 'success', message: `REFRESHING NODES AND USAGE FOR ${k.name.toUpperCase()}...` });
                                   const result = await geminiService.checkKey(k.key, k.provider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
+                                    const usage = await geminiService.syncUsageFromProvider(k.key, k.provider);
+                                    setUsages(usage);
                                     setApiKeys(prev => prev.map(prevK => 
                                       prevK.id === k.id ? { ...prevK, models: discovered.map(m => m.id) } : prevK
                                     ));
-                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES RE-SYNCHRONIZED` });
+                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES & QUOTA RE-SYNCHRONIZED` });
                                     setTimeout(() => setValidationStatus(null), 2000);
                                   } else {
                                     setValidationStatus({ type: 'error', message: `SYNC FAILED: ${result.error}` });
                                   }
                                 }}
                                 className="p-2 text-zinc-700 hover:text-cyan-400 transition-all opacity-0 group-hover/key:opacity-100"
-                                title="Re-sync Nodes"
+                                title="Re-sync Nodes & Quota"
                               >
                                 <RefreshCw size={14} />
                               </button>
@@ -1503,65 +1642,100 @@ export default function App() {
                             <span className="text-[10px] font-mono text-zinc-600">Active Priority</span>
                           </div>
                           <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
-                            {(apiKeys.find(k => k.id === activeKeyId)?.models || []).map((modelId, idx) => (
-                              <div key={`${modelId}-${idx}`} className="flex items-center justify-between p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node">
-                                <div className="flex items-center gap-3 overflow-hidden">
-                                  <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
-                                    {idx + 1}
+                            {(apiKeys.find(k => k.id === activeKeyId)?.models || []).map((modelId, idx) => {
+                              const usageVal = usages[modelId] || 0;
+                              const isHeavy = usageVal > 90;
+                              
+                              return (
+                                <div key={`${modelId}-${idx}`} className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node">
+                                  <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3 overflow-hidden">
+                                      <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
+                                        {idx + 1}
+                                      </div>
+                                      <div className="flex flex-col">
+                                        <span className="text-[10px] font-mono text-zinc-300 truncate uppercase tracking-tight">
+                                          {modelId.split('/').pop()}
+                                        </span>
+                                        <div className="flex items-center gap-1.5 mt-1">
+                                          <div className="w-24 h-1 bg-zinc-800 rounded-full overflow-hidden">
+                                            <motion.div 
+                                              initial={{ width: 0 }}
+                                              animate={{ width: `${usageVal}%` }}
+                                              className={cn(
+                                                "h-full transition-colors",
+                                                isHeavy ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" : "bg-cyan-500"
+                                              )}
+                                            />
+                                          </div>
+                                          <span className={cn(
+                                            "text-[8px] font-bold font-mono tracking-tighter",
+                                            isHeavy ? "text-red-400" : "text-zinc-500"
+                                          )}>
+                                            {usageVal.toFixed(0)}%
+                                          </span>
+                                          {isHeavy && (
+                                            <motion.div
+                                              animate={{ opacity: [0.4, 1, 0.4] }}
+                                              transition={{ repeat: Infinity, duration: 1.5 }}
+                                            >
+                                              <AlertTriangle size={10} className="text-red-500" />
+                                            </motion.div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
+                                      <button 
+                                        disabled={idx === 0}
+                                        onClick={() => {
+                                          setApiKeys(prev => prev.map(k => {
+                                            if (k.id === activeKeyId && k.models) {
+                                              const next = [...k.models];
+                                              [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                              return { ...k, models: next };
+                                            }
+                                            return k;
+                                          }));
+                                        }}
+                                        className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                      >
+                                        <ChevronUp size={14} />
+                                      </button>
+                                      <button 
+                                        disabled={idx === (apiKeys.find(k => k.id === activeKeyId)?.models?.length || 1) - 1}
+                                        onClick={() => {
+                                          setApiKeys(prev => prev.map(k => {
+                                            if (k.id === activeKeyId && k.models) {
+                                              const next = [...k.models];
+                                              [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                              return { ...k, models: next };
+                                            }
+                                            return k;
+                                          }));
+                                        }}
+                                        className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                      >
+                                        <ChevronDown size={14} />
+                                      </button>
+                                      <button 
+                                        onClick={() => {
+                                          setApiKeys(prev => prev.map(k => {
+                                            if (k.id === activeKeyId && k.models) {
+                                              return { ...k, models: k.models.filter((_, i) => i !== idx) };
+                                            }
+                                            return k;
+                                          }));
+                                        }}
+                                        className="p-1 text-zinc-600 hover:text-red-500"
+                                      >
+                                        <X size={14} />
+                                      </button>
+                                    </div>
                                   </div>
-                                  <span className="text-[10px] font-mono text-zinc-300 truncate uppercase tracking-tight">
-                                    {modelId.split('/').pop()}
-                                  </span>
                                 </div>
-                                <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
-                                  <button 
-                                    disabled={idx === 0}
-                                    onClick={() => {
-                                      setApiKeys(prev => prev.map(k => {
-                                        if (k.id === activeKeyId && k.models) {
-                                          const next = [...k.models];
-                                          [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
-                                          return { ...k, models: next };
-                                        }
-                                        return k;
-                                      }));
-                                    }}
-                                    className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                  >
-                                    <ChevronUp size={14} />
-                                  </button>
-                                  <button 
-                                    disabled={idx === (apiKeys.find(k => k.id === activeKeyId)?.models?.length || 1) - 1}
-                                    onClick={() => {
-                                      setApiKeys(prev => prev.map(k => {
-                                        if (k.id === activeKeyId && k.models) {
-                                          const next = [...k.models];
-                                          [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                          return { ...k, models: next };
-                                        }
-                                        return k;
-                                      }));
-                                    }}
-                                    className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                  >
-                                    <ChevronDown size={14} />
-                                  </button>
-                                  <button 
-                                    onClick={() => {
-                                      setApiKeys(prev => prev.map(k => {
-                                        if (k.id === activeKeyId && k.models) {
-                                          return { ...k, models: k.models.filter((_, i) => i !== idx) };
-                                        }
-                                        return k;
-                                      }));
-                                    }}
-                                    className="p-1 text-zinc-600 hover:text-red-500"
-                                  >
-                                    <X size={14} />
-                                  </button>
-                                </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -1594,21 +1768,26 @@ export default function App() {
                 )}
 
                 {settingsTab === 'theme' && (
-                   <div className="grid grid-cols-3 gap-4">
-                    {(['midnight', 'cyberpunk', 'monochrome'] as const).map((t) => (
+                   <div className="grid grid-cols-4 gap-4">
+                    {(['midnight', 'cyberpunk', 'monochrome', 'light'] as const).map((t) => (
                       <button
                         key={t}
                         onClick={() => setTheme(t)}
                         className={cn(
-                          "aspect-video rounded-xl border flex flex-col items-center justify-center gap-2 transition-all p-4",
+                          "aspect-video rounded-xl border flex flex-col items-center justify-center gap-2 transition-all p-2",
                           theme === t ? "border-cyan-500 bg-cyan-700/10" : "border-zinc-800 bg-zinc-950/50 grayscale hover:grayscale-0 hover:border-zinc-700"
                         )}
                       >
-                        <Palette size={20} className={cn(
-                          "transition-colors",
-                          t === 'cyberpunk' ? "text-[#00ffcc]" : "text-cyan-500"
-                        )} />
-                        <span className="text-[10px] font-bold uppercase tracking-widest">{t}</span>
+                        <div className={cn(
+                          "p-2 rounded-lg",
+                          t === 'midnight' && "bg-zinc-900",
+                          t === 'cyberpunk' && "bg-[#00ffcc]/20 text-[#00ffcc]",
+                          t === 'monochrome' && "bg-white text-black",
+                          t === 'light' && "bg-cyan-100 text-cyan-600"
+                        )}>
+                          {t === 'light' ? <Sun size={18} /> : t === 'cyberpunk' ? <Palette size={18} /> : t === 'monochrome' ? <Terminal size={18} /> : <Bot size={18} />}
+                        </div>
+                        <span className="text-[9px] font-bold uppercase tracking-widest">{t === 'monochrome' ? 'Classic' : t === 'light' ? 'Lab Light' : t}</span>
                       </button>
                     ))}
                   </div>

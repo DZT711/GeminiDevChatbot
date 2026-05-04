@@ -55,6 +55,7 @@ const FilePreview = ({ attachment }: { attachment: Attachment }) => {
 interface ChatMessageProps {
   role: 'user' | 'model';
   content: string;
+  theme?: string;
   modelName?: string;
   imageUrl?: string;
   onEdit?: (newContent: string) => void;
@@ -63,12 +64,11 @@ interface ChatMessageProps {
   history?: string[];
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelName, imageUrl, onEdit, onRevert, attachments, history = [] }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, onEdit, onRevert, attachments, history = [] }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
-  const theme = localStorage.getItem('dg_theme') || 'midnight';
 
   const handleSave = () => {
     if (editValue.trim() !== content) {
@@ -92,6 +92,13 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
           avatar: isUser ? "border-zinc-800 bg-zinc-900 text-zinc-500" : "border-white bg-white text-black",
           text: !isUser ? "text-zinc-200" : "text-zinc-500",
           modelTag: "bg-zinc-800 text-zinc-400 border-zinc-700"
+        };
+      case 'light':
+        return {
+          card: !isUser ? "bg-white border-slate-200 shadow-sm" : "",
+          avatar: isUser ? "border-slate-200 bg-slate-100 text-slate-500" : "border-cyan-200 bg-cyan-50 text-cyan-600",
+          text: !isUser ? "text-slate-700" : "text-slate-500",
+          modelTag: "bg-cyan-100 text-cyan-700 border-cyan-200"
         };
       default:
         return {
@@ -210,7 +217,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
           )}
         </AnimatePresence>
         
-        <div className="markdown-body prose prose-invert max-w-none text-sm leading-relaxed">
+        <div className={cn(
+          "markdown-body prose max-w-none text-sm leading-relaxed",
+          theme === 'light' ? 'prose-slate' : 'prose-invert'
+        )}>
           {isEditing ? (
             <div className="space-y-4">
               <textarea
@@ -291,7 +301,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                               </AnimatePresence>
                             </motion.button>
                           </div>
-                          <pre className={cn("overflow-x-auto p-4 rounded-xl bg-[#0d0d0f] border border-zinc-800/50 font-mono text-[13px] custom-scrollbar", className)}>
+                          <pre className={cn(
+                            "overflow-x-auto p-4 rounded-xl border font-mono text-[13px] custom-scrollbar transition-all",
+                            theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-700" : "bg-[#0d0d0f] border-zinc-800/50 text-zinc-300",
+                            className
+                          )}>
                             <code className={className} {...props}>
                               {children}
                             </code>
@@ -301,7 +315,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, modelNa
                     }
 
                     return (
-                      <code className={cn("bg-zinc-800/50 px-1.5 py-0.5 rounded text-cyan-400/90 font-mono text-[0.9em]", className)} {...props}>
+                      <code className={cn(
+                        "px-1.5 py-0.5 rounded font-mono text-[0.9em]", 
+                        theme === 'light' ? "bg-cyan-50 text-cyan-700" : "bg-zinc-800/50 text-cyan-400/90",
+                        className
+                      )} {...props}>
                         {children}
                       </code>
                     );
