@@ -15,8 +15,10 @@ import {
   Info,
   Bot,
   Search,
+  Copy,
   Brain,
   Image as ImageIcon,
+  Video as VideoIcon,
   Plus,
   Trash2,
   MessageSquare,
@@ -51,8 +53,10 @@ import {
   Message,
   Attachment,
   Provider,
-  PROVIDER_CONFIGS
+  PROVIDER_CONFIGS,
+  ModelMetrics
 } from '@/services/geminiService';
+import { githubService } from './services/githubService';
 import { ChatMessage } from '@/components/ChatMessage';
 import { cn } from '@/lib/utils';
 import { ThinkingLevel } from '@google/genai';
@@ -81,6 +85,9 @@ interface ApiKey {
   id: string;
   provider: Provider;
   models?: string[];
+  limit?: number; // Daily token limit
+  usage?: number; // Current day usage
+  lastReset?: number; // Timestamp of last roll
 }
 
 export default function App() {
@@ -100,7 +107,10 @@ export default function App() {
       const parsed = JSON.parse(saved);
       return parsed.map((k: any) => ({
         ...k,
-        provider: k.provider || Provider.GOOGLE
+        provider: k.provider || Provider.GOOGLE,
+        limit: k.limit || 500000,
+        usage: k.usage || 0,
+        lastReset: k.lastReset || Date.now()
       }));
     } catch (e) {
       return [];
@@ -116,8 +126,14 @@ export default function App() {
     } else {
       geminiService.resetQueue();
     }
-    // Force currentModel state to sync with the new queue
-    setCurrentModel(geminiService.getCurrentModel());
+    // Force currentModel state to sync with the new queue OR restore from persistence
+    const savedModel = localStorage.getItem('dg_current_model');
+    const currentQueue = geminiService.getCurrentQueue();
+    if (savedModel && currentQueue.includes(savedModel)) {
+      setCurrentModel(savedModel);
+    } else {
+      setCurrentModel(geminiService.getCurrentModel());
+    }
   }, [activeKeyId, apiKeys]);
 
   const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome' | 'light'>(() => 
@@ -132,8 +148,15 @@ export default function App() {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
+  const [modelSearch, setModelSearch] = useState('');
   const [usages, setUsages] = useState<Record<string, number>>(() => geminiService.getAllUsage());
-  const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
+  const [currentModel, setCurrentModel] = useState<string>(() => {
+    try {
+      return localStorage.getItem('dg_current_model') || geminiService.getCurrentModel();
+    } catch (e) {
+      return geminiService.getCurrentModel();
+    }
+  });
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
@@ -146,10 +169,12 @@ export default function App() {
   const [validationStatus, setValidationStatus] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyVal, setNewKeyVal] = useState('');
+  const [newKeyLimit, setNewKeyLimit] = useState(500000);
   const [newKeyProvider, setNewKeyProvider] = useState<Provider>(Provider.GOOGLE);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme'>('keys');
+  const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme' | 'performance'>('keys');
+  const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
   const [repoUrl, setRepoUrl] = useState('');
   
   const activeKey = apiKeys.find(k => k.id === activeKeyId);
@@ -157,20 +182,47 @@ export default function App() {
 
   // Persistence Sync
   useEffect(() => {
-    localStorage.setItem('dg_api_keys', JSON.stringify(apiKeys));
+    try {
+      localStorage.setItem('dg_api_keys', JSON.stringify(apiKeys));
+    } catch (e) {}
   }, [apiKeys]);
 
   useEffect(() => {
-    localStorage.setItem('dg_active_key_id', activeKeyId);
+    try {
+      localStorage.setItem('dg_active_key_id', activeKeyId);
+    } catch (e) {}
   }, [activeKeyId]);
 
   useEffect(() => {
-    localStorage.setItem('dg_theme', theme);
+    try {
+      localStorage.setItem('dg_theme', theme);
+    } catch (e) {}
   }, [theme]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dg_current_model', currentModel);
+    } catch (e) {}
+  }, [currentModel]);
   
-  // Tools & Config
-  const [useSearch, setUseSearch] = useState(false);
+  useEffect(() => {
+    const checkReset = () => {
+      const now = Date.now();
+      setApiKeys(prev => prev.map(k => {
+        const lastDate = new Date(k.lastReset || 0).toDateString();
+        const currentDate = new Date(now).toDateString();
+        if (lastDate !== currentDate) {
+          return { ...k, usage: 0, lastReset: now };
+        }
+        return k;
+      }));
+    };
+    checkReset();
+    const interval = setInterval(checkReset, 1000 * 60 * 60); // Check every hour
+    return () => clearInterval(interval);
+  }, []);
   const [thinkingMode, setThinkingMode] = useState<ThinkingLevel>(ThinkingLevel.LOW);
+  const [useSearch, setUseSearch] = useState(false);
   
   // Abort Control
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -185,17 +237,57 @@ export default function App() {
 
   // Sync Persistence
   useEffect(() => {
-    localStorage.setItem('dg_sessions', JSON.stringify(sessions));
+    try {
+      localStorage.setItem('dg_sessions', JSON.stringify(sessions));
+    } catch (e: any) {
+      if (e.name === 'QuotaExceededError' || e.code === 22) {
+        console.warn("Storage quota reached. Pruning sessions...");
+        // Auto-prune logic: remove oldest sessions until it fits or only 1 remains
+        const pruneSessions = async () => {
+          let currentSessions = [...sessions];
+          while (currentSessions.length > 1) {
+            currentSessions.pop(); // Remove oldest
+            try {
+              localStorage.setItem('dg_sessions', JSON.stringify(currentSessions));
+              setSessions(currentSessions);
+              console.log("Pruned oldest session to save space.");
+              return;
+            } catch (innerE) {
+              // Continue pruning
+            }
+          }
+          // If still failing with 1 session, try stripping media
+          if (currentSessions.length === 1) {
+            currentSessions[0].messages = currentSessions[0].messages.map(m => ({
+              ...m,
+              imageUrl: undefined,
+              videoUrl: undefined
+            }));
+            try {
+              localStorage.setItem('dg_sessions', JSON.stringify(currentSessions));
+              setSessions(currentSessions);
+              console.warn("Stripped media data from current session to save space.");
+            } catch (finalE) {
+              console.error("Extreme quota failure: could not even save one stripped session.");
+            }
+          }
+        };
+        pruneSessions();
+      } else {
+        console.error("Persistence error:", e);
+      }
+    }
   }, [sessions]);
 
   useEffect(() => {
     localStorage.setItem('dg_custom_skills', JSON.stringify(customSkills));
   }, [customSkills]);
 
-  // Usage Polling
+  // Usage & Metrics Polling
   useEffect(() => {
     const interval = setInterval(() => {
       setUsages(geminiService.getAllUsage());
+      setMetrics(geminiService.getAllMetrics());
     }, 2000);
     return () => clearInterval(interval);
   }, []);
@@ -233,6 +325,8 @@ export default function App() {
     setMessages(prev => {
       const next = [...prev];
       const msg = next[index];
+      if (!msg) return prev;
+      
       const history = msg.editHistory || [];
       const currentContent = msg.content;
       
@@ -244,6 +338,18 @@ export default function App() {
       };
       return next;
     });
+  };
+
+  const handleToggleRepoModal = () => {
+    if (!isRepoModalOpen && input.includes('github.com/')) {
+      const match = input.match(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+/);
+      if (match) {
+        setRepoUrl(match[0]);
+        setValidationStatus({ type: 'success', message: 'GITHUB URL DETECTED & TRANSFERRED' });
+        setTimeout(() => setValidationStatus(null), 2000);
+      }
+    }
+    setIsRepoModalOpen(!isRepoModalOpen);
   };
 
   const loadSession = (session: ChatSession) => {
@@ -289,38 +395,138 @@ export default function App() {
     if (currentSessionId === id) createNewSession();
   };
 
+  const handleCopyFullChat = async () => {
+    if (messages.length === 0) return;
+
+    const transcript = messages
+      .filter(m => m.role && m.content)
+      .map(m => {
+        const rolePrefix = m.role === 'user' ? 'USER' : 'AI';
+        const modelInfo = m.modelName ? ` [${m.modelName}]` : '';
+        const timestamp = m.id.includes('-') ? new Date(parseInt(m.id.split('-').pop() || '0')).toLocaleTimeString() : '';
+        
+        let content = m.content;
+        
+        // Include attachment info if present
+        if (m.attachments && m.attachments.length > 0) {
+          const attachmentsList = m.attachments.map(a => `[Attachment: ${a.name}]`).join(' ');
+          content = `${attachmentsList}\n${content}`;
+        }
+
+        return `--- ${rolePrefix}${modelInfo} ${timestamp} ---\n${content}\n`;
+      })
+      .join('\n');
+
+    try {
+      await navigator.clipboard.writeText(transcript);
+      setValidationStatus({ type: 'success', message: 'FULL TRANSCRIPT COPIED TO CLIPBOARD' });
+      setTimeout(() => setValidationStatus(null), 3000);
+    } catch (err) {
+      console.error('Failed to copy transcript:', err);
+      setValidationStatus({ type: 'error', message: 'FAILED TO COPY TRANSCRIPT' });
+      setTimeout(() => setValidationStatus(null), 3000);
+    }
+  };
+
   const handleImageGen = async (prompt: string, sessionId?: string) => {
+    if (isLoading) return;
     setIsLoading(true);
-    const systemMsg: Message = { 
-      id: `img-${Date.now()}`,
+    
+    const tempId = `img-temp-${Date.now()}`;
+    const initialMsg: Message = { 
+      id: tempId,
       role: 'model', 
-      content: `*Generating image for: "${prompt}"...*` 
+      content: `*Generating neural vision for: "${prompt}"...*` 
     };
-    setMessages(prev => [...prev, systemMsg]);
+    
+    setMessages(prev => [...prev, initialMsg]);
 
     try {
       const imageUrl = await geminiService.generateImage(prompt, activeApiKey);
+      const finalMsg: Message = { 
+        id: `img-${Date.now()}`,
+        role: 'model', 
+        content: `Neural vision integrated. Prompt: "${prompt}"`,
+        imageUrl 
+      };
+      
       setMessages(prev => {
-        const last = [...prev];
-        if (last.length > 0) {
-          last[last.length - 1] = { 
-            id: `img-${Date.now()}`,
-            role: 'model', 
-            content: `Here is the image I generated for: "${prompt}"`,
-            imageUrl 
-          };
-        }
-        saveCurrentSession(last, sessionId);
-        return last;
+        const next = prev.map(m => m.id === tempId ? finalMsg : m);
+        // Important: save sessions after state is updated to avoid race conditions
+        setTimeout(() => {
+          try {
+            saveCurrentSession(next, sessionId);
+          } catch (e) {
+            console.error("Session persistence failure", e);
+          }
+        }, 50);
+        return next;
       });
     } catch (err: any) {
-      setMessages(prev => {
-        const last = [...prev];
-        if (last.length > 0) {
-          last[last.length - 1].content = `**Error generating image:** ${err.message}`;
+      setMessages(prev => prev.map(m => m.id === tempId ? {
+        ...m,
+        content: `**Neural Link Failure:** ${err.message}`
+      } : m));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleVideoGen = async (prompt: string, sessionId?: string) => {
+    if (isLoading) return;
+    setIsLoading(true);
+    
+    const tempId = `vid-temp-${Date.now()}`;
+    const startTime = Date.now();
+    const initialMsg: Message = { 
+      id: tempId,
+      role: 'model', 
+      content: `*Initializing temporal motion for: "${prompt}"...*\n[Progress: 0%] (Est: 90s remaining)` 
+    };
+    
+    setMessages(prev => [...prev, initialMsg]);
+
+    try {
+      const videoUrl = await geminiService.generateVideo(
+        prompt, 
+        activeApiKey,
+        (status, percentage) => {
+          const elapsed = Date.now() - startTime;
+          let estRemaining = "";
+          if (percentage > 0) {
+            const totalEst = (elapsed / percentage) * 100;
+            const remaining = Math.max(0, totalEst - elapsed);
+            estRemaining = ` (Est: ${Math.ceil(remaining / 1000)}s remaining)`;
+          }
+          setMessages(prev => prev.map(m => m.id === tempId ? {
+            ...m,
+            content: `*${status} for: "${prompt}"...*\n[Progress: ${percentage}%]${estRemaining}`
+          } : m));
         }
-        return last;
+      );
+      const finalMsg: Message = { 
+        id: `vid-${Date.now()}`,
+        role: 'model', 
+        content: `Temporal synthesis complete. Prompt: "${prompt}"`,
+        videoUrl 
+      };
+      
+      setMessages(prev => {
+        const next = prev.map(m => m.id === tempId ? finalMsg : m);
+        setTimeout(() => {
+          try {
+            saveCurrentSession(next, sessionId);
+          } catch (e) {
+            console.error("Session persistence failure", e);
+          }
+        }, 50);
+        return next;
       });
+    } catch (err: any) {
+      setMessages(prev => prev.map(m => m.id === tempId ? {
+        ...m,
+        content: `**Temporal De-sync Error:** ${err.message}`
+      } : m));
     } finally {
       setIsLoading(false);
     }
@@ -347,6 +553,23 @@ export default function App() {
         } catch (e) {
           console.error("Error reading zip:", e);
         }
+      } else if (file.type.startsWith('image/') || file.type.startsWith('video/') || file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        // Handle media and PDFs as data URLs for multi-modal context
+        try {
+          const reader = new FileReader();
+          const content = await new Promise<string>((resolve, reject) => {
+            reader.onload = (e) => resolve(e.target?.result as string);
+            reader.onerror = (err) => reject(err);
+            reader.readAsDataURL(file);
+          });
+          newAttachments.push({
+            name: file.name,
+            content: content,
+            type: file.type || (file.name.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream')
+          });
+        } catch (e) {
+          console.error("Binary read failure:", e);
+        }
       } else {
         const content = await file.text();
         newAttachments.push({
@@ -357,6 +580,20 @@ export default function App() {
       }
     }
     setAttachments(prev => [...prev, ...newAttachments]);
+  };
+
+  const handlePaste = async (e: React.ClipboardEvent) => {
+    const items = e.clipboardData.items;
+    const files: File[] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const file = items[i].getAsFile();
+        if (file) files.push(file);
+      }
+    }
+    if (files.length > 0) {
+      onDrop(files);
+    }
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
@@ -373,37 +610,23 @@ export default function App() {
     if (!repoUrl.trim()) return;
     setIsLoading(true);
     try {
-      const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-      if (match) {
-        const [, owner, repo] = match;
-        const cleanRepo = repo.replace(/\.git$/, '');
-        const apiUrl = `https://api.github.com/repos/${owner}/${cleanRepo}/contents`;
-        const res = await fetch(apiUrl);
-        if (res.ok) {
-          const data = await res.json();
-          const files = (data as any[]).map(f => f.name).join(', ');
-          const repoContent: Attachment = {
-            name: `Repo: ${owner}/${cleanRepo}`,
-            content: `Repository linked: https://github.com/${owner}/${cleanRepo}\nTop-level files: ${files}`,
-            type: 'repo'
-          };
-          setAttachments(prev => [...prev, repoContent]);
-          setIsRepoModalOpen(false);
-        } else {
-          throw new Error("Could not fetch repo info");
-        }
-      } else {
-        const simpleContent: Attachment = {
-          name: `Repo Reference`,
-          content: `Project Repository: ${repoUrl}`,
+      const info = await githubService.getRepoInfo(repoUrl);
+      if (info) {
+        const repoContent: Attachment = {
+          name: `Repo: ${info.owner}/${info.name}`,
+          content: githubService.formatRepoSummary(info),
           type: 'repo'
         };
-        setAttachments(prev => [...prev, simpleContent]);
+        setAttachments(prev => [...prev, repoContent]);
         setIsRepoModalOpen(false);
+        setValidationStatus({ type: 'success', message: `Neural map of ${info.name} added.` });
+        setTimeout(() => setValidationStatus(null), 3000);
+      } else {
+        throw new Error("Could not fetch repo info");
       }
       setRepoUrl('');
     } catch (err) {
-      console.error(err);
+      setValidationStatus({ type: 'error', message: 'GitHub link validation failed.' });
     } finally {
       setIsLoading(false);
     }
@@ -427,121 +650,241 @@ export default function App() {
     const targetInput = overrideMessages ? (overrideMessages[overrideMessages.length - 1]?.content || '') : input;
     if (!targetInput.trim() || isLoading) return;
 
-    let sessionId = currentSessionId;
-    if (!sessionId) {
-      sessionId = `session-${Date.now()}`;
-      setCurrentSessionId(sessionId);
-    }
-
-    const userMessage: Message = { 
-      id: `msg-${Date.now()}`,
-      role: 'user', 
-      content: targetInput,
-      attachments: attachments.length > 0 ? [...attachments] : undefined,
-      editHistory: []
-    };
-    const currentMsgBase = overrideMessages || messages;
-    const newMessages = overrideMessages ? [...overrideMessages] : [...currentMsgBase, userMessage];
-    
-    if (!overrideMessages) {
-      setMessages(newMessages);
-      saveCurrentSession(newMessages, sessionId);
-      setInput('');
-      setAttachments([]);
-    }
-    
-    const activeKey = apiKeys.find(k => k.id === activeKeyId);
-    
+    // Immediately update UI to prevent "holding" old content
     setIsLoading(true);
-    abortControllerRef.current = new AbortController();
+    if (!overrideMessages) {
+      setInput('');
+      const currentAttachments = [...attachments];
+      setAttachments([]);
+      
+      const processedInput = targetInput;
+      
+      abortControllerRef.current = new AbortController();
 
-    // Simple Intent Detection for Image Gen
-    if (targetInput.toLowerCase().startsWith('generate image')) {
-      await handleImageGen(targetInput.replace(/generate image/i, '').trim() || targetInput, sessionId);
-      return;
-    }
+      // Auto-detect GitHub URL and suggest attachment if repo is mentioned
+      let finalAttachments = currentAttachments;
+      if (targetInput.includes('github.com/') && !currentAttachments.some(a => a.type === 'repo')) {
+        try {
+          const info = await githubService.getRepoInfo(targetInput);
+          if (info) {
+            const repoContent: Attachment = {
+              name: `Context: ${info.owner}/${info.name}`,
+              content: githubService.formatRepoSummary(info),
+              type: 'repo'
+            };
+            finalAttachments = [...currentAttachments, repoContent];
+            setValidationStatus({ type: 'success', message: `Neural Link established with ${info.name}` });
+            setTimeout(() => setValidationStatus(null), 3000);
+          }
+        } catch (e) {
+          console.warn("Auto-repo detection failed", e);
+        }
+      }
 
-    try {
-      const effectiveModel = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
-      const assistantMessage: Message = { 
-        id: `msg-${Date.now() + 1}`,
-        role: 'model', 
-        content: '', 
-        modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ''}`
+      let sessionId = currentSessionId;
+      if (!sessionId) {
+        sessionId = `session-${Date.now()}`;
+        setCurrentSessionId(sessionId);
+      }
+
+      const userMessage: Message = { 
+        id: `msg-${Date.now()}`,
+        role: 'user', 
+        content: processedInput,
+        attachments: finalAttachments.length > 0 ? finalAttachments : undefined,
+        editHistory: []
       };
       
-      setMessages(prev => [...prev, assistantMessage]);
+      const newMessages = [...messages, userMessage];
+      setMessages(newMessages);
+      saveCurrentSession(newMessages, sessionId);
 
-      const history = newMessages
-        .filter(m => m && m.role && m.content)
-        .map(m => ({
-          role: m.role,
-          parts: [{ text: m.content }]
-        }));
+      // Simple Intent Detection for Image/Video Gen
+      if (processedInput.toLowerCase().startsWith('generate image')) {
+        await handleImageGen(processedInput.replace(/generate image/i, '').trim() || processedInput, sessionId);
+        return;
+      }
+      
+      if (processedInput.toLowerCase().startsWith('generate video')) {
+        await handleVideoGen(processedInput.replace(/generate video/i, '').trim() || processedInput, sessionId);
+        return;
+      }
 
-      await geminiService.generateResponse(
-        targetInput,
-        activeSkillIds,
-        customSkills,
-        history,
-        { 
-          model: currentModel,
-          useSearch, 
-          thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
-          signal: abortControllerRef.current.signal,
-          attachments: userMessage.attachments,
-          customKey: activeKey?.key,
-          provider: activeKey?.provider,
-          onModelSwitch: (newModel) => {
-            setCurrentModel(newModel);
+      try {
+        const effectiveModel = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
+        const assistantMessage: Message = { 
+          id: `msg-${Date.now() + 1}`,
+          role: 'model', 
+          content: '', 
+          modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ''}`
+        };
+        
+        setMessages(prev => [...prev, assistantMessage]);
+
+        const history = newMessages
+          .filter(m => m && m.role && m.content)
+          .map(m => {
+            const parts: any[] = [{ text: m.content }];
+            if (m.attachments) {
+              parts.push(...m.attachments.map(a => geminiService.attachmentToPart(a)));
+            }
+            return {
+              role: m.role,
+              parts: parts
+            };
+          });
+
+        await geminiService.generateResponse(
+          processedInput,
+          activeSkillIds,
+          customSkills,
+          history,
+          { 
+            model: currentModel,
+            useSearch, 
+            thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
+            signal: abortControllerRef.current.signal,
+            attachments: userMessage.attachments,
+            customKey: activeKey?.key,
+            provider: activeKey?.provider,
+            onModelSwitch: (newModel) => {
+              try {
+                setCurrentModel(newModel);
+                setMessages(prev => {
+                  const last = [...prev];
+                  const msg = last[last.length - 1];
+                  if (msg && msg.role === 'model') {
+                    msg.modelName = `${newModel}${activeKey ? ` (${activeKey.name})` : ''}`;
+                    const modelParts = (newModel || '').split('-');
+                    const modelSuffix = modelParts.length > 2 ? modelParts[2] : modelParts[modelParts.length - 1];
+                    msg.content += `\n\n*(Auto-failover: Switched to ${modelSuffix} due to limits)*`;
+                  }
+                  return last;
+                });
+              } catch (e) {
+                console.error("Model switch handling failed", e);
+              }
+            },
+            onTokenUpdate: (tokens) => {
+              if (activeKeyId) {
+                setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));
+              }
+            }
+          },
+          (fullContent) => {
             setMessages(prev => {
               const last = [...prev];
               const msg = last[last.length - 1];
               if (msg && msg.role === 'model') {
-                msg.modelName = `${newModel}${activeKey ? ` (${activeKey.name})` : ''}`;
-                msg.content += "\n\n*(Auto-failover: Switched to " + newModel.split('-')[2] + " due to limits)*";
+                msg.content = fullContent;
+                const currentEffective = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
+                msg.modelName = `${currentEffective}${activeKey ? ` (${activeKey.name})` : ''}`;
               }
               return last;
             });
           }
-        },
-        (fullContent) => {
-          setMessages(prev => {
-            const last = [...prev];
-            const msg = last[last.length - 1];
-            if (msg && msg.role === 'model') {
-              msg.content = fullContent;
-              const currentEffective = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
-              msg.modelName = `${currentEffective}${activeKey ? ` (${activeKey.name})` : ''}`;
-            }
-            return last;
-          });
+        );
+
+        setUsages(geminiService.getAllUsage());
+
+        setMessages(prev => {
+          saveCurrentSession(prev, sessionId);
+          return prev;
+        });
+        setCurrentModel(geminiService.getCurrentModel());
+        
+      } catch (error: any) {
+        if (error.message === 'Operation aborted') {
+          setMessages(prev => [
+            ...prev.slice(0, -1),
+            { id: `err-${Date.now()}`, role: 'model', content: `*Generation cancelled by user.*` }
+          ]);
+        } else {
+          setMessages(prev => [
+            ...prev, 
+            { id: `err-${Date.now()}`, role: 'model', content: `**Error:** ${error.message || "An unexpected error occurred."}` }
+          ]);
         }
-      );
+      } finally {
+        setIsLoading(false);
+      }
+    } else {
+      // Handle overrideMessages (edit case)
+      // Similar logic but don't clear input
+      try {
+        abortControllerRef.current = new AbortController();
+        const processedInput = targetInput;
+        
+        let sessionId = currentSessionId;
+        if (!sessionId) {
+          sessionId = `session-${Date.now()}`;
+          setCurrentSessionId(sessionId);
+        }
 
-      setUsages(geminiService.getAllUsage());
+        const effectiveModel = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
+        const assistantMessage: Message = { 
+          id: `msg-${Date.now() + 1}`,
+          role: 'model', 
+          content: '', 
+          modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ''}`
+        };
+        
+        setMessages(prev => [...prev.slice(0, overrideMessages.length), assistantMessage]);
 
-      setMessages(prev => {
-        saveCurrentSession(prev, sessionId);
-        return prev;
-      });
-      setCurrentModel(geminiService.getCurrentModel());
-      
-    } catch (error: any) {
-      if (error.message === 'Operation aborted') {
-        setMessages(prev => [
-          ...prev.slice(0, -1),
-          { id: `err-${Date.now()}`, role: 'model', content: `*Generation cancelled by user.*` }
-        ]);
-      } else {
+        const history = overrideMessages
+          .filter(m => m && m.role && m.content)
+          .map(m => {
+            const parts: any[] = [{ text: m.content }];
+            if (m.attachments) {
+              parts.push(...m.attachments.map(a => geminiService.attachmentToPart(a)));
+            }
+            return { role: m.role, parts: parts };
+          });
+
+        await geminiService.generateResponse(
+          processedInput,
+          activeSkillIds,
+          customSkills,
+          history,
+          { 
+            model: currentModel,
+            useSearch, 
+            thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
+            signal: abortControllerRef.current.signal,
+            customKey: activeKey?.key,
+            provider: activeKey?.provider,
+            onTokenUpdate: (tokens) => {
+              if (activeKeyId) {
+                setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));
+              }
+            }
+          },
+          (fullContent) => {
+            setMessages(prev => {
+              const last = [...prev];
+              const msg = last[last.length - 1];
+              if (msg && msg.role === 'model') {
+                msg.content = fullContent;
+              }
+              return last;
+            });
+          }
+        );
+
+        setUsages(geminiService.getAllUsage());
+        setMessages(prev => {
+          saveCurrentSession(prev, sessionId);
+          return prev;
+        });
+      } catch (error: any) {
         setMessages(prev => [
           ...prev, 
           { id: `err-${Date.now()}`, role: 'model', content: `**Error:** ${error.message || "An unexpected error occurred."}` }
         ]);
+      } finally {
+        setIsLoading(false);
+        abortControllerRef.current = null;
       }
-    } finally {
-      setIsLoading(false);
-      abortControllerRef.current = null;
     }
   };
 
@@ -571,26 +914,31 @@ export default function App() {
     if (!githubUrl) return;
     setIsImportingGithub(true);
     try {
-      const parts = githubUrl.split('/');
-      const repo = parts[parts.length - 1];
-      setValidationStatus({ type: 'success', message: `Importing ${repo} neural structure...` });
-      await new Promise(r => setTimeout(r, 1500));
-      const newSkill: Skill = {
-        id: `gh-${Date.now()}`,
-        name: `GH: ${repo.replace(/-/g, ' ')}`,
-        description: `Imported neural capability from GitHub repository: ${githubUrl}`,
-        systemPrompt: `Act as a specialized AI imported from GitHub repository. Context: ${githubUrl}`,
-        icon: 'Cloud',
-        isCustom: true
-      };
-      setCustomSkills(prev => [...prev, newSkill]);
-      setGithubUrl('');
-      setIsImportingGithub(false);
-      setValidationStatus({ type: 'success', message: 'GitHub Neural Pattern Integrated' });
-      setTimeout(() => setValidationStatus(null), 3000);
+      const info = await githubService.getRepoInfo(githubUrl);
+      if (info) {
+        setValidationStatus({ type: 'success', message: `Importing ${info.name} neural structure...` });
+        const newSkill: Skill = {
+          id: `gh-${Date.now()}`,
+          name: `GH: ${info.name}`,
+          description: info.description,
+          systemPrompt: `Act as a specialized AI imported from GitHub repository: ${info.owner}/${info.name}. 
+          Repository Summary:
+          ${githubService.formatRepoSummary(info)}
+          `,
+          icon: 'Cloud',
+          isCustom: true
+        };
+        setCustomSkills(prev => [...prev, newSkill]);
+        setGithubUrl('');
+        setValidationStatus({ type: 'success', message: `GitHub Neural Pattern Integrated: ${info.name}` });
+      } else {
+        throw new Error("Invalid repository path");
+      }
     } catch (err) {
       setValidationStatus({ type: 'error', message: 'GitHub integration failed: Unreachable path' });
+    } finally {
       setIsImportingGithub(false);
+      setTimeout(() => setValidationStatus(null), 3000);
     }
   };
 
@@ -852,7 +1200,7 @@ export default function App() {
                       {currentModel === ModelId.HYBRID ? "HYBRID AUTO" : 
                        [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) 
                          ? (currentModel === ModelId.PRO ? "PRO 3.1" : currentModel === ModelId.FLASH ? "FLASH 3.0" : "LITE 3.1")
-                         : currentModel.split('/').pop()?.replace('gemini-', '').toUpperCase()}
+                         : (currentModel || '').split('/').pop()?.replace('gemini-', '').toUpperCase() || 'UNKNOWN'}
                     </span>
                     <span className="text-zinc-300 font-bold uppercase tracking-tight xs:hidden">
                       {currentModel === ModelId.HYBRID ? "HYB" : 
@@ -866,60 +1214,78 @@ export default function App() {
                   {/* Dropdown Menu */}
                   <AnimatePresence>
                     {isModelSelectorOpen && (
-                      <motion.div 
-                        initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                        animate={{ opacity: 1, y: 0, scale: 1 }}
-                        exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                        className="absolute top-full right-0 mt-3 w-48 sm:w-64 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-[100] overflow-hidden"
-                      >
-                        <div className="p-3 border-b border-zinc-800 bg-zinc-900/30">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Neural Compute Unit</span>
-                            <button onClick={() => setIsModelSelectorOpen(false)} className="text-zinc-700 hover:text-zinc-400">
-                              <X size={10} />
-                            </button>
-                          </div>
-                          <p className="text-[8px] text-zinc-600 leading-tight">
-                            {activeApiKey ? "Custom Neural Link active. Discovered nodes shown below." : "Switch backend processing engine for optimized response."}
-                          </p>
-                        </div>
-                        <div className="p-1.5 space-y-1 max-h-[400px] overflow-y-auto custom-scrollbar">
-                          {[
-                            { id: ModelId.HYBRID, name: 'Hybrid Node', desc: 'Auto-rotating failover mechanism', color: 'text-amber-400', bg: 'hover:bg-amber-500/5' },
-                            ...geminiService.getCurrentQueue().map(id => ({
-                              id,
-                              name: id === ModelId.PRO ? 'Pro 3.1' : id === ModelId.FLASH ? 'Flash 3.0' : id === ModelId.LITE ? 'Lite 3.1' : id.replace('models/', '').toUpperCase(),
-                              desc: [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(id as any) 
-                                ? (id === ModelId.PRO ? 'Complex reasoning' : id === ModelId.FLASH ? 'Real-time task' : 'Low-latency logic')
-                                : 'External Discovered Node',
-                              color: id === ModelId.PRO ? 'text-cyan-400' : id === ModelId.FLASH ? 'text-purple-400' : 'text-zinc-300',
-                              bg: 'hover:bg-cyan-500/5'
-                            }))
-                          ].map((m) => (
-                            <button
-                              key={m.id}
-                              onClick={() => {
-                                setCurrentModel(m.id);
-                                setIsModelSelectorOpen(false);
-                              }}
-                              className={cn(
-                                "w-full text-left p-2.5 rounded-xl transition-all flex flex-col gap-0.5 border border-transparent",
-                                m.bg,
-                                currentModel === m.id ? "bg-cyan-950/10 border-cyan-500/20 shadow-sm" : ""
-                              )}
-                            >
-                              <div className="flex items-center justify-between pointer-events-none">
-                                <span className={cn("text-[11px] font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
-                                {currentModel === m.id && <Sparkles size={10} className="text-cyan-500" />}
-                              </div>
-                              <p className="text-[8px] text-zinc-600 leading-relaxed pointer-events-none italic">{m.id}</p>
-                            </button>
-                          ))}
-                        </div>
+                      <>
+                        <div 
+                          className="fixed inset-0 z-40 bg-transparent" 
+                          onClick={() => setIsModelSelectorOpen(false)}
+                        />
+                        <motion.div 
+                          initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: 10, scale: 0.95 }}
+                          className="absolute top-full right-0 mt-3 w-48 sm:w-64 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-50 overflow-hidden"
+                        >
+                                    <div className="p-3 border-b border-zinc-800 bg-zinc-900/30 space-y-3">
+                                      <div className="flex items-center justify-between">
+                                        <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Neural Compute Unit</span>
+                                        <button onClick={() => setIsModelSelectorOpen(false)} className="text-zinc-700 hover:text-zinc-400">
+                                          <X size={10} />
+                                        </button>
+                                      </div>
+                                      <div className="relative">
+                                        <Search size={10} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-600" />
+                                        <input 
+                                          type="text"
+                                          placeholder="Filter neural nodes..."
+                                          value={modelSearch}
+                                          onChange={(e) => setModelSearch(e.target.value)}
+                                          className="w-full bg-black/40 border border-zinc-800 rounded-lg pl-7 pr-3 py-1.5 text-[9px] font-mono outline-none focus:border-cyan-500/30 transition-all text-zinc-300"
+                                          autoFocus
+                                        />
+                                      </div>
+                                    <p className="text-[8px] text-zinc-600 leading-tight">
+                                      {activeApiKey ? "Custom Neural Link active. Discovered nodes shown below." : "Switch backend processing engine for optimized response."}
+                                    </p>
+                                  </div>
+                                  <div className="p-1.5 space-y-1 max-h-[400px] overflow-y-auto custom-scrollbar">
+                                    {[
+                                      { id: ModelId.HYBRID, name: 'Hybrid Node', desc: 'Auto-rotating failover mechanism', color: 'text-amber-400', bg: 'hover:bg-amber-500/5' },
+                                      ...geminiService.getCurrentQueue().map(id => ({
+                                        id,
+                                        name: id === ModelId.PRO ? 'Pro 3.1' : id === ModelId.FLASH ? 'Flash 3.0' : id === ModelId.LITE ? 'Lite 3.1' : id.replace('models/', '').toUpperCase(),
+                                        desc: [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(id as any) 
+                                          ? (id === ModelId.PRO ? 'Complex reasoning' : id === ModelId.FLASH ? 'Real-time task' : 'Low-latency logic')
+                                          : 'External Discovered Node',
+                                        color: id === ModelId.PRO ? 'text-cyan-400' : id === ModelId.FLASH ? 'text-purple-400' : 'text-zinc-300',
+                                        bg: 'hover:bg-cyan-500/5'
+                                      }))
+                                    ].filter(m => m.name.toLowerCase().includes(modelSearch.toLowerCase()) || m.id.toLowerCase().includes(modelSearch.toLowerCase()))
+                                     .map((m) => (
+                                      <button
+                                        key={m.id}
+                                        onClick={() => {
+                                          setCurrentModel(m.id);
+                                          setIsModelSelectorOpen(false);
+                                        }}
+                                        className={cn(
+                                          "w-full text-left p-2.5 rounded-xl transition-all flex flex-col gap-0.5 border border-transparent",
+                                          m.bg,
+                                          currentModel === m.id ? "bg-cyan-950/10 border-cyan-500/20 shadow-sm" : ""
+                                        )}
+                                      >
+                                        <div className="flex items-center justify-between pointer-events-none">
+                                          <span className={cn("text-[11px] font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
+                                          {currentModel === m.id && <Sparkles size={10} className="text-cyan-500" />}
+                                        </div>
+                                        <p className="text-[8px] text-zinc-600 leading-relaxed pointer-events-none italic truncate">{m.id}</p>
+                                      </button>
+                                    ))}
+                                  </div>
                       </motion.div>
-                    )}
-                  </AnimatePresence>
-                </div>
+                    </>
+                  )}
+                </AnimatePresence>
+              </div>
 
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
                 
@@ -929,6 +1295,17 @@ export default function App() {
                   title="System Settings"
                 >
                   <SettingsIcon size={16} />
+                </button>
+
+                <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
+
+                <button 
+                  onClick={handleCopyFullChat}
+                  disabled={messages.length === 0}
+                  className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-500 hover:text-white transition-all border border-transparent hover:border-zinc-800 active:scale-90 disabled:opacity-30 disabled:cursor-not-allowed"
+                  title="Copy Full Transcript"
+                >
+                  <Copy size={16} />
                 </button>
               </div>
             </header>
@@ -952,6 +1329,7 @@ export default function App() {
                       theme={theme}
                       modelName={m.modelName} 
                       imageUrl={m.imageUrl}
+                      videoUrl={m.videoUrl}
                       onEdit={(content) => handleEditMessage(i, content)}
                       onRevert={(content) => handleRevertMessage(i, content)}
                       attachments={m.attachments}
@@ -1065,52 +1443,8 @@ export default function App() {
                               {currentModel === ModelId.HYBRID ? "Hybrid" : 
                                [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) 
                                  ? (currentModel === ModelId.PRO ? "Pro" : currentModel === ModelId.FLASH ? "Flash" : "Lite")
-                                 : currentModel.split('/').pop()?.replace('gemini-', '').toUpperCase()}
+                                 : (currentModel || '').split('/').pop()?.replace('gemini-', '').toUpperCase() || 'UNKNOWN'}
                             </button>
-                            
-                            <AnimatePresence>
-                              {isModelSelectorOpen && (
-                                <motion.div 
-                                  initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                                  exit={{ opacity: 0, y: 10, scale: 0.95 }}
-                                  className="absolute bottom-full left-0 mb-3 w-64 bg-[#0d0d0f] border border-zinc-800 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.8)] z-[200] overflow-hidden"
-                                >
-                                  <div className="p-3 border-b border-zinc-800 bg-zinc-900/30 flex justify-between items-center">
-                                    <span className="text-[9px] font-bold uppercase tracking-widest text-zinc-500">Neural Node Setup</span>
-                                    <X size={10} className="text-zinc-700 cursor-pointer" onClick={() => setIsModelSelectorOpen(false)} />
-                                  </div>
-                                  <div className="p-1.5 space-y-1 max-h-[300px] overflow-y-auto custom-scrollbar">
-                                    {[
-                                      { id: ModelId.HYBRID, name: 'Hybrid Node', color: 'text-amber-400' },
-                                      ...geminiService.getCurrentQueue().map(id => ({
-                                        id,
-                                        name: id === ModelId.PRO ? 'Pro 3.1' : id === ModelId.FLASH ? 'Flash 3.0' : id === ModelId.LITE ? 'Lite 3.1' : id.replace('models/', '').toUpperCase(),
-                                        color: id === ModelId.PRO ? 'text-cyan-400' : id === ModelId.FLASH ? 'text-purple-400' : 'text-zinc-300'
-                                      }))
-                                    ].map((m) => (
-                                      <button
-                                        key={m.id}
-                                        onClick={() => {
-                                          setCurrentModel(m.id);
-                                          setIsModelSelectorOpen(false);
-                                        }}
-                                        className={cn(
-                                          "w-full text-left p-2.5 rounded-xl transition-all flex flex-col gap-0.5 border border-transparent hover:bg-white/5",
-                                          currentModel === m.id ? "bg-cyan-950/10 border-cyan-500/20" : ""
-                                        )}
-                                      >
-                                        <div className="flex items-center justify-between pointer-events-none">
-                                          <span className={cn("text-[11px] font-bold uppercase tracking-tight", m.color)}>{m.name}</span>
-                                          {currentModel === m.id && <Sparkles size={10} className="text-cyan-500" />}
-                                        </div>
-                                        <p className="text-[8px] text-zinc-600 leading-relaxed pointer-events-none truncate">{m.id}</p>
-                                      </button>
-                                    ))}
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
                           </div>
 
                           <button 
@@ -1169,7 +1503,7 @@ export default function App() {
                           <Paperclip size={16} />
                         </button>
                         <button 
-                          onClick={() => setIsRepoModalOpen(!isRepoModalOpen)}
+                          onClick={handleToggleRepoModal}
                           className={cn(
                             "p-2 transition-all rounded-full hover:bg-white/5",
                             isRepoModalOpen ? "text-purple-400" : "text-zinc-600 hover:text-purple-400/80"
@@ -1177,6 +1511,34 @@ export default function App() {
                           title="Link Repository"
                         >
                           <Github size={16} />
+                        </button>
+                        <button 
+                          onClick={() => {
+                            const prefix = "Generate image of ";
+                            if (!input.toLowerCase().startsWith(prefix.toLowerCase())) {
+                              setInput(prefix + input);
+                            }
+                            setValidationStatus({ type: 'success', message: "NEURAL VISION PROMPT INJECTED" });
+                            setTimeout(() => setValidationStatus(null), 2000);
+                          }}
+                          className="p-2 text-zinc-600 hover:text-pink-400 transition-colors hover:bg-white/5 rounded-full"
+                          title="Inject Image Generation Prefix"
+                        >
+                          <ImageIcon size={16} />
+                        </button>
+                        <button 
+                          onClick={() => {
+                            const prefix = "Generate video of ";
+                            if (!input.toLowerCase().startsWith(prefix.toLowerCase())) {
+                              setInput(prefix + input);
+                            }
+                            setValidationStatus({ type: 'success', message: "NEURAL MOTION PROMPT INJECTED" });
+                            setTimeout(() => setValidationStatus(null), 2000);
+                          }}
+                          className="p-2 text-zinc-600 hover:text-amber-400 transition-colors hover:bg-white/5 rounded-full"
+                          title="Inject Video Generation Prefix"
+                        >
+                          <VideoIcon size={16} />
                         </button>
                       </div>
                     </div>
@@ -1226,6 +1588,7 @@ export default function App() {
                         <textarea 
                           value={input}
                           onChange={(e) => setInput(e.target.value)}
+                          onPaste={handlePaste}
                           placeholder="Inject system commands..."
                           className={cn(
                             "bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[48px] max-h-64 custom-scrollbar px-2 py-1 relative z-10 transition-colors",
@@ -1423,7 +1786,7 @@ export default function App() {
                               theme === 'light' ? "text-slate-700 group-hover:text-cyan-600" : "text-zinc-200 group-hover:text-white"
                             )}>{skill.name}</h3>
                             <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-500 whitespace-nowrap">
-                              {currentModel.split('/').pop()}
+                              {(currentModel || '').split('/').pop() || 'UNKNOWN'}
                             </span>
                           </div>
                           <p className={cn(
@@ -1501,7 +1864,7 @@ export default function App() {
                 "flex gap-8 border-b mb-8",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['keys', 'context', 'theme'].map((tab) => (
+                {['keys', 'context', 'theme', 'performance'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
@@ -1518,6 +1881,165 @@ export default function App() {
               </div>
 
               <div className="space-y-6">
+                {settingsTab === 'performance' && (
+                  <div className="space-y-6 max-h-[450px] overflow-y-auto custom-scrollbar pr-2">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Neural Performance Dashboard</label>
+                      <div className="flex items-center gap-3">
+                        <button 
+                          onClick={() => {
+                            if (confirm('Are you sure you want to clear all sessions and keys? This cannot be undone.')) {
+                              localStorage.clear();
+                              window.location.reload();
+                            }
+                          }}
+                          className="text-[8px] font-mono text-red-500/60 hover:text-red-500 uppercase tracking-tighter border border-red-500/20 px-2 py-0.5 rounded transition-colors"
+                        >
+                          Purge Neural Cache
+                        </button>
+                        <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-tighter">Live Neural Feed</span>
+                      </div>
+                    </div>
+
+                    {/* Storage Metric */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                      {/* Token Quota Metric */}
+                      {activeKey && (
+                        <div className="p-4 bg-cyan-950/20 border border-cyan-500/20 rounded-2xl flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <Bot size={16} className="text-cyan-400" />
+                            <div className="space-y-0.5">
+                              <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Token Quota</span>
+                              <span className="text-[8px] font-mono text-zinc-600 uppercase">{activeKey.name}</span>
+                            </div>
+                          </div>
+                          <div className="flex flex-col items-end">
+                            <span className={cn(
+                              "text-sm font-bold",
+                              (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "text-red-400" : "text-cyan-300"
+                            )}>
+                              {((activeKey.usage || 0) / 1000).toFixed(1)}k <span className="text-[10px] text-zinc-600 font-mono">/ {((activeKey.limit || 500000) / 1000).toFixed(0)}k</span>
+                            </span>
+                            <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
+                              <div 
+                                className={cn(
+                                  "h-full",
+                                  (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "bg-red-500" : "bg-cyan-500"
+                                )}
+                                style={{ width: `${Math.min(100, ((activeKey.usage || 0) / (activeKey.limit || 500000)) * 100)}%` }} 
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Database size={16} className="text-zinc-500" />
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Local Storage</span>
+                            <span className="text-[8px] font-mono text-zinc-600 uppercase">Neural Sessions</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-sm font-bold text-zinc-300">
+                            {(JSON.stringify(localStorage).length / 1024 / 1024).toFixed(2)} <span className="text-[10px] text-zinc-600 font-mono">MB</span>
+                          </span>
+                          <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
+                            <div 
+                              className="h-full bg-cyan-500/50" 
+                              style={{ width: `${Math.min(100, (JSON.stringify(localStorage).length / (5 * 1024 * 1024)) * 100)}%` }} 
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <Zap size={16} className="text-amber-500" />
+                          <div className="space-y-0.5">
+                            <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Sandbox Cache</span>
+                            <span className="text-[8px] font-mono text-zinc-600 uppercase">Agent Tool Access</span>
+                          </div>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-sm font-bold text-amber-500">
+                            84% <span className="text-[10px] text-zinc-600 font-mono">/ OPT</span>
+                          </span>
+                          <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
+                            <div className="h-full bg-amber-500/50" style={{ width: '84%' }} />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-4">
+                      {Object.entries(metrics).length === 0 ? (
+                        <div className="p-8 text-center bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-900">
+                          <Activity size={24} className="mx-auto mb-3 text-zinc-800" />
+                          <p className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No metrics recorded yet. Engage models to initiate telemetry.</p>
+                        </div>
+                      ) : (
+                        Object.entries(metrics).map(([modelId, data]) => {
+                          const isHealthy = data.errorRate < 10;
+                          return (
+                            <motion.div 
+                              key={modelId}
+                              initial={{ opacity: 0, y: 5 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="p-5 bg-black/40 border border-zinc-900 rounded-2xl group hover:border-cyan-500/20 transition-all"
+                            >
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-3">
+                                  <div className={cn(
+                                    "w-2 h-2 rounded-full",
+                                    isHealthy ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"
+                                  )} />
+                                  <span className="text-[11px] font-bold uppercase tracking-tight text-white">{modelId.split('/').pop()}</span>
+                                </div>
+                                <span className="text-[8px] font-mono text-zinc-600">Last used: {new Date(data.lastUsed).toLocaleTimeString()}</span>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-6">
+                                <div className="space-y-1">
+                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Latency</span>
+                                  <div className="flex items-baseline gap-1">
+                                    <span className="text-sm font-bold text-cyan-400">{(data.avgResponseTime / 1000).toFixed(2)}</span>
+                                    <span className="text-[9px] text-zinc-600 font-mono">s</span>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Throughput</span>
+                                  <div className="flex items-baseline gap-1">
+                                    <span className="text-sm font-bold text-amber-500">{Math.round(data.tokenRate)}</span>
+                                    <span className="text-[9px] text-zinc-600 font-mono">t/s</span>
+                                  </div>
+                                </div>
+
+                                <div className="space-y-1">
+                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Reliability</span>
+                                  <div className="flex items-baseline gap-1">
+                                    <span className={cn(
+                                      "text-sm font-bold",
+                                      isHealthy ? "text-green-400" : "text-red-400"
+                                    )}>{(100 - data.errorRate).toFixed(1)}%</span>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 pt-4 border-t border-white/5 flex justify-between items-center text-[9px] font-mono text-zinc-700 uppercase">
+                                <span>Success: <span className="text-zinc-500">{data.successCount}</span></span>
+                                <span>Failures: <span className="text-zinc-500">{data.failureCount}</span></span>
+                                <span>Efficiency Index: <span className="text-cyan-500/50">{(data.tokenRate / (data.avgResponseTime / 1000 + 1)).toFixed(2)}</span></span>
+                              </div>
+                            </motion.div>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                )}
                 {settingsTab === 'keys' && (
                   <div className="space-y-6">
                     <div className="space-y-4">
@@ -1570,7 +2092,7 @@ export default function App() {
                               </select>
                             </div>
 
-                            <div className="grid grid-cols-2 gap-3">
+                            <div className="grid grid-cols-3 gap-3">
                               <div className="space-y-1.5">
                                 <label className="text-[8px] font-mono text-zinc-500 uppercase">Provider Alias</label>
                                 <input 
@@ -1590,6 +2112,22 @@ export default function App() {
                                   onChange={(e) => setNewKeyVal(e.target.value)}
                                   className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
                                 />
+                              </div>
+                              <div className="space-y-1.5">
+                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Daily Limit (Tokens)</label>
+                                <select
+                                  id="limit-selector"
+                                  value={newKeyLimit}
+                                  onChange={(e) => {
+                                    setNewKeyLimit(parseInt(e.target.value));
+                                  }}
+                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono"
+                                >
+                                  <option value={100000}>100k</option>
+                                  <option value={500000}>500k</option>
+                                  <option value={1000000}>1M</option>
+                                  <option value={5000000}>5M</option>
+                                </select>
                               </div>
                             </div>
                             
@@ -1620,7 +2158,10 @@ export default function App() {
                                       name: newKeyName || PROVIDER_CONFIGS[newKeyProvider].name, 
                                       key: newKeyVal,
                                       provider: newKeyProvider,
-                                      models: discovered.map(m => m.id)
+                                      models: discovered.map(m => m.id),
+                                      limit: newKeyLimit,
+                                      usage: 0,
+                                      lastReset: Date.now()
                                     };
                                     setApiKeys(prev => [...prev, keyObj]);
                                     setActiveKeyId(keyObj.id);
@@ -1686,7 +2227,7 @@ export default function App() {
                               <button 
                                 onClick={async (e) => {
                                   e.stopPropagation();
-                                  setValidationStatus({ type: 'success', message: `REFRESHING NODES AND USAGE FOR ${k.name.toUpperCase()}...` });
+                                  setValidationStatus({ type: 'success', message: `INITIATING NEURAL PROBE: CRAWLING ${k.provider.toUpperCase()} QUOTA...` });
                                   const result = await geminiService.checkKey(k.key, k.provider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
@@ -1695,16 +2236,16 @@ export default function App() {
                                     setApiKeys(prev => prev.map(prevK => 
                                       prevK.id === k.id ? { ...prevK, models: discovered.map(m => m.id) } : prevK
                                     ));
-                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES & QUOTA RE-SYNCHRONIZED` });
+                                    setValidationStatus({ type: 'success', message: `SUCCESS: NODE_MAP & QUOTA_CRAWL COMPLETE` });
                                     setTimeout(() => setValidationStatus(null), 2000);
                                   } else {
-                                    setValidationStatus({ type: 'error', message: `SYNC FAILED: ${result.error}` });
+                                    setValidationStatus({ type: 'error', message: `CRAWL FAILED: ${result.error}` });
                                   }
                                 }}
                                 className="p-2 text-zinc-700 hover:text-cyan-400 transition-all opacity-0 group-hover/key:opacity-100"
-                                title="Re-sync Nodes & Quota"
+                                title="Crawl exact node usage & nodes"
                               >
-                                <RefreshCw size={14} />
+                                <RefreshCw size={14} className={isLoading ? "animate-spin" : ""} />
                               </button>
                               {activeKeyId === k.id && (
                                 <motion.div 
@@ -1989,6 +2530,31 @@ export default function App() {
           </div>
         )}
 
+      </AnimatePresence>
+
+      {/* Global Validation Toast */}
+      <AnimatePresence>
+        {validationStatus && (
+          <motion.div 
+            initial={{ opacity: 0, y: 20, x: 20 }}
+            animate={{ opacity: 1, y: 0, x: 0 }}
+            exit={{ opacity: 0, y: 20, x: 20 }}
+            className={cn(
+              "fixed bottom-6 right-6 z-[200] max-w-xs p-4 rounded-xl border shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-300 pointer-events-none",
+              validationStatus.type === 'error' 
+                ? "bg-red-500/10 border-red-500/20 text-red-400" 
+                : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400"
+            )}
+          >
+            <div className="flex items-center gap-3">
+              <div className={cn(
+                "w-1.5 h-1.5 rounded-full animate-pulse",
+                validationStatus.type === 'error' ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" : "bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.5)]"
+              )} />
+              <span className="text-[10px] font-mono font-bold uppercase tracking-widest">{validationStatus.message}</span>
+            </div>
+          </motion.div>
+        )}
       </AnimatePresence>
     </div>
   );

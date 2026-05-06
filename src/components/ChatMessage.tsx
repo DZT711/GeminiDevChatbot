@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { motion, AnimatePresence } from 'motion/react';
 import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -9,15 +12,18 @@ const FilePreview = ({ attachment }: { attachment: Attachment }) => {
   const [isExpanded, setIsExpanded] = useState(false);
   if (!attachment.content) return null;
 
-  const isText = attachment.type.includes('text') || 
-                 attachment.type.includes('javascript') || 
-                 attachment.type.includes('typescript') || 
-                 attachment.type.includes('json') ||
-                 attachment.type.includes('markdown') ||
+  const isText = (attachment.type?.includes('text') || 
+                 attachment.type?.includes('javascript') || 
+                 attachment.type?.includes('typescript') || 
+                 attachment.type?.includes('json') ||
+                 attachment.type?.includes('markdown') ||
                  attachment.type === 'code' ||
-                 attachment.type === 'repo';
+                 attachment.type === 'repo');
 
-  if (!isText) return null;
+  const isVideo = attachment.type?.includes('video');
+  const isImage = attachment.type?.includes('image');
+
+  if (!isText && !isVideo && !isImage) return null;
 
   return (
     <div className="w-full mt-2 border border-zinc-800/50 rounded-xl overflow-hidden bg-zinc-950/20">
@@ -26,7 +32,9 @@ const FilePreview = ({ attachment }: { attachment: Attachment }) => {
         className="w-full flex items-center justify-between px-3 py-2 text-[10px] font-mono text-zinc-500 hover:bg-zinc-800/20 transition-all border-b border-zinc-800/30"
       >
         <div className="flex items-center gap-2">
-          <Eye size={12} className="text-cyan-500" />
+          {isVideo ? <Bot size={12} className="text-amber-500" /> : 
+           isImage ? <Bot size={12} className="text-pink-500" /> : 
+           <Eye size={12} className="text-cyan-500" />}
           <span className="uppercase tracking-widest font-bold">{attachment.name}</span>
           <span className="text-[8px] text-zinc-700">({attachment.type})</span>
         </div>
@@ -41,9 +49,24 @@ const FilePreview = ({ attachment }: { attachment: Attachment }) => {
             className="overflow-hidden"
           >
             <div className="p-3 bg-[#0d0d0f]">
-              <pre className="text-[11px] font-mono leading-relaxed text-zinc-400 overflow-x-auto custom-scrollbar max-h-64">
-                {attachment.content}
-              </pre>
+              {isVideo ? (
+                <video 
+                  src={attachment.content} 
+                  controls 
+                  className="w-full h-auto aspect-video rounded-lg"
+                />
+              ) : isImage ? (
+                <img 
+                  src={attachment.content} 
+                  alt={attachment.name} 
+                  className="w-full h-auto max-h-[500px] object-contain rounded-lg shadow-2xl"
+                  referrerPolicy="no-referrer"
+                />
+              ) : (
+                <pre className="text-[11px] font-mono leading-relaxed text-zinc-400 overflow-x-auto custom-scrollbar max-h-64">
+                  {attachment.content}
+                </pre>
+              )}
             </div>
           </motion.div>
         )}
@@ -58,20 +81,28 @@ interface ChatMessageProps {
   theme?: string;
   modelName?: string;
   imageUrl?: string;
+  videoUrl?: string;
   onEdit?: (newContent: string) => void;
   onRevert?: (version: string) => void;
   attachments?: Attachment[];
   history?: string[];
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, onEdit, onRevert, attachments, history = [] }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [] }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [msgCopied, setMsgCopied] = useState(false);
+
+  const handleCopyMessage = () => {
+    navigator.clipboard.writeText(content);
+    setMsgCopied(true);
+    setTimeout(() => setMsgCopied(false), 2000);
+  };
 
   const handleSave = () => {
-    if (editValue.trim() !== content) {
+    if (editValue.trim()) {
       onEdit?.(editValue);
     }
     setIsEditing(false);
@@ -162,26 +193,42 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
             )}
           </div>
 
-          {isUser && !isEditing && (
-            <div className="flex items-center gap-1 opacity-20 group-hover:opacity-100 transition-opacity">
-               {history.length > 0 && (
-                <button 
-                  onClick={() => setShowHistoryModal(!showHistoryModal)}
-                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-amber-400 relative"
-                  title="View History"
-                >
-                  <History size={12} />
-                  <span className="absolute -top-1 -right-1 bg-amber-500/20 text-amber-500 text-[8px] px-1 rounded-full">{history.length}</span>
-                </button>
-              )}
+          <div className="flex items-center gap-1 opacity-20 group-hover:opacity-100 transition-opacity">
+            {!isEditing && (
               <button 
-                onClick={handleEditClick}
-                className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-cyan-400"
+                onClick={handleCopyMessage}
+                className={cn(
+                  "p-1.5 rounded-lg transition-all",
+                  msgCopied ? "text-green-500 bg-green-500/10" : "text-zinc-600 hover:text-cyan-400 hover:bg-zinc-800"
+                )}
+                title="Copy Message"
               >
-                <Pencil size={12} />
+                {msgCopied ? <Check size={12} /> : <Copy size={12} />}
               </button>
-            </div>
-          )}
+            )}
+
+            {isUser && !isEditing && (
+              <>
+                 {history.length > 0 && (
+                  <button 
+                    onClick={() => setShowHistoryModal(!showHistoryModal)}
+                    className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-amber-400 relative"
+                    title="View History"
+                  >
+                    <History size={12} />
+                    <span className="absolute -top-1 -right-1 bg-amber-500/20 text-amber-500 text-[8px] px-1 rounded-full">{history.length}</span>
+                  </button>
+                )}
+                <button 
+                  onClick={handleEditClick}
+                  className="p-1.5 hover:bg-zinc-800 rounded-lg text-zinc-600 hover:text-cyan-400"
+                  title="Edit Message"
+                >
+                  <Pencil size={12} />
+                </button>
+              </>
+            )}
+          </div>
         </div>
         
         {/* History Quick View */}
@@ -232,9 +279,9 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
               <div className="flex gap-2">
                 <button 
                   onClick={handleSave}
-                  className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[11px] font-bold uppercase tracking-wider transition-colors shadow-lg shadow-cyan-900/20"
+                  className="flex items-center gap-2 px-6 py-2 bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white rounded-lg text-[11px] font-bold uppercase tracking-wider transition-all shadow-lg shadow-cyan-900/20 active:scale-95 group/save"
                 >
-                  <Check size={14} /> Commit Changes
+                  <Bot size={14} className="group-hover/save:animate-bounce" /> Send
                 </button>
                 <button 
                   onClick={() => { setIsEditing(false); setEditValue(content); }}
@@ -244,11 +291,74 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                 </button>
               </div>
             </div>
+          ) : content.includes('[Progress: ') || content.includes('[Neural Probe: ') ? (
+            <div className="space-y-4 p-4 bg-zinc-950/30 border border-zinc-800/50 rounded-2xl">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
+                  <RotateCcw size={14} className="text-cyan-400 animate-spin" />
+                </div>
+                <div className="flex-1 space-y-1">
+                   <p className="text-[11px] font-bold text-zinc-300 uppercase tracking-widest">
+                     {content.split('\n')[0].replace(/\*/g, '')}
+                   </p>
+                   {content.includes('[Progress: ') ? (() => {
+                     const match = content.match(/\[Progress: (\d+)%\]/);
+                     const percent = match ? parseInt(match[1]) : 0;
+                     return (
+                       <div className="space-y-2">
+                         <div className="w-full h-1.5 bg-zinc-900 rounded-full overflow-hidden">
+                           <motion.div 
+                             initial={{ width: 0 }}
+                             animate={{ width: `${percent}%` }}
+                             className="h-full bg-gradient-to-r from-cyan-500 to-blue-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]"
+                           />
+                         </div>
+                         <div className="flex justify-between text-[8px] font-mono font-bold text-zinc-600 uppercase">
+                           <span>Neural Synthesis</span>
+                           <span>{percent}% Complete</span>
+                         </div>
+                       </div>
+                     );
+                   })() : (
+                     <div className="flex items-center gap-2">
+                       <span className="w-1 h-1 bg-cyan-500 rounded-full animate-pulse" />
+                       <span className="text-[9px] font-mono text-cyan-500/60 uppercase tracking-tighter animate-pulse">Establishing data bridge...</span>
+                     </div>
+                   )}
+                </div>
+              </div>
+            </div>
           ) : (
             <div className="space-y-4">
               <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
                 components={{
-                  p: ({ children }) => <div className="mb-4 last:mb-0">{children}</div>,
+                  p: ({ children }) => <div className="mb-4 last:mb-0 leading-relaxed">{children}</div>,
+                  ul: ({ children }) => <ul className="list-disc pl-6 mb-4 space-y-1">{children}</ul>,
+                  ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 space-y-1">{children}</ol>,
+                  li: ({ children }) => <li className="text-zinc-300 leading-relaxed mb-1">{children}</li>,
+                  h1: ({ children }) => <h1 className="text-2xl font-bold mb-6 mt-8 text-white border-b border-zinc-800 pb-3">{children}</h1>,
+                  h2: ({ children }) => <h2 className="text-xl font-bold mb-4 mt-6 text-zinc-100">{children}</h2>,
+                  h3: ({ children }) => <h3 className="text-lg font-bold mb-3 mt-5 text-zinc-200">{children}</h3>,
+                  blockquote: ({ children }) => <blockquote className="border-l-4 border-cyan-500/50 bg-cyan-500/5 px-5 py-3 italic text-zinc-400 my-6 rounded-r-xl shadow-sm">{children}</blockquote>,
+                  table: ({ children }) => (
+                    <div className="my-6 overflow-x-auto rounded-xl border border-zinc-800/50">
+                      <table className="w-full text-sm text-left border-collapse">{children}</table>
+                    </div>
+                  ),
+                  thead: ({ children }) => <thead className="bg-zinc-900/80 text-zinc-400 font-mono text-[10px] uppercase tracking-wider border-b border-zinc-800">{children}</thead>,
+                  th: ({ children }) => <th className="px-4 py-3 font-bold">{children}</th>,
+                  td: ({ children }) => <td className="px-4 py-3 border-t border-zinc-800/50 text-zinc-300">{children}</td>,
+                  a: ({ href, children }) => (
+                    <a 
+                      href={href} 
+                      target="_blank" 
+                      rel="noopener noreferrer" 
+                      className="text-cyan-400 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-500 transition-all font-medium"
+                    >
+                      {children}
+                    </a>
+                  ),
                   code({ node, inline, className, children, ...props }: any) {
                     const match = /language-(\w+)/.exec(className || '');
                     const codeString = String(children).replace(/\n$/, '');
@@ -262,62 +372,48 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
 
                     if (!inline) {
                       return (
-                        <div className="relative group/code my-4">
-                          <div className="absolute right-3 top-3 z-10 opacity-0 group-hover/code:opacity-100 transition-opacity">
+                        <div className="relative group/code my-6 rounded-xl overflow-hidden border border-zinc-800/80 shadow-2xl">
+                          <div className="bg-zinc-900/80 px-4 py-2 flex items-center justify-between border-b border-zinc-800/50">
+                            <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
+                              {match ? match[1] : 'terminal'}
+                            </span>
                             <motion.button
                               whileTap={{ scale: 0.9 }}
-                              initial={false}
-                              animate={copied ? { scale: [1, 1.1, 1] } : {}}
                               onClick={handleCopy}
                               className={cn(
-                                "flex items-center gap-1.5 p-2 rounded-lg border text-[10px] font-bold uppercase tracking-wider transition-all backdrop-blur-sm",
+                                "flex items-center gap-1.5 p-1.5 rounded-md text-[10px] font-bold uppercase transition-all",
                                 copied 
-                                  ? "bg-green-500/20 border-green-500/50 text-green-400 px-3" 
-                                  : "bg-zinc-900/80 border-zinc-700/50 text-zinc-400 hover:text-cyan-400 hover:bg-zinc-800"
+                                  ? "text-green-400 bg-green-400/10" 
+                                  : "text-zinc-500 hover:text-white hover:bg-zinc-800"
                               )}
                             >
-                              <AnimatePresence mode="wait">
-                                {copied ? (
-                                  <motion.div 
-                                    key="check"
-                                    initial={{ opacity: 0, scale: 0.5 }}
-                                    animate={{ opacity: 1, scale: 1 }}
-                                    exit={{ opacity: 0, scale: 0.5 }}
-                                    className="flex items-center gap-1.5"
-                                  >
-                                    <Check size={12} strokeWidth={3} />
-                                    <span>Copied!</span>
-                                  </motion.div>
-                                ) : (
-                                  <motion.div
-                                    key="copy"
-                                    initial={{ opacity: 0, scale: 0.5 }}
-                                    animate={{ opacity: 1, scale: 1 }}
-                                    exit={{ opacity: 0, scale: 0.5 }}
-                                  >
-                                    <Copy size={12} strokeWidth={2.5} />
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
+                              {copied ? <Check size={12} /> : <Copy size={12} />}
+                              <span>{copied ? 'Copied' : 'Copy'}</span>
                             </motion.button>
                           </div>
-                          <pre className={cn(
-                            "overflow-x-auto p-4 rounded-xl border font-mono text-[13px] custom-scrollbar transition-all",
-                            theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-700" : "bg-[#0d0d0f] border-zinc-800/50 text-zinc-300",
-                            className
-                          )}>
-                            <code className={className} {...props}>
-                              {children}
-                            </code>
-                          </pre>
+                          <SyntaxHighlighter
+                            style={vscDarkPlus as any}
+                            language={match ? match[1] : 'text'}
+                            PreTag="div"
+                            customStyle={{
+                              margin: 0,
+                              padding: '1.5rem',
+                              fontSize: '13px',
+                              lineHeight: '1.6',
+                              background: '#0a0a0c',
+                            }}
+                            {...props}
+                          >
+                            {codeString}
+                          </SyntaxHighlighter>
                         </div>
                       );
                     }
 
                     return (
                       <code className={cn(
-                        "px-1.5 py-0.5 rounded font-mono text-[0.9em]", 
-                        theme === 'light' ? "bg-cyan-50 text-cyan-700" : "bg-zinc-800/50 text-cyan-400/90",
+                        "px-1.5 py-0.5 rounded font-mono text-[0.85em] font-medium", 
+                        theme === 'light' ? "bg-slate-100 text-slate-900 border border-slate-200" : "bg-zinc-800/80 text-cyan-400 border border-zinc-700/50",
                         className
                       )} {...props}>
                         {children}
@@ -355,6 +451,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
               className="w-full h-auto object-cover"
               referrerPolicy="no-referrer"
             />
+          </div>
+        )}
+
+        {videoUrl && (
+          <div className="mt-4 rounded-lg overflow-hidden border border-border-dim shadow-2xl bg-black">
+            <video 
+              src={videoUrl} 
+              controls 
+              className="w-full h-auto aspect-video"
+            >
+              Your browser does not support the video tag.
+            </video>
           </div>
         )}
       </div>
