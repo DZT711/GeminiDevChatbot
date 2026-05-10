@@ -625,8 +625,8 @@ export default function App() {
         throw new Error("Could not fetch repo info");
       }
       setRepoUrl('');
-    } catch (err) {
-      setValidationStatus({ type: 'error', message: 'GitHub link validation failed.' });
+    } catch (err: any) {
+      setValidationStatus({ type: 'error', message: err.message || 'GitHub link validation failed.' });
     } finally {
       setIsLoading(false);
     }
@@ -655,7 +655,8 @@ export default function App() {
     if (!overrideMessages) {
       setInput('');
       const currentAttachments = [...attachments];
-      setAttachments([]);
+      // Keep repo attachments in the UI for persistence
+      setAttachments(currentAttachments.filter(a => a.type === 'repo'));
       
       const processedInput = targetInput;
       
@@ -673,11 +674,17 @@ export default function App() {
               type: 'repo'
             };
             finalAttachments = [...currentAttachments, repoContent];
+            // Also append this auto-detected repo to persistent state
+            setAttachments(prev => [...prev.filter(a => a.type === 'repo'), repoContent]);
             setValidationStatus({ type: 'success', message: `Neural Link established with ${info.name}` });
             setTimeout(() => setValidationStatus(null), 3000);
           }
-        } catch (e) {
+        } catch (e: any) {
           console.warn("Auto-repo detection failed", e);
+          if (e.message) {
+            setValidationStatus({ type: 'error', message: e.message });
+            setTimeout(() => setValidationStatus(null), 3000);
+          }
         }
       }
 
@@ -687,11 +694,13 @@ export default function App() {
         setCurrentSessionId(sessionId);
       }
 
+      const nonRepoAttachments = finalAttachments.filter(a => a.type !== 'repo');
+      
       const userMessage: Message = { 
         id: `msg-${Date.now()}`,
         role: 'user', 
         content: processedInput,
-        attachments: finalAttachments.length > 0 ? finalAttachments : undefined,
+        attachments: nonRepoAttachments.length > 0 ? nonRepoAttachments : undefined,
         editHistory: []
       };
       
@@ -723,10 +732,15 @@ export default function App() {
 
         const history = newMessages
           .filter(m => m && m.role && m.content)
-          .map(m => {
+          .map((m, index) => {
             const parts: any[] = [{ text: m.content }];
             if (m.attachments) {
               parts.push(...m.attachments.map(a => geminiService.attachmentToPart(a)));
+            }
+            // Inject persistent repo sync into the current API interaction
+            if (index === newMessages.length - 1 && m.role === 'user') {
+               const repoAttachments = finalAttachments.filter(a => a.type === 'repo');
+               parts.push(...repoAttachments.map(a => geminiService.attachmentToPart(a)));
             }
             return {
               role: m.role,
@@ -833,10 +847,15 @@ export default function App() {
 
         const history = overrideMessages
           .filter(m => m && m.role && m.content)
-          .map(m => {
+          .map((m, index) => {
             const parts: any[] = [{ text: m.content }];
             if (m.attachments) {
               parts.push(...m.attachments.map(a => geminiService.attachmentToPart(a)));
+            }
+            // Inject persistent repo sync into the current API interaction
+            if (index === overrideMessages.length - 1 && m.role === 'user') {
+               const repoAttachments = attachments.filter(a => a.type === 'repo');
+               parts.push(...repoAttachments.map(a => geminiService.attachmentToPart(a)));
             }
             return { role: m.role, parts: parts };
           });
@@ -934,8 +953,8 @@ export default function App() {
       } else {
         throw new Error("Invalid repository path");
       }
-    } catch (err) {
-      setValidationStatus({ type: 'error', message: 'GitHub integration failed: Unreachable path' });
+    } catch (err: any) {
+      setValidationStatus({ type: 'error', message: err.message || 'GitHub integration failed: Unreachable path' });
     } finally {
       setIsImportingGithub(false);
       setTimeout(() => setValidationStatus(null), 3000);
@@ -1334,6 +1353,7 @@ export default function App() {
                       onRevert={(content) => handleRevertMessage(i, content)}
                       attachments={m.attachments}
                       history={m.editHistory}
+                      isLatest={i === messages.filter(msg => msg).length - 1}
                     />
                   ))
                 )}

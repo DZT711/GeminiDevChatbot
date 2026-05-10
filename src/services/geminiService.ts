@@ -467,6 +467,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
               let currentHistory = [...history];
               let finalAccumulatedText = "";
               let toolLoops = 0;
+              let usageMetadata: any = null;
 
               while (toolLoops < 3) {
                 const stream = await ai.models.generateContentStream({
@@ -488,6 +489,11 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                 for await (const chunk of stream) {
                   if (config.signal?.aborted) throw new Error("Operation aborted");
                   
+                  // Extract usage metadata if available (usually in the last chunk)
+                  if (chunk.usageMetadata) {
+                    usageMetadata = chunk.usageMetadata;
+                  }
+
                   const calls = chunk.functionCalls;
                   if (calls && calls.length > 0) {
                     functionCalls.push(...calls);
@@ -539,8 +545,12 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
                       let content = "[ERROR: File not found or repository link missing]";
                       if (repoUrl) {
-                        const fetched = await githubService.getFileContent(repoUrl, args.path);
-                        if (fetched) content = fetched;
+                        try {
+                          const fetched = await githubService.getFileContent(repoUrl, args.path);
+                          if (fetched) content = fetched;
+                        } catch (err: any) {
+                          content = `[ERROR: ${err.message || 'Failed to fetch'}]`;
+                        }
                       }
                       
                       toolResponses.push({
@@ -576,8 +586,12 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
                       let files: any[] = [];
                       if (repoUrl) {
-                        const fetchedFiles = await githubService.listDirectory(repoUrl, args.path);
-                        if (fetchedFiles) files = fetchedFiles;
+                        try {
+                          const fetchedFiles = await githubService.listDirectory(repoUrl, args.path);
+                          if (fetchedFiles) files = fetchedFiles;
+                        } catch (err: any) {
+                          console.error("List files error:", err);
+                        }
                       }
 
                       toolResponses.push({
@@ -633,7 +647,6 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                       }
                     }
                   }
-
                   currentHistory.push({ role: 'model', parts: functionCalls.map(c => ({ functionCall: c })) });
                   currentHistory.push({ role: 'user', parts: toolResponses });
                   toolLoops++;
@@ -641,10 +654,10 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                 }
                 break;
               }
-              
-              const tokenEstimate = Math.ceil(finalAccumulatedText.length / 4);
-              this.updateMetrics(model, Date.now() - startTime, true, tokenEstimate);
-              config.onTokenUpdate?.(tokenEstimate);
+
+              const tokens = usageMetadata?.totalTokenCount || Math.ceil(finalAccumulatedText.length / 4);
+              this.updateMetrics(model, Date.now() - startTime, true, tokens);
+              config.onTokenUpdate?.(tokens);
               return finalAccumulatedText;
             } catch (error: any) {
           this.updateMetrics(model, 0, false);

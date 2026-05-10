@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@codesandbox/sandpack-react": "^2.20.0",
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
     "@types/react-syntax-highlighter": "^15.5.13",
@@ -20,6 +21,7 @@
     "express": "^4.21.2",
     "jszip": "^3.10.1",
     "lucide-react": "^0.546.0",
+    "mermaid": "^11.14.0",
     "motion": "^12.38.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

@@ -7,6 +7,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw, ChevronDown, ChevronUp, Eye } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Attachment } from '@/services/geminiService';
+import { CodePreview } from './CodePreview';
 
 const FilePreview = ({ attachment }: { attachment: Attachment }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -86,9 +87,10 @@ interface ChatMessageProps {
   onRevert?: (version: string) => void;
   attachments?: Attachment[];
   history?: string[];
+  isLatest?: boolean;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [] }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -147,6 +149,53 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
   };
 
   const themeClasses = getThemeClasses();
+
+  const markdownComponents = React.useMemo(() => ({
+    p: ({ children }: any) => <div className="mb-4 last:mb-0 leading-relaxed">{children}</div>,
+    ul: ({ children }: any) => <ul className="list-disc pl-6 mb-4 space-y-1">{children}</ul>,
+    ol: ({ children }: any) => <ol className="list-decimal pl-6 mb-4 space-y-1">{children}</ol>,
+    li: ({ children }: any) => <li className="text-zinc-300 leading-relaxed mb-1">{children}</li>,
+    h1: ({ children }: any) => <h1 className="text-2xl font-bold mb-6 mt-8 text-white border-b border-zinc-800 pb-3">{children}</h1>,
+    h2: ({ children }: any) => <h2 className="text-xl font-bold mb-4 mt-6 text-zinc-100">{children}</h2>,
+    h3: ({ children }: any) => <h3 className="text-lg font-bold mb-3 mt-5 text-zinc-200">{children}</h3>,
+    blockquote: ({ children }: any) => <blockquote className="border-l-4 border-cyan-500/50 bg-cyan-500/5 px-5 py-3 italic text-zinc-400 my-6 rounded-r-xl shadow-sm">{children}</blockquote>,
+    table: ({ children }: any) => (
+      <div className="my-6 overflow-x-auto rounded-xl border border-zinc-800/50">
+        <table className="w-full text-sm text-left border-collapse">{children}</table>
+      </div>
+    ),
+    thead: ({ children }: any) => <thead className="bg-zinc-900/80 text-zinc-400 font-mono text-[10px] uppercase tracking-wider border-b border-zinc-800">{children}</thead>,
+    th: ({ children }: any) => <th className="px-4 py-3 font-bold">{children}</th>,
+    td: ({ children }: any) => <td className="px-4 py-3 border-t border-zinc-800/50 text-zinc-300">{children}</td>,
+    a: ({ href, children }: any) => (
+      <a 
+        href={href} 
+        target="_blank" 
+        rel="noopener noreferrer" 
+        className="text-cyan-400 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-500 transition-all font-medium"
+      >
+        {children}
+      </a>
+    ),
+    code({ node, inline, className, children, ...props }: any) {
+      const match = /language-(\w+)/.exec(className || '');
+      const codeString = String(children).replace(/\n$/, '');
+
+      if (!inline) {
+        return <CodePreview code={codeString} language={match ? match[1] : 'text'} isLatest={isLatest} />;
+      }
+
+      return (
+        <code className={cn(
+          "px-1.5 py-0.5 rounded font-mono text-[0.85em] font-medium", 
+          theme === 'light' ? "bg-slate-100 text-slate-900 border border-slate-200" : "bg-zinc-800/80 text-cyan-400 border border-zinc-700/50",
+          className
+        )} {...props}>
+          {children}
+        </code>
+      );
+    }
+  }), [theme]);
 
   return (
     <div className={cn(
@@ -291,7 +340,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                 </button>
               </div>
             </div>
-          ) : content.includes('[Progress: ') || content.includes('[Neural Probe: ') ? (
+          ) : content.startsWith('[Progress: ') || content.startsWith('[Neural Probe: ') ? (
             <div className="space-y-4 p-4 bg-zinc-950/30 border border-zinc-800/50 rounded-2xl">
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-full bg-cyan-500/10 flex items-center justify-center border border-cyan-500/20">
@@ -301,7 +350,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                    <p className="text-[11px] font-bold text-zinc-300 uppercase tracking-widest">
                      {content.split('\n')[0].replace(/\*/g, '')}
                    </p>
-                   {content.includes('[Progress: ') ? (() => {
+                   {content.startsWith('[Progress: ') ? (() => {
                      const match = content.match(/\[Progress: (\d+)%\]/);
                      const percent = match ? parseInt(match[1]) : 0;
                      return (
@@ -332,95 +381,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
             <div className="space-y-4">
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
-                components={{
-                  p: ({ children }) => <div className="mb-4 last:mb-0 leading-relaxed">{children}</div>,
-                  ul: ({ children }) => <ul className="list-disc pl-6 mb-4 space-y-1">{children}</ul>,
-                  ol: ({ children }) => <ol className="list-decimal pl-6 mb-4 space-y-1">{children}</ol>,
-                  li: ({ children }) => <li className="text-zinc-300 leading-relaxed mb-1">{children}</li>,
-                  h1: ({ children }) => <h1 className="text-2xl font-bold mb-6 mt-8 text-white border-b border-zinc-800 pb-3">{children}</h1>,
-                  h2: ({ children }) => <h2 className="text-xl font-bold mb-4 mt-6 text-zinc-100">{children}</h2>,
-                  h3: ({ children }) => <h3 className="text-lg font-bold mb-3 mt-5 text-zinc-200">{children}</h3>,
-                  blockquote: ({ children }) => <blockquote className="border-l-4 border-cyan-500/50 bg-cyan-500/5 px-5 py-3 italic text-zinc-400 my-6 rounded-r-xl shadow-sm">{children}</blockquote>,
-                  table: ({ children }) => (
-                    <div className="my-6 overflow-x-auto rounded-xl border border-zinc-800/50">
-                      <table className="w-full text-sm text-left border-collapse">{children}</table>
-                    </div>
-                  ),
-                  thead: ({ children }) => <thead className="bg-zinc-900/80 text-zinc-400 font-mono text-[10px] uppercase tracking-wider border-b border-zinc-800">{children}</thead>,
-                  th: ({ children }) => <th className="px-4 py-3 font-bold">{children}</th>,
-                  td: ({ children }) => <td className="px-4 py-3 border-t border-zinc-800/50 text-zinc-300">{children}</td>,
-                  a: ({ href, children }) => (
-                    <a 
-                      href={href} 
-                      target="_blank" 
-                      rel="noopener noreferrer" 
-                      className="text-cyan-400 hover:text-cyan-300 underline underline-offset-4 decoration-cyan-500/30 hover:decoration-cyan-500 transition-all font-medium"
-                    >
-                      {children}
-                    </a>
-                  ),
-                  code({ node, inline, className, children, ...props }: any) {
-                    const match = /language-(\w+)/.exec(className || '');
-                    const codeString = String(children).replace(/\n$/, '');
-                    const [copied, setCopied] = React.useState(false);
-
-                    const handleCopy = () => {
-                      navigator.clipboard.writeText(codeString);
-                      setCopied(true);
-                      setTimeout(() => setCopied(false), 2000);
-                    };
-
-                    if (!inline) {
-                      return (
-                        <div className="relative group/code my-6 rounded-xl overflow-hidden border border-zinc-800/80 shadow-2xl">
-                          <div className="bg-zinc-900/80 px-4 py-2 flex items-center justify-between border-b border-zinc-800/50">
-                            <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest">
-                              {match ? match[1] : 'terminal'}
-                            </span>
-                            <motion.button
-                              whileTap={{ scale: 0.9 }}
-                              onClick={handleCopy}
-                              className={cn(
-                                "flex items-center gap-1.5 p-1.5 rounded-md text-[10px] font-bold uppercase transition-all",
-                                copied 
-                                  ? "text-green-400 bg-green-400/10" 
-                                  : "text-zinc-500 hover:text-white hover:bg-zinc-800"
-                              )}
-                            >
-                              {copied ? <Check size={12} /> : <Copy size={12} />}
-                              <span>{copied ? 'Copied' : 'Copy'}</span>
-                            </motion.button>
-                          </div>
-                          <SyntaxHighlighter
-                            style={vscDarkPlus as any}
-                            language={match ? match[1] : 'text'}
-                            PreTag="div"
-                            customStyle={{
-                              margin: 0,
-                              padding: '1.5rem',
-                              fontSize: '13px',
-                              lineHeight: '1.6',
-                              background: '#0a0a0c',
-                            }}
-                            {...props}
-                          >
-                            {codeString}
-                          </SyntaxHighlighter>
-                        </div>
-                      );
-                    }
-
-                    return (
-                      <code className={cn(
-                        "px-1.5 py-0.5 rounded font-mono text-[0.85em] font-medium", 
-                        theme === 'light' ? "bg-slate-100 text-slate-900 border border-slate-200" : "bg-zinc-800/80 text-cyan-400 border border-zinc-700/50",
-                        className
-                      )} {...props}>
-                        {children}
-                      </code>
-                    );
-                  }
-                }}
+                components={markdownComponents as any}
               >
                 {content}
               </ReactMarkdown>
