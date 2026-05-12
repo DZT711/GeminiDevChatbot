@@ -198,18 +198,43 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
         {children}
       </a>
     ),
-    code({ node, inline, className, children, ...props }: any) {
-      const match = /language-(\w+)/.exec(className || '');
-      const codeString = String(children).replace(/\n$/, '');
+    pre: ({ children }: any) => {
+      let codeString = '';
+      let language = 'text';
 
-      if (!inline) {
-        return <CodePreview code={codeString} language={match ? match[1] : 'text'} isLatest={isLatest} />;
+      if (React.isValidElement(children)) {
+        if (typeof children.props.children === 'string') {
+          codeString = children.props.children;
+        } else if (Array.isArray(children.props.children)) {
+          codeString = children.props.children.join('');
+        }
+        
+        const className = children.props.className || '';
+        const match = /language-(\w+)/.exec(className);
+        if (match) {
+          language = match[1];
+        }
       }
 
+      codeString = codeString.replace(/\n$/, '');
+
+      // Use CodePreview for actual code languages, or multi-line text, or long text
+      if (codeString && (language !== 'text' || codeString.includes('\n') || codeString.length > 60)) {
+        return <CodePreview code={codeString} language={language} isLatest={isLatest} />;
+      }
+      
+      // Fallback for short, single-line text blocks that the model mistakenly outputted with triple backticks
+      return (
+        <div className="px-3 py-2 bg-zinc-900/80 rounded-lg border border-zinc-800/80 my-3 overflow-x-auto text-[13px] text-zinc-300 font-mono inline-flex w-fit max-w-full shadow-sm">
+          {codeString || children}
+        </div>
+      );
+    },
+    code: ({ node, className, children, ...props }: any) => {
       return (
         <code className={cn(
-          "px-1.5 py-0.5 rounded font-mono text-[0.85em] font-medium", 
-          theme === 'light' ? "bg-slate-100 text-slate-900 border border-slate-200" : "bg-zinc-800/80 text-cyan-400 border border-zinc-700/50",
+          "px-1.5 py-0.5 rounded font-mono text-[0.85em] font-medium mx-0.5 shadow-sm", 
+          theme === 'light' ? "bg-slate-100 text-slate-800 border border-slate-200" : "bg-[#1e1e24] text-cyan-300 border border-zinc-800/80",
           className
         )} {...props}>
           {children}

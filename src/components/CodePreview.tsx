@@ -9,6 +9,8 @@ import { motion } from 'motion/react';
 
 mermaid.initialize({ startOnLoad: false, theme: 'dark' });
 
+let mermaidRenderQueue = Promise.resolve();
+
 interface CodePreviewProps {
   code: string;
   language: string;
@@ -52,17 +54,48 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   }, [code]);
 
   useEffect(() => {
-    if (activeTab === 'preview' && isMermaid && mermaidRef.current) {
-      mermaidRef.current.innerHTML = '';
-      mermaid.render(`mermaid-${Math.random().toString(36).substring(2)}`, debouncedCode).then((result) => {
-        if (mermaidRef.current) {
-          mermaidRef.current.innerHTML = result.svg;
-        }
-      }).catch(e => {
-        console.error("Mermaid alert:", e);
-        if (mermaidRef.current) mermaidRef.current.innerHTML = `<div class="text-red-500 p-4 font-mono text-sm">Failed to render diagram. Check syntax.</div>`;
-      });
-    }
+    let isCancelled = false;
+    
+    const renderDiagram = () => {
+      if (activeTab === 'preview' && isMermaid && mermaidRef.current) {
+        mermaidRenderQueue = mermaidRenderQueue.then(async () => {
+          if (isCancelled) return;
+          try {
+            const codeToRender = debouncedCode.trim();
+            if (!codeToRender) {
+              if (mermaidRef.current) mermaidRef.current.innerHTML = '';
+              return;
+            }
+
+            const id = `mermaid-${Math.random().toString(36).substring(2, 10)}`;
+            const { svg } = await mermaid.render(id, codeToRender, mermaidRef.current);
+            
+            if (!isCancelled && mermaidRef.current) {
+              mermaidRef.current.innerHTML = svg;
+            }
+          } catch (e: any) {
+            console.error("Mermaid alert:", e);
+            
+            // Mermaid sometimes leaves error blocks in the body, clean them up
+            const elements = document.querySelectorAll('[id^="dmermaid-"]');
+            elements.forEach(el => el.remove());
+
+            const errorMsg = e instanceof Error ? e.message : String(e);
+            if (!isCancelled && mermaidRef.current) {
+              mermaidRef.current.innerHTML = `<div class="text-red-500 p-4 font-mono text-sm max-w-full overflow-auto">Failed to render diagram. Check syntax.<br/><div class="text-xs mt-2 opacity-70 whitespace-pre-wrap">${errorMsg.replace(/</g, "&lt;")}</div></div>`;
+            }
+          }
+        }).catch(() => {
+          // silent catch for queue
+        });
+      }
+    };
+    
+    renderDiagram();
+    
+    return () => {
+      isCancelled = true;
+    };
   }, [activeTab, isMermaid, debouncedCode]);
 
   const handleCopy = () => {
