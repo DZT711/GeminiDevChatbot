@@ -39,6 +39,7 @@ import {
   Globe,
   Activity,
   Network,
+  ArrowDown,
   Wind,
   Layers,
   AlertTriangle
@@ -160,6 +161,9 @@ export default function App() {
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
+  const [isImageMode, setIsImageMode] = useState(false);
+  const [isVideoMode, setIsVideoMode] = useState(false);
+  const [autoScroll, setAutoScroll] = useState(true);
   const [isSkillsExpanded, setIsSkillsExpanded] = useState(false);
   const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [isAddingKey, setIsAddingKey] = useState(false);
@@ -234,6 +238,13 @@ export default function App() {
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto Scroll
+  useEffect(() => {
+    if (autoScroll && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [messages, autoScroll]);
 
   // Sync Persistence
   useEffect(() => {
@@ -709,12 +720,12 @@ export default function App() {
       saveCurrentSession(newMessages, sessionId);
 
       // Simple Intent Detection for Image/Video Gen
-      if (processedInput.toLowerCase().startsWith('generate image')) {
+      if (isImageMode || processedInput.toLowerCase().startsWith('generate image')) {
         await handleImageGen(processedInput.replace(/generate image/i, '').trim() || processedInput, sessionId);
         return;
       }
       
-      if (processedInput.toLowerCase().startsWith('generate video')) {
+      if (isVideoMode || processedInput.toLowerCase().startsWith('generate video')) {
         await handleVideoGen(processedInput.replace(/generate video/i, '').trim() || processedInput, sessionId);
         return;
       }
@@ -1317,6 +1328,20 @@ export default function App() {
                 </button>
 
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
+                
+                <button 
+                  onClick={() => setAutoScroll(!autoScroll)}
+                  className={cn(
+                    "p-2 rounded-xl transition-all border outline-none active:scale-90 flex items-center gap-1.5",
+                    autoScroll 
+                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 shadow-[0_0_10px_rgba(6,182,212,0.1)]" 
+                      : "hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 border-transparent hover:border-zinc-800"
+                  )}
+                  title={autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
+                >
+                  <ArrowDown size={14} className={cn("transition-transform", autoScroll ? "animate-bounce" : "")} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline-block">Auto Scroll</span>
+                </button>
 
                 <button 
                   onClick={handleCopyFullChat}
@@ -1354,6 +1379,7 @@ export default function App() {
                       attachments={m.attachments}
                       history={m.editHistory}
                       isLatest={i === messages.filter(msg => msg).length - 1}
+                      isLoading={isLoading}
                     />
                   ))
                 )}
@@ -1534,29 +1560,39 @@ export default function App() {
                         </button>
                         <button 
                           onClick={() => {
-                            const prefix = "Generate image of ";
-                            if (!input.toLowerCase().startsWith(prefix.toLowerCase())) {
-                              setInput(prefix + input);
+                            if (isImageMode) {
+                              setIsImageMode(false);
+                            } else {
+                              setIsImageMode(true);
+                              setIsVideoMode(false);
+                              setValidationStatus({ type: 'success', message: "NEURAL VISION MODE ENABLED" });
+                              setTimeout(() => setValidationStatus(null), 2000);
                             }
-                            setValidationStatus({ type: 'success', message: "NEURAL VISION PROMPT INJECTED" });
-                            setTimeout(() => setValidationStatus(null), 2000);
                           }}
-                          className="p-2 text-zinc-600 hover:text-pink-400 transition-colors hover:bg-white/5 rounded-full"
-                          title="Inject Image Generation Prefix"
+                          className={cn(
+                            "p-2 transition-all rounded-full hover:bg-white/5",
+                            isImageMode ? "text-pink-400 bg-pink-400/10" : "text-zinc-600 hover:text-pink-400"
+                          )}
+                          title={isImageMode ? "Cancel Image Generation" : "Enable Image Generation"}
                         >
                           <ImageIcon size={16} />
                         </button>
                         <button 
                           onClick={() => {
-                            const prefix = "Generate video of ";
-                            if (!input.toLowerCase().startsWith(prefix.toLowerCase())) {
-                              setInput(prefix + input);
+                            if (isVideoMode) {
+                              setIsVideoMode(false);
+                            } else {
+                              setIsVideoMode(true);
+                              setIsImageMode(false);
+                              setValidationStatus({ type: 'success', message: "NEURAL MOTION MODE ENABLED" });
+                              setTimeout(() => setValidationStatus(null), 2000);
                             }
-                            setValidationStatus({ type: 'success', message: "NEURAL MOTION PROMPT INJECTED" });
-                            setTimeout(() => setValidationStatus(null), 2000);
                           }}
-                          className="p-2 text-zinc-600 hover:text-amber-400 transition-colors hover:bg-white/5 rounded-full"
-                          title="Inject Video Generation Prefix"
+                          className={cn(
+                            "p-2 transition-all rounded-full hover:bg-white/5",
+                            isVideoMode ? "text-amber-400 bg-amber-400/10" : "text-zinc-600 hover:text-amber-400"
+                          )}
+                          title={isVideoMode ? "Cancel Video Generation" : "Enable Video Generation"}
                         >
                           <VideoIcon size={16} />
                         </button>
@@ -1582,12 +1618,14 @@ export default function App() {
                           )}>
                           <div className="flex gap-3 items-center h-4">
                             {activeSkillIds.length > 0 ? (
-                              activeSkillIds.slice(0, 3).map(id => (
-                                <span key={id} className="text-[9px] font-mono font-bold text-cyan-500/40 uppercase tracking-tighter flex items-center gap-1.5 hover:text-cyan-400 transition-colors cursor-default">
+                              activeSkillIds.slice(0, 3).map(id => {
+                                const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
+                                return (
+                                <span key={id} className="text-[9px] font-mono font-bold text-cyan-500/40 uppercase tracking-tighter flex items-center gap-1.5 hover:text-cyan-400 transition-colors cursor-default" title={skill?.name || id}>
                                   <div className="w-1.5 h-1.5 rounded-full bg-cyan-500/20 shadow-[0_0_5px_rgba(6,182,212,0.3)]" />
-                                  {id.split('-')[0]}
+                                  {skill ? skill.name : id.split('-')[0]}
                                 </span>
-                              ))
+                              )})
                             ) : (
                                <span className="text-[9px] font-mono text-zinc-800 uppercase tracking-widest font-bold">Standard Compute</span>
                             )}

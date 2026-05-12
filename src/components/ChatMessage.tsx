@@ -88,14 +88,35 @@ interface ChatMessageProps {
   attachments?: Attachment[];
   history?: string[];
   isLatest?: boolean;
+  isLoading?: boolean;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [msgCopied, setMsgCopied] = useState(false);
+  
+  const [displayedContent, setDisplayedContent] = React.useState(content);
+
+  React.useEffect(() => {
+    if (!isLatest || isUser) {
+      setDisplayedContent(content);
+      return;
+    }
+    
+    // Throttled typing animation for performance
+    let cancel = false;
+    const timeout = setTimeout(() => {
+      if (!cancel) setDisplayedContent(content);
+    }, 15); // Adjust delay to balance typing speed and performance
+    
+    return () => {
+       cancel = true;
+       clearTimeout(timeout);
+    };
+  }, [content, isLatest, isUser]);
 
   const handleCopyMessage = () => {
     navigator.clipboard.writeText(content);
@@ -383,7 +404,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                 remarkPlugins={[remarkGfm]}
                 components={markdownComponents as any}
               >
-                {content}
+                {displayedContent + (isLoading && isLatest ? ' ▍' : '')}
               </ReactMarkdown>
               {attachments && attachments.length > 0 && (
                 <div className="flex flex-col gap-2 pt-4 mt-2 border-t border-zinc-800/50">

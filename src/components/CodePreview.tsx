@@ -139,11 +139,17 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
              {(isWeb || isReact) && (
                <div className="w-full relative z-0">
                  <SandpackProvider 
-                   template={isReact ? "react-ts" : "vanilla"}
+                   template={isReact ? "react-ts" : normalizedLang === 'html' ? "static" : "vanilla"}
                    theme="dark"
-                   files={{
-                     [isReact ? "/App.tsx" : "/index.html"]: debouncedCode
-                   }}
+                   files={
+                     isReact 
+                       ? { "/App.tsx": debouncedCode }
+                       : normalizedLang === 'html' 
+                         ? { "/index.html": debouncedCode }
+                         : normalizedLang === 'css'
+                           ? { "/styles.css": debouncedCode }
+                           : { "/index.js": debouncedCode }
+                   }
                  >
                    <SandpackPreview showNavigator={true} style={{ height: '500px' }} />
                  </SandpackProvider>
