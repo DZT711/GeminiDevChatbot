@@ -334,6 +334,22 @@ class GeminiService {
     return { text: `[File Attachment: ${attachment.name}]\n${attachment.content || ""}` };
   }
 
+  /**
+   * Helper to safely sanitize the request payload tools mapping.
+   * Prevents 400 invalid argument errors when combining Search with custom function calling.
+   */
+  private resolveToolsPayload(useSearch: boolean | undefined, coreTools: any): any[] | undefined {
+    try {
+      if (useSearch) {
+        return [{ googleSearch: {} }];
+      }
+      return [coreTools];
+    } catch (e) {
+      console.warn("Failed to sanitize tools payload:", e);
+      return undefined;
+    }
+  }
+
   async generateResponse(
     prompt: string, 
     activeSkillIds: string[], 
@@ -387,8 +403,6 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
               const startTime = Date.now();
               if (attempts > 0) config.onModelSwitch?.(model);
               this.usage[model] = Math.min(100, (this.usage[model] || 0) + 2);
-              
-              const tools = config.useSearch ? [{ googleSearch: {} }] : undefined;
               
               const coreTools = {
                 functionDeclarations: [
@@ -479,7 +493,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                       thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW,
                       includeThoughts: true 
                     } : undefined,
-                    tools: tools ? [...tools, coreTools] : [coreTools]
+                    tools: this.resolveToolsPayload(config.useSearch, coreTools)
                   }
                 });
 
