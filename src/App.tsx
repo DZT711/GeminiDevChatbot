@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { findSkillSuggestions } from './utils/skillMatcher';
+import { getAutocompleteSuggestion } from './utils/autocompleteEngine';
 import { 
   Send, 
   RotateCcw, 
@@ -149,6 +150,7 @@ export default function App() {
   // UI & Input States
   const [input, setInput] = useState('');
   const [suggestedSkills, setSuggestedSkills] = useState<Skill[]>([]);
+  const [autocompleteSuggestion, setAutocompleteSuggestion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState('');
@@ -318,6 +320,25 @@ export default function App() {
     }, 300);
     return () => clearTimeout(timer);
   }, [input, customSkills, activeSkillIds]);
+
+  // Autocomplete Hook
+  useEffect(() => {
+    let isMounted = true;
+    const timer = setTimeout(async () => {
+      try {
+        const suggestion = await getAutocompleteSuggestion(input);
+        if (isMounted) {
+          setAutocompleteSuggestion(suggestion);
+        }
+      } catch(e) {
+        if (isMounted) setAutocompleteSuggestion('');
+      }
+    }, 150);
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
+    };
+  }, [input]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -1703,12 +1724,28 @@ export default function App() {
                             theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-800 text-zinc-200"
                           )}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' && !e.shiftKey) {
+                            if (e.key === 'Tab' && autocompleteSuggestion) {
+                              e.preventDefault();
+                              setInput(input + autocompleteSuggestion);
+                              setAutocompleteSuggestion('');
+                            } else if (e.key === 'Enter' && !e.shiftKey) {
                               e.preventDefault();
                               handleSubmit();
                             }
                           }}
                         />
+                        {autocompleteSuggestion && (
+                          <div className={cn(
+                            "absolute right-2 bottom-2 flex items-center gap-1 z-20 pointer-events-none text-xs truncate max-w-[200px] sm:max-w-[300px]",
+                            theme === 'light' ? "text-slate-400" : "text-zinc-500"
+                          )}>
+                            <span className="truncate opacity-50">{autocompleteSuggestion}</span>
+                            <kbd className={cn(
+                              "text-[9px] font-sans px-1.5 py-0.5 rounded ml-1 border shrink-0",
+                              theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-zinc-800 border-zinc-700 text-zinc-400"
+                            )}>Tab</kbd>
+                          </div>
+                        )}
                       </div>
                       
                       <button 
