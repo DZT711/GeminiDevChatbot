@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { findSkillSuggestions } from './utils/skillMatcher';
 import { 
   Send, 
   RotateCcw, 
@@ -147,6 +148,7 @@ export default function App() {
   
   // UI & Input States
   const [input, setInput] = useState('');
+  const [suggestedSkills, setSuggestedSkills] = useState<Skill[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState('');
@@ -302,6 +304,20 @@ export default function App() {
     }, 2000);
     return () => clearInterval(interval);
   }, []);
+
+  // Skill Suggestions Hook
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      try {
+        const allAvailableSkills = [...DEFAULT_SKILLS, ...customSkills];
+        const matches = findSkillSuggestions(input, allAvailableSkills);
+        setSuggestedSkills(matches.filter(s => !activeSkillIds.includes(s.id)));
+      } catch(e) {
+        setSuggestedSkills([]);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [input, customSkills, activeSkillIds]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -1397,7 +1413,41 @@ export default function App() {
 
             {/* Float Input Bar */}
             <div className="absolute bottom-0 left-0 right-0 p-8 pt-0 pointer-events-none z-30">
-              <div className="max-w-4xl mx-auto pointer-events-auto">
+              <div className="max-w-4xl mx-auto pointer-events-auto relative">
+                {suggestedSkills.length > 0 && (
+                  <div className={cn(
+                    "absolute bottom-full left-0 mb-4 w-full z-50 rounded-2xl border p-1 shadow-2xl backdrop-blur-md overflow-hidden animate-in fade-in slide-in-from-bottom-2",
+                    theme === 'light' ? "bg-white/95 border-slate-200" : "bg-black/95 border-zinc-800"
+                  )}>
+                     <div className="px-3 py-2 flex items-center gap-2 mb-1 border-b border-white/5">
+                        <Sparkles size={12} className="text-cyan-500" />
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500">Suggested Skills</span>
+                     </div>
+                    {suggestedSkills.map(skill => (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        onClick={() => {
+                          toggleSkill(skill.id);
+                          setSuggestedSkills([]);
+                        }}
+                        className={cn(
+                          "w-full text-left px-4 py-3 rounded-xl flex items-center gap-4 transition-colors group",
+                          theme === 'light' ? "hover:bg-slate-100" : "hover:bg-white/5"
+                        )}
+                      >
+                        {ICON_MAP[skill.icon] ? React.createElement(ICON_MAP[skill.icon], { size: 16, className: "text-zinc-500 group-hover:text-cyan-400 transition-colors shrink-0" }) : <Code2 size={16} className="text-zinc-500 group-hover:text-cyan-400 transition-colors shrink-0" />}
+                        <div>
+                          <div className={cn(
+                            "text-sm font-bold font-mono tracking-wide group-hover:text-cyan-400 transition-colors",
+                            theme === 'light' ? "text-slate-800" : "text-zinc-300"
+                          )}>{skill.name}</div>
+                          <div className="text-xs text-zinc-500 font-mono mt-1 opacity-80 truncate max-w-2xl">{skill.description}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <AnimatePresence>
                   {isLoading && (
                     <motion.div 
