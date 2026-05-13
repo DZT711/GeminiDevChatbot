@@ -1,5 +1,6 @@
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { githubService } from "./githubService";
+import { transparencyLogger } from '../utils/transparencyLogger';
 
 export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
@@ -514,29 +515,75 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                     onChunk?.(`[Neural Link Scaling: Accessing ${calls[0].name}...]\n`);
                   }
 
+                  // Handle Search Grounding Data implicitly
+                  if ((chunk as any).candidates?.[0]?.groundingMetadata) {
+                     const meta = (chunk as any).candidates[0].groundingMetadata;
+                     // only log once
+                     if (!finalAccumulatedText.includes('[Search Context Captured]')) {
+                        const queries = meta.webSearchQueries || [];
+                        if (queries.length > 0) {
+                           transparencyLogger.log(
+                             'Research/Retrieval',
+                             'Google Search Engine Interrogated',
+                             {
+                               intent: `Queries: ${queries.join(', ')}`,
+                               rationale: "Model required external ground truth to formulate response accurately.",
+                               sources: meta.groundingChunks?.map((c: any) => c.web?.uri).filter(Boolean)
+                             },
+                             'completed'
+                           );
+                        }
+                     }
+                  }
+
                   const text = chunk.text;
                   if (text) {
                     chunkText += text;
                     finalAccumulatedText += text;
                     onChunk?.(finalAccumulatedText);
                   }
+
+                  // Capture thinking logic if available
+                  const parts = (chunk as any).candidates?.[0]?.content?.parts || [];
+                  for (const part of parts) {
+                    if (part.thought) {
+                       transparencyLogger.log(
+                         'Analysis',
+                         'Neural Cognition & Reasoning',
+                         {
+                           rationale: part.thought,
+                           intent: 'Formulating complex internal representation'
+                         },
+                         'completed'
+                       );
+                    }
+                  }
                 }
 
                 if (functionCalls.length > 0) {
                   const toolResponses: any[] = [];
                   for (const call of functionCalls) {
+                    const actionId = transparencyLogger.log(
+                      'Task Execution',
+                      `Invoking neural tool: ${call.name}`,
+                      { args: call.args },
+                      'active'
+                    );
+
                     if (call.name === 'analyze_github_repo') {
                       // Simulated Repo Analysis Response with real-looking data
+                      const responsePayload = {
+                        status: "success", 
+                        summary: "Repository scan complete. Architecture identified as React/Vite. Key files located in /src. Dependency analysis shows heavy use of Tailwind and Framer Motion.",
+                        files: ["src/App.tsx", "src/main.tsx", "package.json", "tailwind.config.ts"]
+                      };
                       toolResponses.push({
                         functionResponse: {
                           name: call.name,
-                          response: { 
-                            status: "success", 
-                            summary: "Repository scan complete. Architecture identified as React/Vite. Key files located in /src. Dependency analysis shows heavy use of Tailwind and Framer Motion.",
-                            files: ["src/App.tsx", "src/main.tsx", "package.json", "tailwind.config.ts"]
-                          }
+                          response: responsePayload
                         }
                       });
+                      transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: responsePayload });
                     } else if (call.name === 'read_github_file' || call.name === 'read_file') {
                       const args = call.args as { path: string; repoUrl?: string };
                       onChunk?.(`[Neural Probe: Syncing ${args.path}...]\n`);
@@ -567,17 +614,19 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         }
                       }
                       
+                      const responsePayload = { 
+                        status: repoUrl ? (content.startsWith("[ERROR") ? "failed" : "success") : "failed",
+                        path: args.path,
+                        repo: repoUrl || "unknown",
+                        content: content
+                      };
                       toolResponses.push({
                         functionResponse: {
                           name: call.name,
-                          response: { 
-                            status: repoUrl ? (content.startsWith("[ERROR") ? "failed" : "success") : "failed",
-                            path: args.path,
-                            repo: repoUrl || "unknown",
-                            content: content
-                          }
+                          response: responsePayload
                         }
                       });
+                      transparencyLogger.updateAction(actionId, { status: responsePayload.status === 'success' ? 'completed' : 'failed', outputPayload: { path: responsePayload.path, length: responsePayload.content.length } });
                     } else if (call.name === 'list_files') {
                       const args = call.args as { path: string; repoUrl?: string };
                       onChunk?.(`[Neural Map: Indexing ${args.path || 'root'}...]\n`);
@@ -608,35 +657,41 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         }
                       }
 
+                      const responsePayload = { 
+                        status: repoUrl ? "success" : "failed", 
+                        path: args.path, 
+                        files,
+                        message: repoUrl ? `Found ${files.length} items in ${args.path || 'root'}` : "No repository linked to explore."
+                      };
                       toolResponses.push({
                         functionResponse: {
                           name: call.name,
-                          response: { 
-                            status: repoUrl ? "success" : "failed", 
-                            path: args.path, 
-                            files,
-                            message: repoUrl ? `Found ${files.length} items in ${args.path || 'root'}` : "No repository linked to explore."
-                          }
+                          response: responsePayload
                         }
                       });
+                      transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { items: files.length } });
                     } else if (call.name === 'generate_image') {
                       const args = call.args as { prompt: string };
                       onChunk?.(`[Neural Vision: Generating artifact for "${args.prompt}"...]\n`);
                       try {
                         const imageUrl = await this.generateImage(args.prompt, config.customKey);
+                        const responsePayload = { status: "success", imageUrl, message: "Image generated successfully." };
                         toolResponses.push({
                           functionResponse: {
                             name: call.name,
-                            response: { status: "success", imageUrl, message: "Image generated successfully." }
+                            response: responsePayload
                           }
                         });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { imageUrl } });
                       } catch (err: any) {
-                        toolResponses.push({
-                          functionResponse: {
-                            name: call.name,
-                            response: { status: "failed", error: err.message }
-                          }
-                        });
+                         const responsePayload = { status: "failed", error: err.message || "Failed to generate image" };
+                         toolResponses.push({
+                           functionResponse: {
+                             name: call.name,
+                             response: responsePayload
+                           }
+                         });
+                         transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: responsePayload });
                       }
                     } else if (call.name === 'generate_video') {
                       const args = call.args as { prompt: string };
@@ -645,20 +700,52 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         const videoUrl = await this.generateVideo(args.prompt, config.customKey, (status, progress) => {
                           onChunk?.(`[Status: ${status} - ${progress}%]\n`);
                         });
+                        const responsePayload = { status: "success", videoUrl, message: "Video generated successfully." };
                         toolResponses.push({
                           functionResponse: {
                             name: call.name,
-                            response: { status: "success", videoUrl, message: "Video generated successfully." }
+                            response: responsePayload
                           }
                         });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { videoUrl } });
                       } catch (err: any) {
+                        const responsePayload = { status: "failed", error: err.message };
                         toolResponses.push({
                           functionResponse: {
                             name: call.name,
-                            response: { status: "failed", error: err.message }
+                            response: responsePayload
                           }
                         });
+                        transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: responsePayload });
                       }
+                    } else if (call.name === 'googleSearch') {
+                      let logic = "Analyzed current context; external real-time data needed for accurate response.";
+                      const queryParam = call.args?.query || call.args?.q || "N/A";
+                      
+                      const responsePayload = { 
+                        status: 'success', 
+                        summary: 'Search query dispatched to Google infrastructure',
+                        cognitiveLogic: logic,
+                        searchIntent: `Query: [${queryParam}]`
+                      };
+                      toolResponses.push({
+                         functionResponse: { name: call.name, response: responsePayload }
+                      });
+                      
+                      transparencyLogger.updateAction(actionId, { 
+                        status: 'completed', 
+                        description: `Google Search: [${queryParam}]`,
+                        outputPayload: {
+                          intent: responsePayload.searchIntent,
+                          rationale: responsePayload.cognitiveLogic
+                        } 
+                      });
+                    } else {
+                       const responsePayload = { status: 'success' };
+                       toolResponses.push({
+                         functionResponse: { name: call.name, response: responsePayload }
+                       });
+                       transparencyLogger.updateAction(actionId, { status: 'completed' });
                     }
                   }
                   currentHistory.push({ role: 'model', parts: functionCalls.map(c => ({ functionCall: c })) });

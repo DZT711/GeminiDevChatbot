@@ -18,7 +18,7 @@ class GithubService {
     const [, owner, repoRaw] = match;
     const repo = repoRaw.replace(/\.git$/, '');
 
-    const headers = import.meta.env.VITE_GITHUB_TOKEN ? { Authorization: `token ${import.meta.env.VITE_GITHUB_TOKEN}` } : undefined;
+    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
     
     // Fetch general repo info
     const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
@@ -71,7 +71,7 @@ class GithubService {
       console.warn("Failed to get repo info, defaulting branch to main");
     }
 
-    const headers = import.meta.env.VITE_GITHUB_TOKEN ? { Authorization: `token ${import.meta.env.VITE_GITHUB_TOKEN}` } : undefined;
+    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
 
     const cleanPath = path.replace(/^\/+/, '');
     // First try the REST API for potential better metadata/handling
@@ -123,7 +123,7 @@ class GithubService {
       console.warn("Failed to get repo info, defaulting branch to main");
     }
 
-    const headers = import.meta.env.VITE_GITHUB_TOKEN ? { Authorization: `token ${import.meta.env.VITE_GITHUB_TOKEN}` } : undefined;
+    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
     const cleanPath = path.replace(/^\/+/, '');
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}?ref=${branch}`;
     try {

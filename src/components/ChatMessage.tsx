@@ -8,6 +8,7 @@ import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy
 import { cn } from '@/lib/utils';
 import { Attachment } from '@/services/geminiService';
 import { CodePreview } from './CodePreview';
+import { ThinkingProcessDrawer } from './ThinkingProcessDrawer';
 
 const FilePreview = ({ attachment }: { attachment: Attachment }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -203,13 +204,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
       let language = 'text';
 
       if (React.isValidElement(children)) {
-        if (typeof children.props.children === 'string') {
-          codeString = children.props.children;
-        } else if (Array.isArray(children.props.children)) {
-          codeString = children.props.children.join('');
+        const props = children.props as any;
+        if (typeof props.children === 'string') {
+          codeString = props.children;
+        } else if (Array.isArray(props.children)) {
+          codeString = props.children.join('');
         }
         
-        const className = children.props.className || '';
+        const className = props.className || '';
         const match = /language-(\w+)/.exec(className);
         if (match) {
           language = match[1];
@@ -425,6 +427,11 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
             </div>
           ) : (
             <div className="space-y-4">
+              {isLatest && !isUser && (
+                <div className="-mx-2 mb-4">
+                  <ThinkingProcessDrawer theme={theme} />
+                </div>
+              )}
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={markdownComponents as any}

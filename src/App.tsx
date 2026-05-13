@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { TransparencyDashboard } from './components/TransparencyDashboard';
+import { transparencyLogger } from './utils/transparencyLogger';
 import { findSkillSuggestions } from './utils/skillMatcher';
 import { getAutocompleteSuggestion } from './utils/autocompleteEngine';
 import { 
@@ -229,8 +231,9 @@ export default function App() {
     const interval = setInterval(checkReset, 1000 * 60 * 60); // Check every hour
     return () => clearInterval(interval);
   }, []);
-  const [thinkingMode, setThinkingMode] = useState<ThinkingLevel>(ThinkingLevel.LOW);
+  const [thinkingMode, setThinkingMode] = useState<string>('none');
   const [useSearch, setUseSearch] = useState(false);
+  const [showTransparency, setShowTransparency] = useState(false);
   
   // Abort Control
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -490,6 +493,12 @@ export default function App() {
     setMessages(prev => [...prev, initialMsg]);
 
     try {
+      transparencyLogger.log(
+        'Task Execution',
+        `Initializing Image Generation node`,
+        { prompt }
+      );
+
       const imageUrl = await geminiService.generateImage(prompt, activeApiKey);
       const finalMsg: Message = { 
         id: `img-${Date.now()}`,
@@ -535,6 +544,12 @@ export default function App() {
     setMessages(prev => [...prev, initialMsg]);
 
     try {
+      transparencyLogger.log(
+        'Task Execution',
+        `Initializing Video Generation node (Temporal synthesis)`,
+        { prompt }
+      );
+
       const videoUrl = await geminiService.generateVideo(
         prompt, 
         activeApiKey,
@@ -668,6 +683,13 @@ export default function App() {
         setAttachments(prev => [...prev, repoContent]);
         setIsRepoModalOpen(false);
         setValidationStatus({ type: 'success', message: `Neural map of ${info.name} added.` });
+        
+        transparencyLogger.log(
+          'Learning',
+          `Parsed repository neural map from GitHub: ${info.owner}/${info.name}`,
+          { url: `https://github.com/${info.owner}/${info.name}` }
+        );
+
         setTimeout(() => setValidationStatus(null), 3000);
       } else {
         throw new Error("Could not fetch repo info");
@@ -684,6 +706,11 @@ export default function App() {
     if (!input.trim() || isEnhancingPrompt) return;
     setIsEnhancingPrompt(true);
     try {
+      transparencyLogger.log(
+        'Analysis',
+        `Enhancing prompt complexity and structure`,
+        { originalLength: input.length }
+      );
       const enhanced = await geminiService.enhancePrompt(input, activeApiKey);
       setInput(enhanced);
     } catch (err) {
@@ -725,6 +752,13 @@ export default function App() {
             // Also append this auto-detected repo to persistent state
             setAttachments(prev => [...prev.filter(a => a.type === 'repo'), repoContent]);
             setValidationStatus({ type: 'success', message: `Neural Link established with ${info.name}` });
+            
+            transparencyLogger.log(
+              'Research/Retrieval',
+              `Retrieved repository context from GitHub: ${info.owner}/${info.name}`,
+              { url: `https://github.com/${info.owner}/${info.name}` }
+            );
+
             setTimeout(() => setValidationStatus(null), 3000);
           }
         } catch (e: any) {
@@ -767,7 +801,28 @@ export default function App() {
         return;
       }
 
+      let mainActionId: string | undefined;
       try {
+        mainActionId = transparencyLogger.log(
+          'Analysis', 
+          `Initializing neural generation process for model: ${currentModel}`,
+          {
+             model: currentModel,
+             provider: activeKey?.provider,
+             useSearch,
+             thinkingLevel: currentModel === ModelId.PRO ? undefined : (thinkingMode !== 'none' ? thinkingMode as any : undefined)
+          },
+          'active'
+        );
+
+        if (useSearch) {
+          transparencyLogger.log(
+            'Research/Retrieval',
+            'Authorized external Google Search access requested',
+            { domains: ['*.google.com'] }
+          );
+        }
+
         const effectiveModel = currentModel === ModelId.HYBRID ? geminiService.getCurrentModel() : currentModel;
         const assistantMessage: Message = { 
           id: `msg-${Date.now() + 1}`,
@@ -804,7 +859,7 @@ export default function App() {
           { 
             model: currentModel,
             useSearch, 
-            thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
+            thinkingLevel: currentModel === ModelId.PRO ? undefined : (thinkingMode !== 'none' ? thinkingMode as any : undefined),
             signal: abortControllerRef.current.signal,
             attachments: userMessage.attachments,
             customKey: activeKey?.key,
@@ -856,6 +911,7 @@ export default function App() {
         setCurrentModel(geminiService.getCurrentModel());
         
       } catch (error: any) {
+        if (mainActionId) transparencyLogger.updateAction(mainActionId, { status: 'failed' });
         if (error.message === 'Operation aborted') {
           setMessages(prev => [
             ...prev.slice(0, -1),
@@ -868,12 +924,20 @@ export default function App() {
           ]);
         }
       } finally {
+        if (mainActionId) transparencyLogger.updateAction(mainActionId, { status: 'completed' });
         setIsLoading(false);
       }
     } else {
       // Handle overrideMessages (edit case)
       // Similar logic but don't clear input
-      try {
+        let mainRetryActionId: string | undefined;
+        try {
+          mainRetryActionId = transparencyLogger.log(
+            'Analysis', 
+            `Retrying neural generation sequence`,
+            { model: currentModel },
+            'active'
+          );
         abortControllerRef.current = new AbortController();
         const processedInput = targetInput;
         
@@ -916,7 +980,7 @@ export default function App() {
           { 
             model: currentModel,
             useSearch, 
-            thinkingLevel: currentModel === ModelId.PRO ? undefined : thinkingMode,
+            thinkingLevel: currentModel === ModelId.PRO ? undefined : (thinkingMode !== 'none' ? thinkingMode as any : undefined),
             signal: abortControllerRef.current.signal,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
@@ -944,11 +1008,13 @@ export default function App() {
           return prev;
         });
       } catch (error: any) {
+        if (mainRetryActionId) transparencyLogger.updateAction(mainRetryActionId, { status: 'failed' });
         setMessages(prev => [
           ...prev, 
           { id: `err-${Date.now()}`, role: 'model', content: `**Error:** ${error.message || "An unexpected error occurred."}` }
         ]);
       } finally {
+        if (mainRetryActionId) transparencyLogger.updateAction(mainRetryActionId, { status: 'completed' });
         setIsLoading(false);
         abortControllerRef.current = null;
       }
@@ -1365,6 +1431,16 @@ export default function App() {
                 </button>
 
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
+
+                <button 
+                  onClick={() => setShowTransparency(true)}
+                  className="p-2 hover:bg-green-500/20 rounded-xl text-green-500 hover:text-green-400 transition-all border border-transparent hover:border-green-500/30 active:scale-90"
+                  title="Model Transparency Dashboard"
+                >
+                  <Shield size={16} />
+                </button>
+
+                <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
                 
                 <button 
                   onClick={() => setAutoScroll(!autoScroll)}
@@ -1564,16 +1640,38 @@ export default function App() {
                             </button>
                           </div>
 
-                          <button 
-                            onClick={() => setThinkingMode(thinkingMode === ThinkingLevel.HIGH ? ThinkingLevel.LOW : ThinkingLevel.HIGH)}
-                            className={cn(
-                              "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
-                              thinkingMode === ThinkingLevel.HIGH ? "bg-zinc-800 text-amber-500 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
+                          {/* Deep Mode Toggle */}
+                          <div className={cn(
+                            "flex items-center rounded-full transition-all border",
+                            thinkingMode !== 'none' ? "bg-zinc-900 border-zinc-700" : "bg-transparent border-transparent"
+                          )}>
+                            <button 
+                              onClick={() => setThinkingMode(thinkingMode === 'none' ? 'low' : 'none')}
+                              className={cn(
+                                "flex items-center gap-2 px-4 py-1.5 rounded-full transition-all text-[10px] font-bold uppercase tracking-wider",
+                                thinkingMode !== 'none' ? "text-amber-500 shadow-inner" : "text-zinc-500 hover:text-zinc-300"
+                              )}
+                            >
+                              <Brain size={12} />
+                              Deep
+                            </button>
+                            
+                            {thinkingMode !== 'none' && (
+                              <div className="flex items-center border-l border-zinc-800 pr-1 pl-1">
+                                <select 
+                                  value={thinkingMode}
+                                  onChange={(e) => setThinkingMode(e.target.value as any)}
+                                  className="bg-transparent text-[10px] font-bold uppercase tracking-wider text-amber-500/80 outline-none cursor-pointer p-1 appearance-none"
+                                >
+                                  <option value="low">Low</option>
+                                  <option value="medium">Medium</option>
+                                  <option value="high">High</option>
+                                  {currentModel !== ModelId.PRO && <option value="extra_high">Extra High</option>}
+                                </select>
+                                <ChevronDown size={10} className="text-amber-500/50 -ml-1 pointer-events-none" />
+                              </div>
                             )}
-                          >
-                            <Brain size={12} />
-                            Deep
-                          </button>
+                          </div>
                         </div>
 
                         <div className={cn(
@@ -1975,6 +2073,13 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Transparency Dashboard Modal */}
+      <TransparencyDashboard 
+        isOpen={showTransparency} 
+        onClose={() => setShowTransparency(false)} 
+        theme={theme}
+      />
 
       {/* Settings Modal */}
       <AnimatePresence>
