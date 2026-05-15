@@ -88,16 +88,12 @@ apiRouter.get('/auth/me', async (req, res) => {
 });
 
 const getBaseUrl = (req: express.Request) => {
-  // If running on Vercel, use the host header
-  let host = req.get('host') || 'localhost:3000';
-  let protocol = req.protocol || 'http';
-  // Vercel routes standard HTTP host forwards securely
-  if (req.headers['x-forwarded-proto']) {
-    protocol = req.headers['x-forwarded-proto'] as string;
-  } else if (host.includes('vercel.app')) {
+  let host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3000';
+  let protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  if (String(host).includes('vercel.app')) {
     protocol = 'https';
   }
-  return protocol + "://" + host;
+  return `${protocol}://${host}`;
 };
 
 apiRouter.get('/auth/github/url', (req, res) => {
