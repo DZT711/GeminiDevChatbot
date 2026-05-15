@@ -1,0 +1,353 @@
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+import bcrypt from 'bcrypt';
+import * as jose from 'jose';
+import { eq } from 'drizzle-orm';
+import { db } from './src/db/index';
+import { users } from './src/db/schema';
+
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
+
+async function startServer() {
+  const app = express();
+  const PORT = 3000;
+
+  app.use(express.json());
+
+  // API Routes
+  app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', using: 'supabase-postgres' });
+  });
+
+  app.post('/api/auth/register', async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+      
+      const existing = await db.query.users.findFirst({ where: eq(users.email, email) });
+      if (existing) return res.status(400).json({ error: 'Email in use' });
+
+      const hash = await bcrypt.hash(password, 10);
+      const [user] = await db.insert(users).values({
+        email,
+        passwordHash: hash
+      }).returning();
+
+      const token = await new jose.SignJWT({ id: user.id, email: user.email })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('7d')
+        .sign(JWT_SECRET);
+
+      res.json({ user: { id: user.id, email: user.email }, token });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.post('/api/auth/login', async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+      
+      const user = await db.query.users.findFirst({ where: eq(users.email, email) });
+      if (!user || !user.passwordHash) return res.status(401).json({ error: 'Invalid credentials' });
+
+      const valid = await bcrypt.compare(password, user.passwordHash);
+      if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+
+      const token = await new jose.SignJWT({ id: user.id, email: user.email })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('7d')
+        .sign(JWT_SECRET);
+
+      res.json({ user: { id: user.id, email: user.email }, token });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
+  app.get('/api/auth/me', async (req, res) => {
+    try {
+      const authHeader = req.headers.authorization;
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'No token' });
+      }
+      
+      const token = authHeader.split(' ')[1];
+      const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+      
+      if (!payload || !payload.id) {
+        return res.status(401).json({ error: 'Invalid token' });
+      }
+
+      const user = await db.query.users.findFirst({ where: eq(users.id, payload.id as string) });
+      if (!user) return res.status(401).json({ error: 'User not found' });
+      
+      res.json({ id: user.id, email: user.email, name: user.name });
+    } catch (e: any) {
+      res.status(401).json({ error: 'Unauthorized' });
+    }
+  });
+
+  const getBaseUrl = (req: express.Request) => {
+    // If running in production (e.g. Vercel), we could use process.env.PUBLIC_URL or derive it
+    // But since it's an API route handled by our express server on preview or local
+    return req.protocol + "://" + req.get('host');
+  };
+
+  app.get('/api/auth/github/url', (req, res) => {
+    if (!process.env.GITHUB_CLIENT_ID) {
+      return res.status(501).json({ error: 'GitHub OAuth is not configured. Missing GITHUB_CLIENT_ID.' });
+    }
+    const redirectUri = `${getBaseUrl(req)}/api/auth/github/callback`;
+    const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email`;
+    res.json({ url });
+  });
+
+  app.get('/api/auth/github/callback', async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) return res.status(400).send('No code provided');
+
+    try {
+      // 1. Get access token
+      const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        body: JSON.stringify({
+          client_id: process.env.GITHUB_CLIENT_ID,
+          client_secret: process.env.GITHUB_CLIENT_SECRET,
+          code,
+        }),
+      });
+      const tokenData = await tokenResponse.json();
+      if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
+
+      // 2. Get user info
+      const userResponse = await fetch('https://api.github.com/user', {
+        headers: {
+          'Authorization': `Bearer ${tokenData.access_token}`,
+          'Accept': 'application/json',
+        },
+      });
+      const userData = await userResponse.json();
+
+      let email = userData.email;
+      // 3. GitHub users might have hidden emails
+      if (!email) {
+        const emailsResponse = await fetch('https://api.github.com/user/emails', {
+          headers: {
+            'Authorization': `Bearer ${tokenData.access_token}`,
+            'Accept': 'application/json',
+          },
+        });
+        const emailsData = await emailsResponse.json();
+        const primaryEmail = emailsData.find((e: any) => e.primary && e.verified);
+        email = primaryEmail ? primaryEmail.email : emailsData[0]?.email;
+      }
+      
+      if (!email) throw new Error('No email found from GitHub');
+
+      // 4. Upsert user entirely using drizzle
+      // Check if user exists via email or accounts table
+      let user = await db.query.users.findFirst({ where: eq(users.email, email) });
+      if (!user) {
+        [user] = await db.insert(users).values({
+          email: email,
+          name: userData.name || userData.login,
+          avatarUrl: userData.avatar_url,
+        }).returning();
+      }
+
+      // Check account mapping
+      const { accounts } = await import('./src/db/schema');
+      const existingAccount = await db.query.accounts.findFirst({
+        where: (accounts, { eq, and }) =>
+          and(eq(accounts.provider, 'github'), eq(accounts.providerAccountId, String(userData.id)))
+      });
+
+      if (!existingAccount) {
+        await db.insert(accounts).values({
+          userId: user.id,
+          provider: 'github',
+          providerAccountId: String(userData.id),
+          accessToken: tokenData.access_token,
+        });
+      }
+
+      // Generate JWT
+      const token = await new jose.SignJWT({ id: user.id, email: user.email })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('7d')
+        .sign(JWT_SECRET);
+
+      // Send success message to parent window and close popup
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener && window.opener !== window) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', token: '${token}' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/auth/callback?token=${token}';
+              }
+            </script>
+            <p>Authentication successful. This window should close automatically.</p>
+          </body>
+        </html>
+      `);
+    } catch (e: any) {
+      console.error('GitHub oauth error:', e);
+      const err = encodeURIComponent(e.message);
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener && window.opener !== window) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/auth/callback?error=${err}';
+              }
+            </script>
+            <p>Authentication failed. This window should close automatically.</p>
+          </body>
+        </html>
+      `);
+    }
+  });
+
+  app.get('/api/auth/google/url', (req, res) => {
+    if (!process.env.GOOGLE_CLIENT_ID) {
+      return res.status(501).json({ error: 'Google OAuth is not configured. Missing GOOGLE_CLIENT_ID.' });
+    }
+    const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+    const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=email profile`;
+    res.json({ url });
+  });
+
+  app.get('/api/auth/google/callback', async (req, res) => {
+    const code = req.query.code as string;
+    if (!code) return res.status(400).send('No code provided');
+
+    try {
+      const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
+      // 1. Get tokens
+      const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: process.env.GOOGLE_CLIENT_ID || '',
+          client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+          code,
+          grant_type: 'authorization_code',
+          redirect_uri: redirectUri,
+        }),
+      });
+      const tokenData = await tokenResponse.json();
+      if (tokenData.error) throw new Error(tokenData.error_description || tokenData.error);
+
+      // 2. Get user info
+      const userResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { 'Authorization': `Bearer ${tokenData.access_token}` },
+      });
+      const userData = await userResponse.json();
+      
+      if (!userData.email) throw new Error('No email found from Google');
+
+      // 3. Upsert user
+      let user = await db.query.users.findFirst({ where: eq(users.email, userData.email) });
+      if (!user) {
+        [user] = await db.insert(users).values({
+          email: userData.email,
+          name: userData.name,
+          avatarUrl: userData.picture,
+        }).returning();
+      }
+
+      // Check account mapping
+      const { accounts } = await import('./src/db/schema');
+      const existingAccount = await db.query.accounts.findFirst({
+        where: (accounts, { eq, and }) =>
+          and(eq(accounts.provider, 'google'), eq(accounts.providerAccountId, String(userData.id)))
+      });
+
+      if (!existingAccount) {
+        await db.insert(accounts).values({
+          userId: user.id,
+          provider: 'google',
+          providerAccountId: String(userData.id),
+          accessToken: tokenData.access_token,
+        });
+      }
+
+      // Generate JWT
+      const token = await new jose.SignJWT({ id: user.id, email: user.email })
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('7d')
+        .sign(JWT_SECRET);
+
+      // Send success message to parent window and close popup
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener && window.opener !== window) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', token: '${token}' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/auth/callback?token=${token}';
+              }
+            </script>
+            <p>Authentication successful. This window should close automatically.</p>
+          </body>
+        </html>
+      `);
+    } catch (e: any) {
+      console.error('Google oauth error:', e);
+      const err = encodeURIComponent(e.message);
+      res.send(`
+        <html>
+          <body>
+            <script>
+              if (window.opener && window.opener !== window) {
+                window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+                window.close();
+              } else {
+                window.location.href = '/auth/callback?error=${err}';
+              }
+            </script>
+            <p>Authentication failed. This window should close automatically.</p>
+          </body>
+        </html>
+      `);
+    }
+  });
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), 'dist');
+    app.use(express.static(distPath));
+    app.get('*', (req, res) => {
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();
