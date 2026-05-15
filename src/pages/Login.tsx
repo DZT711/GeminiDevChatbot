@@ -44,7 +44,7 @@ export default function Login() {
       
       const authWindow = window.open(
         data.url,
-        'oauth_popup',
+        '_blank',
         'width=600,height=700'
       )
       
