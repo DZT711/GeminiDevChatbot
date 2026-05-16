@@ -35,8 +35,12 @@ function getSafeDbUrl(url: string | undefined): string | undefined {
 
 const { Pool } = pg;
 
+const dbUrl = process.env.DATABASE_URL;
+const isLocal = !dbUrl || dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
+
 const pool = new Pool({
-  connectionString: getSafeDbUrl(process.env.DATABASE_URL),
+  connectionString: getSafeDbUrl(dbUrl),
+  ssl: isLocal ? undefined : { rejectUnauthorized: false },
 });
 
 export const db = drizzle(pool, { schema });

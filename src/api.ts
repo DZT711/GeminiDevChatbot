@@ -2,10 +2,27 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import { eq } from 'drizzle-orm';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import path from 'path';
 import { db } from './db/index.js';
 import { users, accounts } from './db/schema.js';
 
 export const apiRouter = express.Router();
+
+let migrationPromise: Promise<void> | null = null;
+
+apiRouter.use(async (req, res, next) => {
+  if (!migrationPromise) {
+    migrationPromise = migrate(db, { migrationsFolder: path.join(process.cwd(), 'drizzle') })
+      .then(() => console.log('Database migrated successfully!'))
+      .catch(err => {
+        console.error('Migration failed:', err);
+        migrationPromise = null; // retry next time
+      });
+  }
+  await migrationPromise;
+  next();
+});
 
 apiRouter.use(express.json());
 
@@ -206,7 +223,8 @@ apiRouter.get('/auth/github/callback', async (req, res) => {
     `);
   } catch (e: any) {
     console.error('GitHub oauth error:', e);
-    const err = encodeURIComponent(e.message);
+    const errMessage = e.cause ? e.cause.message : e.message;
+    const err = encodeURIComponent(errMessage);
     res.send(`
       <html>
         <body>
@@ -313,7 +331,8 @@ apiRouter.get('/auth/google/callback', async (req, res) => {
     `);
   } catch (e: any) {
     console.error('Google oauth error:', e);
-    const err = encodeURIComponent(e.message);
+    const errMessage = e.cause ? e.cause.message : e.message;
+    const err = encodeURIComponent(errMessage);
     res.send(`
       <html>
         <body>
