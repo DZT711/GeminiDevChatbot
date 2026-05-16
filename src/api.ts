@@ -2,8 +2,8 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import { eq } from 'drizzle-orm';
-import { db } from './db/index';
-import { users, accounts } from './db/schema';
+import { db } from './db/index.js';
+import { users, accounts } from './db/schema.js';
 
 export const apiRouter = express.Router();
 
