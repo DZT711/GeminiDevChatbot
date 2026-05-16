@@ -1,5 +1,5 @@
 import { drizzle } from 'drizzle-orm/node-postgres';
-import pkg from 'pg';
+import pg from 'pg';
 import * as schema from './schema';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -33,7 +33,7 @@ function getSafeDbUrl(url: string | undefined): string | undefined {
   return `${prefix}${user}:${pass}${hostPortDb}`;
 }
 
-const { Pool } = pkg;
+const { Pool } = pg;
 
 const pool = new Pool({
   connectionString: getSafeDbUrl(process.env.DATABASE_URL),

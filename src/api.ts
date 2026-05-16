@@ -97,12 +97,16 @@ const getBaseUrl = (req: express.Request) => {
 };
 
 apiRouter.get('/auth/github/url', (req, res) => {
-  if (!process.env.GITHUB_CLIENT_ID) {
-    return res.status(501).json({ error: 'GitHub OAuth is not configured. Missing GITHUB_CLIENT_ID.' });
+  try {
+    if (!process.env.GITHUB_CLIENT_ID) {
+      return res.status(501).json({ error: 'GitHub OAuth is not configured. Missing GITHUB_CLIENT_ID.' });
+    }
+    const redirectUri = `${getBaseUrl(req)}/api/auth/github/callback`;
+    const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email`;
+    res.json({ url });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
-  const redirectUri = `${getBaseUrl(req)}/api/auth/github/callback`;
-  const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email`;
-  res.json({ url });
 });
 
 apiRouter.get('/auth/github/callback', async (req, res) => {
