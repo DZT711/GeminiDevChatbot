@@ -1,5 +1,5 @@
 import express from 'express';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import { eq } from 'drizzle-orm';
 import { db } from './db/index';

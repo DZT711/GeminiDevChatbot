@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="g" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#00D2FF" />
+      <stop offset="100%" stop-color="#0066FF" />
+    </linearGradient>
+  </defs>
+  <!-- Gear -->
+  <path fill="url(#g)" d="M50 5C53 5 56 6 58 7L63 2C67 4 70 7 73 10L68 15C71 19 73 23 74 27L81 29C81 33 82 37 82 41L75 44C75 48 74 52 72 56L78 61C76 65 73 69 70 72L63 68C60 71 56 73 52 74L49 81C45 81 41 81 37 80L35 73C31 72 27 70 23 67L17 72C14 69 11 65 8 62L14 56C12 53 10 49 9 45L2 42C2 38 2 34 3 31L10 28C11 24 13 20 16 17L10 12C13 9 16 6 20 4L26 9C29 7 32 6 36 5L39 0C43 0 46 0 50 1Z"/>
+  <circle cx="50" cy="40" r="30" fill="#fff" />
+  <!-- Brain simple paths -->
+  <path fill="none" stroke="url(#g)" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" d="M50 20 C42 20 35 25 35 33 C35 36 36 38 38 40 C32 41 28 46 28 52 C28 58 32 63 38 64 C38 68 41 71 45 71 C45 76 55 76 55 71 C59 71 62 68 62 64 C68 63 72 58 72 52 C72 46 68 41 62 40 C64 38 65 36 65 33 C65 25 58 20 50 20 Z M50 20 V71 M40 33 C40 33 45 40 50 40 M60 33 C60 33 55 40 50 40" />
+</svg>
