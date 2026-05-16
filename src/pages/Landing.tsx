@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+/* ── Interfaces ── */
+interface UserContext {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+  isGuest?: boolean;
+}
+
 /* ── Icons ─────────────────────────────────────────────── */
 const IconCode = () => (
   <svg className="w-8 h-8 text-accent-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -45,6 +54,26 @@ function CodeSnippet({ code }: { code: string }) {
 /* ── Main component ─────────────────────────────────────── */
 export default function Landing() {
   const navigate = useNavigate()
+  const [user, setUser] = useState<UserContext | null>(null);
+
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const token = localStorage.getItem('session');
+        if (!token) return;
+        const res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data);
+        }
+      } catch (e) {
+        console.error("Failed to fetch user context", e);
+      }
+    };
+    fetchUser();
+  }, []);
 
   const features = [
     { icon: <IconCode />,  title: 'AI Code Assistance',         desc: 'Instant code suggestions, bug fixes, and line-by-line explanations.' },
@@ -85,12 +114,35 @@ export default function Landing() {
               {label}
             </a>
           ))}
-          <button
-            onClick={() => navigate('/login')}
-            className="bg-accent-blue text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-blue-500 transition-colors"
-          >
-            Sign in
-          </button>
+          {user ? (
+            <div className="flex items-center gap-4 hidden sm:flex">
+              <span className="text-sm font-semibold text-text-primary px-3 py-1.5 rounded-lg border border-gray-700 bg-gray-800/50">
+                Hi, {user.name || user.email.split('@')[0]}
+              </span>
+              <button
+                onClick={() => navigate('/app')}
+                className="bg-accent-blue text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-blue-500 transition-colors"
+              >
+                Dashboard
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem('session');
+                  setUser(null);
+                }}
+                className="text-red-400 border border-red-500/30 text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+              >
+                Logout
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => navigate('/login')}
+              className="bg-accent-blue text-white text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-blue-500 transition-colors"
+            >
+              Sign in
+            </button>
+          )}
         </div>
       </nav>
 
@@ -108,10 +160,10 @@ export default function Landing() {
         </p>
         <div className="flex gap-4 flex-wrap justify-center">
           <button
-            onClick={() => navigate('/login')}
+            onClick={() => navigate(user ? '/app' : '/login')}
             className="bg-accent-blue text-white font-bold px-8 py-3.5 rounded-xl text-base hover:bg-blue-500 transition-all shadow-lg shadow-accent-blue/20"
           >
-            Get Started — it's free →
+            {user ? "Go to Dashboard →" : "Get Started — it's free →"}
           </button>
           <a
             href="https://github.com/DZT711/GeminiDevChatbot"
@@ -225,13 +277,13 @@ export default function Landing() {
       {/* ── CTA Banner ── */}
       <section className="py-20 px-8 bg-gradient-to-r from-accent-blue/10 via-slate-900 to-accent-blue/10 border-y border-accent-blue/10">
         <div className="max-w-2xl mx-auto text-center">
-          <h2 className="font-heading text-3xl mb-4">Ready to code smarter?</h2>
+          <h2 className="font-heading text-3xl mb-4">{user ? "Welcome back to DevEngine" : "Ready to code smarter?"}</h2>
           <p className="text-text-secondary mb-8">Join developers already using GeminiDevChatbot to build faster.</p>
           <button
-            onClick={() => navigate('/login')}
+            onClick={() => navigate(user ? '/app' : '/login')}
             className="bg-accent-blue text-white font-bold px-10 py-4 rounded-xl text-lg hover:bg-blue-500 transition-all shadow-lg shadow-accent-blue/20"
           >
-            Start for free →
+            {user ? "Open Dashboard →" : "Start for free →"}
           </button>
         </div>
       </section>

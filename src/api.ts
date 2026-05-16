@@ -1,6 +1,7 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
+import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import path from 'path';
@@ -81,6 +82,52 @@ apiRouter.post('/auth/login', async (req, res) => {
   }
 });
 
+apiRouter.put('/auth/me', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { name, avatarUrl } = req.body;
+    const [user] = await db.update(users)
+      .set({ name, avatarUrl })
+      .where(eq(users.id, payload.id as string))
+      .returning();
+
+    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+apiRouter.post('/auth/guest', async (req, res) => {
+  try {
+    const guestEmail = `guest_${crypto.randomUUID()}@guest.local`;
+    const [user] = await db.insert(users).values({
+      email: guestEmail,
+      name: 'Guest User',
+    }).returning();
+
+    const token = await new jose.SignJWT({ id: user.id, email: user.email, isGuest: true })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime('1d')
+      .sign(JWT_SECRET);
+
+    res.json({ user: { id: user.id, email: user.email, name: user.name, isGuest: true }, token });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 apiRouter.get('/auth/me', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -98,7 +145,7 @@ apiRouter.get('/auth/me', async (req, res) => {
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.id as string) });
     if (!user) return res.status(401).json({ error: 'User not found' });
     
-    res.json({ id: user.id, email: user.email, name: user.name });
+    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, isGuest: !!payload.isGuest });
   } catch (e: any) {
     res.status(401).json({ error: 'Unauthorized' });
   }

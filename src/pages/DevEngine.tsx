@@ -95,7 +95,17 @@ interface ApiKey {
   lastReset?: number; // Timestamp of last roll
 }
 
+interface UserContext {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string;
+  isGuest?: boolean;
+}
+
 export default function DevEngine() {
+  const [user, setUser] = useState<UserContext | null>(null);
+  
   // Persistence States
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     const saved = localStorage.getItem('dg_sessions');
@@ -183,12 +193,32 @@ export default function DevEngine() {
   const [newKeyProvider, setNewKeyProvider] = useState<Provider>(Provider.GOOGLE);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'keys' | 'context' | 'theme' | 'performance'>('keys');
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'keys' | 'context' | 'theme' | 'performance'>('keys');
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
   const [repoUrl, setRepoUrl] = useState('');
   
   const activeKey = apiKeys.find(k => k.id === activeKeyId);
   const activeApiKey = activeKey?.key || '';
+
+  // Initial Data Fetch
+  useEffect(() => {
+    const fetchUser = async () => {
+      try {
+        const token = localStorage.getItem('session');
+        if (!token) return;
+        const res = await fetch('/api/auth/me', {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setUser(data);
+        }
+      } catch (e) {
+        console.error("Failed to fetch user context", e);
+      }
+    };
+    fetchUser();
+  }, []);
 
   // Persistence Sync
   useEffect(() => {
@@ -1464,6 +1494,29 @@ export default function DevEngine() {
                 >
                   <Copy size={16} />
                 </button>
+
+                <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
+
+                <div className="flex items-center gap-3">
+                  <div className="flex flex-col items-end hidden sm:flex cursor-pointer" onClick={() => { setSettingsTab('profile'); setShowSettings(true); }}>
+                    <span className={cn("text-xs font-bold leading-tight", theme === 'light' ? "text-slate-900" : "text-white")}>
+                      {user?.name || user?.email?.split('@')[0] || 'User'}
+                    </span>
+                    <span className={cn("text-[9px] font-mono", theme === 'light' ? "text-slate-500" : "text-zinc-500")}>
+                      {user?.isGuest ? 'Guest Session' : 'Verified'}
+                    </span>
+                  </div>
+                  <button
+                    onClick={() => {
+                      localStorage.removeItem('session');
+                      window.location.href = '/';
+                    }}
+                    className="p-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase transition-colors"
+                  >
+                    Logout
+                  </button>
+                </div>
+
               </div>
             </header>
 
@@ -2123,15 +2176,15 @@ export default function DevEngine() {
               </div>
 
               <div className={cn(
-                "flex gap-8 border-b mb-8",
+                "flex gap-8 border-b mb-8 overflow-x-auto",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['keys', 'context', 'theme', 'performance'].map((tab) => (
+                {['profile', 'keys', 'context', 'theme', 'performance'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
                     className={cn(
-                      "pb-4 text-[10px] font-bold uppercase tracking-widest transition-all",
+                      "pb-4 text-[10px] whitespace-nowrap font-bold uppercase tracking-widest transition-all",
                       settingsTab === tab 
                         ? (theme === 'light' ? "border-b-2 border-cyan-500 text-slate-900" : "border-b-2 border-cyan-500 text-white") 
                         : (theme === 'light' ? "text-slate-400 hover:text-slate-600" : "text-zinc-500 hover:text-zinc-300")
@@ -2143,6 +2196,78 @@ export default function DevEngine() {
               </div>
 
               <div className="space-y-6">
+                {settingsTab === 'profile' && (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">User Profile Configuration</label>
+                    </div>
+                    {user?.isGuest && (
+                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs rounded-xl flex items-start gap-2">
+                         <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                         <span>You are using a Guest Session. If you log out or clear your cache, your session data might be lost unless a permanent account is created. To upgrade, please log out and authenticate normally. Your data is still stored in the sandbox safely.</span>
+                      </div>
+                    )}
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                       <div className="space-y-1.5">
+                         <label className="text-[8px] font-mono text-zinc-500 uppercase">Registered Email</label>
+                         <input 
+                           type="text"
+                           value={user?.email || ''}
+                           disabled
+                           className="w-full bg-black/40 border border-zinc-800/50 rounded-xl px-4 py-2.5 text-xs text-zinc-500 font-mono cursor-not-allowed"
+                           title="Email cannot be changed"
+                         />
+                       </div>
+                       <div className="space-y-1.5">
+                         <label className="text-[8px] font-mono text-zinc-500 uppercase">Display Name</label>
+                         <input 
+                           type="text"
+                           value={user?.name || ''}
+                           onChange={(e) => setUser(prev => prev ? { ...prev, name: e.target.value } : null)}
+                           className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all"
+                         />
+                       </div>
+                       <div className="pt-2">
+                         <button
+                           onClick={async () => {
+                             if (!user) return;
+                             const token = localStorage.getItem('session');
+                             try {
+                               const res = await fetch('/api/auth/me', {
+                                 method: 'PUT',
+                                 headers: {
+                                   'Content-Type': 'application/json',
+                                   'Authorization': `Bearer ${token}`
+                                 },
+                                 body: JSON.stringify({ name: user.name, avatarUrl: user.avatarUrl })
+                               });
+                               if (res.ok) {
+                                 const updated = await res.json();
+                                 setUser(updated);
+                                 setValidationStatus({ type: 'success', message: 'Profile updated successfully.' });
+                                 setTimeout(() => setValidationStatus(null), 3000);
+                               }
+                             } catch(e: any) {
+                               setValidationStatus({ type: 'error', message: 'Failed to update profile.' });
+                               setTimeout(() => setValidationStatus(null), 3000);
+                             }
+                           }}
+                           className="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95"
+                         >
+                           Save Profile
+                         </button>
+                         {validationStatus && (
+                            <span className={cn(
+                              "text-xs font-mono ml-4", 
+                              validationStatus.type === 'success' ? "text-green-400" : "text-red-400"
+                            )}>
+                              {validationStatus.message}
+                            </span>
+                         )}
+                       </div>
+                    </div>
+                  </div>
+                )}
                 {settingsTab === 'performance' && (
                   <div className="space-y-6 max-h-[450px] overflow-y-auto custom-scrollbar pr-2">
                     <div className="flex items-center justify-between">

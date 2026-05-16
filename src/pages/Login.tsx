@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft } from 'lucide-react'
 
 /* ── Provider icons ─────────────────────────────────────── */
 const GitHubIcon = () => (
@@ -32,6 +33,7 @@ export default function Login() {
   const [appError, setAppError] = useState<string | null>(null)
   
   const [params]  = useSearchParams()
+  const navigate  = useNavigate()
   const errorKey  = params.get('error')
   const errorMsg  = appError || (errorKey ? (ERROR_MESSAGES[errorKey] ?? ERROR_MESSAGES.default) : null)
 
@@ -113,8 +115,33 @@ export default function Login() {
     }
   }
 
+  const handleGuest = async () => {
+    setLoading('guest')
+    setAppError(null)
+    try {
+      const res = await fetch('/api/auth/guest', {
+        method: 'POST'
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to create guest session')
+      
+      localStorage.setItem('session', data.token)
+      window.location.href = '/app'
+    } catch(e: any) {
+      setAppError(e.message)
+      setLoading(null)
+    }
+  }
+
   return (
-    <div className="min-h-screen bg-primary-dark flex items-center justify-center px-4">
+    <div className="min-h-screen bg-primary-dark flex items-center justify-center px-4 relative">
+      <button 
+        onClick={() => navigate('/')}
+        className="absolute top-6 left-6 flex items-center gap-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium bg-slate-800/50 hover:bg-slate-700/50 px-4 py-2 rounded-xl backdrop-blur-sm"
+      >
+        <ArrowLeft size={16} />
+        Back
+      </button>
       <div className="w-full max-w-md">
 
         {/* ── Logo + heading ── */}
@@ -178,6 +205,22 @@ export default function Login() {
                 : <GoogleIcon />
               }
               {loading === 'google' ? 'Redirecting to Google…' : 'Continue with Google'}
+            </button>
+            
+            <button
+              onClick={handleGuest}
+              disabled={!!loading}
+              className="flex items-center justify-center gap-3 w-full py-3 px-4
+                         bg-accent-blue/10 border border-accent-blue/30 hover:border-accent-blue/60 hover:bg-accent-blue/20
+                         rounded-xl text-accent-blue text-sm font-bold
+                         transition-all duration-200
+                         disabled:opacity-50 disabled:cursor-not-allowed mt-2"
+            >
+              {loading === 'guest'
+                ? <span className="w-4 h-4 border-2 border-accent-blue border-t-transparent rounded-full animate-spin" />
+                : null
+              }
+              {loading === 'guest' ? 'Initializing guest session...' : 'Try DevEngine Anonymously'}
             </button>
           </div>
 
