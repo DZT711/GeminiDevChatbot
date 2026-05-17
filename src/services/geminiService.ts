@@ -365,6 +365,7 @@ class GeminiService {
       customKey?: string;
       provider?: Provider;
       customInstructions?: string | null;
+      githubToken?: string;
       onModelSwitch?: (model: string) => void;
       onTokenUpdate?: (tokens: number) => void;
     } = {},
@@ -576,19 +577,48 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                     );
 
                     if (call.name === 'analyze_github_repo') {
-                      // Simulated Repo Analysis Response with real-looking data
-                      const responsePayload = {
-                        status: "success", 
-                        summary: "Repository scan complete. Architecture identified as React/Vite. Key files located in /src. Dependency analysis shows heavy use of Tailwind and Framer Motion.",
-                        files: ["src/App.tsx", "src/main.tsx", "package.json", "tailwind.config.ts"]
-                      };
+                      let args: any = call.args;
+                      let url = args.repository_url || args.url;
+                      if (!url) {
+                        try {
+                          const lastMsg = history[history.length - 1];
+                          if (lastMsg && Array.isArray(lastMsg.parts)) {
+                            const part = lastMsg.parts.find(p => p.text);
+                            if (part && part.text && part.text.includes("github.com/")) {
+                              const match = part.text.match(/https?:\/\/github\.com\/[^\/\s]+\/[^\/\s\n]+/);
+                              if (match) url = match[0];
+                            }
+                          }
+                        } catch(e) {}
+                      }
+
+                      let responsePayload: any;
+                      if (!url) {
+                        responsePayload = { status: "failed", error: "Missing repository URL" };
+                      } else {
+                        try {
+                          const info = await githubService.getRepoInfo(url, config.githubToken);
+                          if (info) {
+                            responsePayload = {
+                              status: "success",
+                              summary: `Repository scan complete.\n${githubService.formatRepoSummary(info)}`,
+                              files: info.topFiles
+                            };
+                          } else {
+                            responsePayload = { status: "failed", error: `Failed to retrieve information for ${url}` };
+                          }
+                        } catch (err: any) {
+                          responsePayload = { status: "failed", error: err.message };
+                        }
+                      }
+
                       toolResponses.push({
                         functionResponse: {
                           name: call.name,
                           response: responsePayload
                         }
                       });
-                      transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: responsePayload });
+                      transparencyLogger.updateAction(actionId, { status: responsePayload.status === 'success' ? 'completed' : 'failed', outputPayload: responsePayload });
                     } else if (call.name === 'read_github_file' || call.name === 'read_file') {
                       const args = call.args as { path: string; repoUrl?: string };
                       onChunk?.(`[Neural Probe: Syncing ${args.path}...]\n`);
@@ -612,7 +642,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                       let content = "[ERROR: File not found or repository link missing]";
                       if (repoUrl) {
                         try {
-                          const fetched = await githubService.getFileContent(repoUrl, args.path);
+                          const fetched = await githubService.getFileContent(repoUrl, args.path, config.githubToken);
                           if (fetched) content = fetched;
                         } catch (err: any) {
                           content = `[ERROR: ${err.message || 'Failed to fetch'}]`;
@@ -655,7 +685,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                       let files: any[] = [];
                       if (repoUrl) {
                         try {
-                          const fetchedFiles = await githubService.listDirectory(repoUrl, args.path);
+                          const fetchedFiles = await githubService.listDirectory(repoUrl, args.path, config.githubToken);
                           if (fetchedFiles) files = fetchedFiles;
                         } catch (err: any) {
                           console.error("List files error:", err);

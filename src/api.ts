@@ -88,7 +88,13 @@ apiRouter.put('/auth/me', async (req, res) => {
       .where(eq(users.id, payload.id as string))
       .returning();
 
-    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions });
+    const currentUser = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string),
+      with: { accounts: true }
+    });
+    const githubToken = currentUser?.accounts?.find(a => a.provider === 'github')?.accessToken;
+
+    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions, githubToken });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -128,10 +134,24 @@ apiRouter.get('/auth/me', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    const user = await db.query.users.findFirst({ where: eq(users.id, payload.id as string) });
+    const user = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string),
+      with: { accounts: true }
+    });
     if (!user) return res.status(401).json({ error: 'User not found' });
     
-    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions, isGuest: !!payload.isGuest });
+    const githubAccount = user.accounts?.find(a => a.provider === 'github');
+    const githubToken = githubAccount?.accessToken;
+
+    res.json({ 
+      id: user.id, 
+      email: user.email, 
+      name: user.name, 
+      avatarUrl: user.avatarUrl, 
+      customInstructions: user.customInstructions, 
+      isGuest: !!payload.isGuest,
+      githubToken
+    });
   } catch (e: any) {
     res.status(401).json({ error: 'Unauthorized' });
   }
@@ -152,7 +172,7 @@ apiRouter.get('/auth/github/url', (req, res) => {
       return res.status(501).json({ error: 'GitHub OAuth is not configured. Missing GITHUB_CLIENT_ID.' });
     }
     const redirectUri = `${getBaseUrl(req)}/api/auth/github/callback`;
-    const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email`;
+    const url = `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=user:email%20repo`;
     res.json({ url });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -229,6 +249,10 @@ apiRouter.get('/auth/github/callback', async (req, res) => {
         providerAccountId: String(userData.id),
         accessToken: tokenData.access_token,
       });
+    } else {
+      await db.update(accounts)
+        .set({ accessToken: tokenData.access_token })
+        .where(eq(accounts.id, existingAccount.id));
     }
 
     // Generate JWT

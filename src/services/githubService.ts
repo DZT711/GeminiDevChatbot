@@ -11,19 +11,20 @@ export interface GithubRepoInfo {
 }
 
 class GithubService {
-  async getRepoInfo(url: string): Promise<GithubRepoInfo | null> {
+  async getRepoInfo(url: string, token?: string): Promise<GithubRepoInfo | null> {
     const match = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)/);
     if (!match) return null;
 
     const [, owner, repoRaw] = match;
     const repo = repoRaw.replace(/\.git$/, '');
 
-    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
+    const resolvedToken = token || (import.meta as any).env.VITE_GITHUB_TOKEN;
+    const headers = resolvedToken ? { Authorization: `token ${resolvedToken}` } : undefined;
     
     // Fetch general repo info
     const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
     if (repoRes.status === 403 || repoRes.status === 429) {
-      throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings.");
+      throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings or login with GitHub.");
     }
     if (!repoRes.ok) throw new Error("Repo not found");
     const repoData = await repoRes.json();
@@ -56,7 +57,7 @@ class GithubService {
     };
   }
 
-  async getFileContent(url: string, path: string): Promise<string | null> {
+  async getFileContent(url: string, path: string, token?: string): Promise<string | null> {
     const match = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)/);
     if (!match) return null;
 
@@ -65,13 +66,14 @@ class GithubService {
 
     let branch = 'main';
     try {
-      const info = await this.getRepoInfo(url);
+      const info = await this.getRepoInfo(url, token);
       if (info?.defaultBranch) branch = info.defaultBranch;
     } catch (e) {
       console.warn("Failed to get repo info, defaulting branch to main");
     }
 
-    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
+    const resolvedToken = token || (import.meta as any).env.VITE_GITHUB_TOKEN;
+    const headers = resolvedToken ? { Authorization: `token ${resolvedToken}` } : undefined;
 
     const cleanPath = path.replace(/^\/+/, '');
     // First try the REST API for potential better metadata/handling
@@ -108,7 +110,7 @@ class GithubService {
     return null;
   }
 
-  async listDirectory(url: string, path: string = ''): Promise<{ name: string; type: string; path: string }[] | null> {
+  async listDirectory(url: string, path: string = '', token?: string): Promise<{ name: string; type: string; path: string }[] | null> {
     const match = url.match(/github\.com\/([^/\s]+)\/([^/\s]+)/);
     if (!match) return null;
 
@@ -117,20 +119,21 @@ class GithubService {
 
     let branch = 'main';
     try {
-      const info = await this.getRepoInfo(url);
+      const info = await this.getRepoInfo(url, token);
       if (info?.defaultBranch) branch = info.defaultBranch;
     } catch (e) {
       console.warn("Failed to get repo info, defaulting branch to main");
     }
 
-    const headers = (import.meta as any).env.VITE_GITHUB_TOKEN ? { Authorization: `token ${(import.meta as any).env.VITE_GITHUB_TOKEN}` } : undefined;
+    const resolvedToken = token || (import.meta as any).env.VITE_GITHUB_TOKEN;
+    const headers = resolvedToken ? { Authorization: `token ${resolvedToken}` } : undefined;
     const cleanPath = path.replace(/^\/+/, '');
     const apiUrl = `https://api.github.com/repos/${owner}/${repo}/contents/${cleanPath}?ref=${branch}`;
     try {
       const res = await fetch(apiUrl, { headers });
       
       if (res.status === 403 || res.status === 429) {
-        throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings.");
+        throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings or login with GitHub.");
       }
       
       if (!res.ok) return null;

@@ -102,6 +102,7 @@ interface UserContext {
   avatarUrl?: string;
   customInstructions?: string | null;
   isGuest?: boolean;
+  githubToken?: string;
 }
 
 export default function DevEngine() {
@@ -910,6 +911,7 @@ export default function DevEngine() {
             customKey: activeKey?.key,
             provider: activeKey?.provider,
             customInstructions: user?.customInstructions,
+            githubToken: user?.githubToken,
             onModelSwitch: (newModel) => {
               try {
                 setCurrentModel(newModel);
@@ -1031,6 +1033,7 @@ export default function DevEngine() {
             customKey: activeKey?.key,
             provider: activeKey?.provider,
             customInstructions: user?.customInstructions,
+            githubToken: user?.githubToken,
             onTokenUpdate: (tokens) => {
               if (activeKeyId) {
                 setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));

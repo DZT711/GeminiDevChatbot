@@ -9,6 +9,7 @@ interface UserContext {
   avatarUrl?: string;
   customInstructions?: string | null;
   isGuest?: boolean;
+  githubToken?: string;
 }
 
 /* ── Icons ─────────────────────────────────────────────── */
