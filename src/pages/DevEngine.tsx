@@ -1526,7 +1526,7 @@ export default function DevEngine() {
                   <button
                     onClick={() => {
                       localStorage.removeItem('session');
-                      navigate('/');
+                      window.location.href = '/';
                     }}
                     className="p-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase transition-colors"
                   >
