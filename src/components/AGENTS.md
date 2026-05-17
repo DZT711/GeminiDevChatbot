@@ -1,0 +1,5 @@
+- One named export + one default export per file
+- Props interface named ComponentNameProps, written above the component
+- Use clsx() for conditional classes
+- Use motion for animations
+- No useEffect for derived state — use useMemo

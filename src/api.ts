@@ -3,31 +3,17 @@ import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
-import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import path from 'path';
+
 import { db } from './db/index.js';
 import { users, accounts } from './db/schema.js';
 
 export const apiRouter = express.Router();
 
-let migrationPromise: Promise<void> | null = null;
-
-apiRouter.use(async (req, res, next) => {
-  if (!migrationPromise) {
-    migrationPromise = migrate(db, { migrationsFolder: path.join(process.cwd(), 'drizzle') })
-      .then(() => console.log('Database migrated successfully!'))
-      .catch(err => {
-        console.error('Migration failed:', err);
-        migrationPromise = null; // retry next time
-      });
-  }
-  await migrationPromise;
-  next();
-});
-
 apiRouter.use(express.json());
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
+
 
 apiRouter.get('/health', (req, res) => {
   res.json({ status: 'ok', using: 'supabase-postgres' });
@@ -96,13 +82,13 @@ apiRouter.put('/auth/me', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    const { name, avatarUrl } = req.body;
+    const { name, avatarUrl, customInstructions } = req.body;
     const [user] = await db.update(users)
-      .set({ name, avatarUrl })
+      .set({ name, avatarUrl, customInstructions })
       .where(eq(users.id, payload.id as string))
       .returning();
 
-    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl });
+    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -145,7 +131,7 @@ apiRouter.get('/auth/me', async (req, res) => {
     const user = await db.query.users.findFirst({ where: eq(users.id, payload.id as string) });
     if (!user) return res.status(401).json({ error: 'User not found' });
     
-    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, isGuest: !!payload.isGuest });
+    res.json({ id: user.id, email: user.email, name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions, isGuest: !!payload.isGuest });
   } catch (e: any) {
     res.status(401).json({ error: 'Unauthorized' });
   }

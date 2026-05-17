@@ -6,6 +6,7 @@ export default function AuthCallback() {
   const [params] = useSearchParams()
 
   useEffect(() => {
+    document.title = "Authenticating... | DevEngine";
     const token = params.get('token')
     const error = params.get('error')
 

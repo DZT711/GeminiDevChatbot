@@ -37,6 +37,10 @@ export default function Login() {
   const errorKey  = params.get('error')
   const errorMsg  = appError || (errorKey ? (ERROR_MESSAGES[errorKey] ?? ERROR_MESSAGES.default) : null)
 
+  useEffect(() => {
+    document.title = "Sign in to DevEngine";
+  }, []);
+
   const handleOAuth = async (provider: string) => {
     setLoading(provider)
     try {
@@ -65,7 +69,7 @@ export default function Login() {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         const token = event.data.token
         localStorage.setItem('session', token)
-        window.location.href = '/app'
+        navigate('/app')
       } else if (event.data?.type === 'OAUTH_AUTH_ERROR') {
         setAppError(decodeURIComponent(event.data.error || 'OAuth error'))
         setLoading(null)
@@ -88,7 +92,7 @@ export default function Login() {
       if (!res.ok) throw new Error(data.error || 'Failed to login')
       
       localStorage.setItem('session', data.token)
-      window.location.href = '/app'
+      navigate('/app')
     } catch(e: any) {
       setAppError(e.message)
       setLoading(null)
@@ -108,7 +112,7 @@ export default function Login() {
       if (!res.ok) throw new Error(data.error || 'Failed to register')
       
       localStorage.setItem('session', data.token)
-      window.location.href = '/app'
+      navigate('/app')
     } catch(e: any) {
       setAppError(e.message)
       setLoading(null)
@@ -126,7 +130,7 @@ export default function Login() {
       if (!res.ok) throw new Error(data.error || 'Failed to create guest session')
       
       localStorage.setItem('session', data.token)
-      window.location.href = '/app'
+      navigate('/app')
     } catch(e: any) {
       setAppError(e.message)
       setLoading(null)

@@ -28,6 +28,7 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash'),
   name: varchar('name', { length: 255 }),
   avatarUrl: varchar('avatar_url', { length: 2048 }),
+  customInstructions: text('custom_instructions'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   pgPolicy('users can see their own data', {

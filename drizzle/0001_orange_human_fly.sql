@@ -1,4 +1,8 @@
-CREATE TYPE "public"."node_type" AS ENUM('skill', 'repo_research', 'web_data', 'past_response');--> statement-breakpoint
+DO $$ BEGIN
+ CREATE TYPE "public"."node_type" AS ENUM('skill', 'repo_research', 'web_data', 'past_response');
+EXCEPTION
+ WHEN duplicate_object THEN null;
+END $$;--> statement-breakpoint
 CREATE TABLE "knowledge_nodes" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"user_id" uuid,

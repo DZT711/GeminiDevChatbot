@@ -364,6 +364,7 @@ class GeminiService {
       attachments?: Attachment[];
       customKey?: string;
       provider?: Provider;
+      customInstructions?: string | null;
       onModelSwitch?: (model: string) => void;
       onTokenUpdate?: (tokens: number) => void;
     } = {},
@@ -377,11 +378,15 @@ class GeminiService {
       const allSkills = [...DEFAULT_SKILLS, ...customSkills];
       const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
       
-      const systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
+      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
 ${activeSkills.map(s => `[Skill: ${s.name}] ${s.systemPrompt}`).join('\n')}
 
 Current project context: A web application using React, Vite, and Tailwind.
 Always provide full, runnable code blocks where applicable. Use Markdown for formatting.`;
+
+      if (config.customInstructions) {
+        systemPrompt += `\n\nUser Custom Personalization/Instructions:\n${config.customInstructions}`;
+      }
 
           let attempts = 0;
           const isHybrid = config.model === ModelId.HYBRID;
@@ -794,7 +799,11 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       // Add system prompt for non-Google providers
       const allSkills = [...DEFAULT_SKILLS, ...customSkills];
       const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
-      const systemPrompt = `You are DevGenie, a highly capable AI developer assistant. ${activeSkills.map(s => s.systemPrompt).join(' ')}`;
+      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant. ${activeSkills.map(s => s.systemPrompt).join(' ')}`;
+      
+      if (config.customInstructions) {
+        systemPrompt += `\n\nUser Custom Personalization/Instructions:\n${config.customInstructions}`;
+      }
       
       messages.unshift({ role: 'system', content: systemPrompt });
 

@@ -90,9 +90,11 @@ interface ChatMessageProps {
   history?: string[];
   isLatest?: boolean;
   isLoading?: boolean;
+  userName?: string;
+  userAvatarUrl?: string;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false, userName, userAvatarUrl }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -251,14 +253,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
       isUser ? "bg-transparent" : "bg-transparent"
     )}>
       <div className="flex-shrink-0">
-        <div className={cn(
-          "w-8 h-8 rounded border flex items-center justify-center transition-all shadow-sm",
-          themeClasses.avatar
-        )}>
-          <span className="text-[10px] font-bold uppercase tracking-tighter">
-            {isUser ? "USR" : "GG"}
-          </span>
-        </div>
+        {isUser && userAvatarUrl ? (
+          <img src={userAvatarUrl} alt="Avatar" className="w-8 h-8 rounded shrink-0 object-cover border border-zinc-700 shadow-sm" />
+        ) : (
+          <div className={cn(
+            "w-8 h-8 rounded border flex items-center justify-center transition-all shadow-sm shrink-0",
+            themeClasses.avatar
+          )}>
+            <span className="text-[10px] font-bold uppercase tracking-tighter">
+              {isUser ? (userName ? userName.substring(0, 2) : "USR") : "GG"}
+            </span>
+          </div>
+        )}
       </div>
       
       <div className={cn(
@@ -275,7 +281,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
             )}
             {isUser && (
               <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-zinc-500">
-                Neural Probe
+                {userName || "Neural Probe"}
               </span>
             )}
             {modelName && (

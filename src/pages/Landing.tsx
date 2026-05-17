@@ -7,6 +7,7 @@ interface UserContext {
   email: string;
   name: string;
   avatarUrl?: string;
+  customInstructions?: string | null;
   isGuest?: boolean;
 }
 
@@ -57,6 +58,7 @@ export default function Landing() {
   const [user, setUser] = useState<UserContext | null>(null);
 
   useEffect(() => {
+    document.title = "DevEngine | AI Coding Assistant";
     const fetchUser = async () => {
       try {
         const token = localStorage.getItem('session');

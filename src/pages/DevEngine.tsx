@@ -100,6 +100,7 @@ interface UserContext {
   email: string;
   name: string;
   avatarUrl?: string;
+  customInstructions?: string | null;
   isGuest?: boolean;
 }
 
@@ -200,8 +201,21 @@ export default function DevEngine() {
   const activeKey = apiKeys.find(k => k.id === activeKeyId);
   const activeApiKey = activeKey?.key || '';
 
+  // Update Page Title based on current session
+  useEffect(() => {
+    if (currentSessionId && sessions.length > 0) {
+      const currentSession = sessions.find(s => s.id === currentSessionId);
+      if (currentSession && currentSession.title) {
+        document.title = `${currentSession.title} | DevEngine`;
+        return;
+      }
+    }
+    document.title = "Dashboard | DevEngine";
+  }, [currentSessionId, sessions]);
+
   // Initial Data Fetch
   useEffect(() => {
+    document.title = "Dashboard | DevEngine";
     const fetchUser = async () => {
       try {
         const token = localStorage.getItem('session');
@@ -833,6 +847,7 @@ export default function DevEngine() {
 
       let mainActionId: string | undefined;
       try {
+        transparencyLogger.clear();
         mainActionId = transparencyLogger.log(
           'Analysis', 
           `Initializing neural generation process for model: ${currentModel}`,
@@ -894,6 +909,7 @@ export default function DevEngine() {
             attachments: userMessage.attachments,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
+            customInstructions: user?.customInstructions,
             onModelSwitch: (newModel) => {
               try {
                 setCurrentModel(newModel);
@@ -1014,6 +1030,7 @@ export default function DevEngine() {
             signal: abortControllerRef.current.signal,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
+            customInstructions: user?.customInstructions,
             onTokenUpdate: (tokens) => {
               if (activeKeyId) {
                 setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));
@@ -1509,7 +1526,7 @@ export default function DevEngine() {
                   <button
                     onClick={() => {
                       localStorage.removeItem('session');
-                      window.location.href = '/';
+                      navigate('/');
                     }}
                     className="p-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase transition-colors"
                   >
@@ -1546,6 +1563,8 @@ export default function DevEngine() {
                       history={m.editHistory}
                       isLatest={i === messages.filter(msg => msg).length - 1}
                       isLoading={isLoading}
+                      userName={user?.name}
+                      userAvatarUrl={user?.avatarUrl}
                     />
                   ))
                 )}
@@ -2227,6 +2246,15 @@ export default function DevEngine() {
                            className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all"
                          />
                        </div>
+                       <div className="space-y-1.5">
+                         <label className="text-[8px] font-mono text-zinc-500 uppercase">System Instructions (Model Personalization)</label>
+                         <textarea 
+                           value={user?.customInstructions || ''}
+                           onChange={(e) => setUser(prev => prev ? { ...prev, customInstructions: e.target.value } : null)}
+                           placeholder="e.g. Always respond in markdown... Act like a senior developer..."
+                           className="w-full h-24 bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all resize-none"
+                         />
+                       </div>
                        <div className="pt-2">
                          <button
                            onClick={async () => {
@@ -2239,7 +2267,7 @@ export default function DevEngine() {
                                    'Content-Type': 'application/json',
                                    'Authorization': `Bearer ${token}`
                                  },
-                                 body: JSON.stringify({ name: user.name, avatarUrl: user.avatarUrl })
+                                 body: JSON.stringify({ name: user.name, avatarUrl: user.avatarUrl, customInstructions: user.customInstructions })
                                });
                                if (res.ok) {
                                  const updated = await res.json();

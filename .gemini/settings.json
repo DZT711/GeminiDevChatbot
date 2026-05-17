@@ -1,0 +1,22 @@
+{
+  "theme": "Default",
+  "contextFileName": "GEMINI.md",
+  "mcpServers": {
+    "gemini-docs": {
+      "httpUrl": "https://gemini-api-docs-mcp.dev/mcp",
+      "trust": true
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" }
+    }
+  },
+  "tools": {
+    "googleSearch": true,
+    "codeExecution": true,
+    "fileOperations": true,
+    "terminal": true
+  },
+  "checkpointing": { "enabled": true }
+}
