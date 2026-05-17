@@ -1,7 +1,7 @@
 export const getAutocompleteSuggestion = async (input: string): Promise<string> => {
   return new Promise((resolve) => {
     try {
-      if (!input || !input.trim() || input.length < 2) {
+      if (!input || !input.trim() || input.length < 1) {
         resolve('');
         return;
       }

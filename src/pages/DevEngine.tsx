@@ -294,7 +294,10 @@ export default function DevEngine() {
   // Auto Scroll
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTo({
+        top: scrollRef.current.scrollHeight,
+        behavior: 'smooth'
+      });
     }
   }, [messages, autoScroll]);
 
@@ -365,7 +368,7 @@ export default function DevEngine() {
       } catch(e) {
         setSuggestedSkills([]);
       }
-    }, 300);
+    }, 100);
     return () => clearTimeout(timer);
   }, [input, customSkills, activeSkillIds]);
 
@@ -381,7 +384,7 @@ export default function DevEngine() {
       } catch(e) {
         if (isMounted) setAutocompleteSuggestion('');
       }
-    }, 150);
+    }, 50);
     return () => {
       isMounted = false;
       clearTimeout(timer);
