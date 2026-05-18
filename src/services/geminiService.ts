@@ -993,6 +993,30 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
     };
   }
 
+  async generateAutocomplete(prompt: string, customKey?: string): Promise<string> {
+    if (!prompt || prompt.length < 3) return '';
+    try {
+      const ai = this.getAI(customKey);
+      const response = await ai.models.generateContent({
+        model: ModelId.FLASH,
+        contents: `You are an AI autocomplete engine for an AI coding assistant.
+The user is currently typing a message: "${prompt}"
+Complete their current thought/sentence contextually. 
+Output ONLY the remaining words to complete their thought, without repeating what they already typed.
+If you think the sentence is already complete or no completion makes sense, output exactly nothing (an empty string).
+Do not include quotes or intro phrases.
+`
+      });
+      let text = response.text?.trim() || "";
+      if (text.startsWith('"') && text.endsWith('"')) {
+        text = text.slice(1, -1);
+      }
+      return text;
+    } catch {
+      return '';
+    }
+  }
+
   async enhancePrompt(prompt: string, customKey?: string): Promise<string> {
     const ai = this.getAI(customKey);
     const response = await ai.models.generateContent({

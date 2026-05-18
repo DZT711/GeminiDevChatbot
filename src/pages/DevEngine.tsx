@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { TransparencyDashboard } from '../components/TransparencyDashboard';
 import { transparencyLogger } from '../utils/transparencyLogger';
 import { findSkillSuggestions } from '../utils/skillMatcher';
-import { getAutocompleteSuggestion } from '../utils/autocompleteEngine';
 import { 
   Send, 
   RotateCcw, 
@@ -294,12 +293,13 @@ export default function DevEngine() {
   // Auto Scroll
   useEffect(() => {
     if (autoScroll && scrollRef.current) {
+      // Use 'auto' behavior to avoid jitter when messages are rapidly streaming
       scrollRef.current.scrollTo({
         top: scrollRef.current.scrollHeight,
-        behavior: 'smooth'
+        behavior: isLoading ? 'auto' : 'smooth'
       });
     }
-  }, [messages, autoScroll]);
+  }, [messages, autoScroll, isLoading]);
 
   // Sync Persistence
   useEffect(() => {
@@ -377,19 +377,20 @@ export default function DevEngine() {
     let isMounted = true;
     const timer = setTimeout(async () => {
       try {
-        const suggestion = await getAutocompleteSuggestion(input);
+        const activeKey = apiKeys.find(k => k.id === activeKeyId);
+        const suggestion = await geminiService.generateAutocomplete(input, activeKey?.key);
         if (isMounted) {
           setAutocompleteSuggestion(suggestion);
         }
       } catch(e) {
         if (isMounted) setAutocompleteSuggestion('');
       }
-    }, 50);
+    }, 800);
     return () => {
       isMounted = false;
       clearTimeout(timer);
     };
-  }, [input]);
+  }, [input, activeKeyId, apiKeys]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
