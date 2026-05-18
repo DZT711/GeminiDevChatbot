@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, text, pgEnum, customType, jsonb, pgPolicy } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, text, pgEnum, customType, jsonb, pgPolicy, boolean } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // Custom Vector Type
@@ -58,7 +58,7 @@ export const accounts = pgTable('accounts', {
 
 // Sessions Table
 export const sessions = pgTable('sessions', {
-  id: uuid('id').defaultRandom().primaryKey(),
+  id: varchar('id', { length: 255 }).primaryKey(),
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   title: varchar('title', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -72,11 +72,14 @@ export const sessions = pgTable('sessions', {
 
 // Messages Table
 export const messages = pgTable('messages', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  sessionId: uuid('session_id').references(() => sessions.id, { onDelete: 'cascade' }).notNull(),
+  id: varchar('id', { length: 255 }).primaryKey(),
+  sessionId: varchar('session_id', { length: 255 }).references(() => sessions.id, { onDelete: 'cascade' }).notNull(),
   role: roleEnum('role').notNull(),
   content: text('content').notNull(),
   modelUsed: varchar('model_used', { length: 255 }),
+  imageUrl: text('image_url'),
+  videoUrl: text('video_url'),
+  attachments: jsonb('attachments').default('[]'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   pgPolicy('users can view messages in their sessions', {
@@ -109,11 +112,61 @@ export const knowledgeNodes = pgTable('knowledge_nodes', {
   })
 ]);
 
+// Model Information Table
+export const modelInformation = pgTable('model_information', {
+  id: varchar('id', { length: 255 }).primaryKey(), // e.g. openrouter/gemini-pro
+  provider: varchar('provider', { length: 255 }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  contextLength: varchar('context_length', { length: 255 }),
+  description: text('description'),
+  pricing: jsonb('pricing'), // store pricing details
+  topProviderRate: varchar('top_provider_rate', { length: 255 }),
+  architecture: varchar('architecture', { length: 255 }),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// API Keys Table
+export const apiKeys = pgTable('api_keys', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  key: varchar('api_key_value', { length: 1024 }).notNull(),
+  provider: varchar('provider', { length: 255 }).notNull(),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// Custom Skills Table
+export const customSkills = pgTable('custom_skills', {
+  id: varchar('id', { length: 255 }).primaryKey(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  name: varchar('name', { length: 255 }).notNull(),
+  description: text('description').notNull(),
+  systemPrompt: text('system_prompt').notNull(),
+  isCustom: boolean('is_custom').default(true),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// User Preferences Table
+export const userPreferences = pgTable('user_preferences', {
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).primaryKey(),
+  theme: varchar('theme', { length: 50 }).default('midnight'),
+  currentModel: varchar('current_model', { length: 255 }),
+  activeKeyId: varchar('active_key_id', { length: 255 }),
+  showSkillSuggestions: boolean('show_skill_suggestions').default(true),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
 // Relations
-export const usersRelations = relations(users, ({ many }) => ({
+export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
   sessions: many(sessions),
   knowledgeNodes: many(knowledgeNodes),
+  apiKeys: many(apiKeys),
+  customSkills: many(customSkills),
+  preferences: one(userPreferences, {
+    fields: [users.id],
+    references: [userPreferences.userId],
+  })
 }));
 
 export const accountsRelations = relations(accounts, ({ one }) => ({

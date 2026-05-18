@@ -2,15 +2,65 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import crypto from 'crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import path from 'path';
 
 import { db } from './db/index.js';
-import { users, accounts } from './db/schema.js';
+import { users, accounts, userPreferences, apiKeys, customSkills, sessions, messages, modelInformation } from './db/schema.js';
 
 export const apiRouter = express.Router();
 
 apiRouter.use(express.json());
+
+apiRouter.get('/models/info', async (req, res) => {
+  try {
+    const cachedModels = await db.select().from(modelInformation);
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    
+    // Only fetch if empty or outdated
+    if (cachedModels.length === 0 || new Date(cachedModels[0].updatedAt) < dayAgo) {
+      const openRouterRes = await fetch('https://openrouter.ai/api/v1/models');
+      if (openRouterRes.ok) {
+        const { data } = await openRouterRes.json();
+        
+        // Use a transaction or simply upsert
+        for (const m of data) {
+          const provider = m.id.split('/')[0] || 'unknown';
+          const pricingInfo = m.pricing;
+          
+          await db.insert(modelInformation).values({
+            id: m.id,
+            provider: provider,
+            name: m.name,
+            contextLength: m.context_length?.toString(),
+            description: m.description || '',
+            pricing: pricingInfo,
+            architecture: m.architecture?.modality || m.architecture?.instruct_type || '', // Simple fallback schema
+            updatedAt: new Date()
+          }).onConflictDoUpdate({
+            target: modelInformation.id,
+            set: {
+              name: m.name,
+              contextLength: m.context_length?.toString(),
+              description: m.description || '',
+              pricing: pricingInfo,
+              architecture: m.architecture?.modality || m.architecture?.instruct_type || '',
+              updatedAt: new Date()
+            }
+          });
+        }
+      }
+      
+      // refetch after update
+      const updatedModels = await db.select().from(modelInformation);
+      return res.json(updatedModels);
+    }
+    
+    res.json(cachedModels);
+  } catch(e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
 
@@ -154,6 +204,135 @@ apiRouter.get('/auth/me', async (req, res) => {
     });
   } catch (e: any) {
     res.status(401).json({ error: 'Unauthorized' });
+  }
+});
+
+apiRouter.get('/user/state', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
+    const userId = payload.id as string;
+
+    const [userPrefs] = await db.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+    const userKeys = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+    const userSkills = await db.select().from(customSkills).where(eq(customSkills.userId, userId));
+    
+    // Fetch sessions and messages
+    const userSessions = await db.select().from(sessions).where(eq(sessions.userId, userId));
+    const sessionIds = userSessions.map(s => s.id);
+    const allMessages = sessionIds.length > 0 
+      ? await db.select().from(messages).where(sql`${messages.sessionId} IN ${sessionIds}`)
+      : [];
+    
+    const formattedSessions = userSessions.map(s => ({
+      ...s,
+      messages: allMessages.filter(m => m.sessionId === s.id).map(m => ({
+        id: m.id,
+        role: m.role,
+        content: m.content,
+        modelName: m.modelUsed,
+        imageUrl: m.imageUrl,
+        videoUrl: m.videoUrl,
+        attachments: m.attachments,
+        createdAt: new Date(m.createdAt).getTime(),
+      }))
+    }));
+
+    res.json({
+      preferences: userPrefs,
+      apiKeys: userKeys,
+      customSkills: userSkills,
+      sessions: formattedSessions,
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+apiRouter.put('/user/state', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
+    const userId = payload.id as string;
+
+    const { preferences, apiKeys: newKeys, customSkills: newSkills, sessions: newSessions } = req.body;
+
+    return await db.transaction(async (tx) => {
+      // Preferences
+      if (preferences) {
+        const exist = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+        if (exist.length > 0) {
+          await tx.update(userPreferences).set(preferences).where(eq(userPreferences.userId, userId));
+        } else {
+          await tx.insert(userPreferences).values({ userId, ...preferences });
+        }
+      }
+
+      // API Keys
+      if (newKeys && Array.isArray(newKeys)) {
+        await tx.delete(apiKeys).where(eq(apiKeys.userId, userId));
+        if (newKeys.length > 0) {
+          await tx.insert(apiKeys).values(newKeys.map((k: any) => ({
+            id: k.id,
+            userId,
+            name: k.name,
+            key: k.key,
+            provider: k.provider,
+          })));
+        }
+      }
+
+      // Custom Skills
+      if (newSkills && Array.isArray(newSkills)) {
+        await tx.delete(customSkills).where(eq(customSkills.userId, userId));
+        if (newSkills.length > 0) {
+          await tx.insert(customSkills).values(newSkills.map((s: any) => ({
+            id: s.id,
+            userId,
+            name: s.name,
+            description: s.description,
+            systemPrompt: s.systemPrompt,
+            isCustom: true,
+          })));
+        }
+      }
+
+      // Sessions
+      if (newSessions && Array.isArray(newSessions)) {
+        // Simple strategy: delete all sessions for user, re-insert
+        await tx.delete(sessions).where(eq(sessions.userId, userId));
+        for (const s of newSessions) {
+          await tx.insert(sessions).values({
+            id: s.id,
+            userId,
+            title: s.title || 'Chat Session',
+          });
+          if (s.messages && Array.isArray(s.messages) && s.messages.length > 0) {
+            const msgsToInsert = s.messages.map((m: any) => ({
+              id: m.id || `msg-${Date.now()}-${Math.random()}`,
+              sessionId: s.id,
+              role: m.role || 'user',
+              content: m.content || '',
+              modelUsed: m.modelName,
+              imageUrl: m.imageUrl,
+              videoUrl: m.videoUrl,
+              attachments: m.attachments || [],
+            }));
+            await tx.insert(messages).values(msgsToInsert);
+          }
+        }
+      }
+
+      res.json({ success: true });
+    });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 

@@ -89,9 +89,16 @@ interface ApiKey {
   id: string;
   provider: Provider;
   models?: string[];
-  limit?: number; // Daily token limit
-  usage?: number; // Current day usage
-  lastReset?: number; // Timestamp of last roll
+}
+
+interface ModelInformation {
+  id: string;
+  name: string;
+  provider: string;
+  contextLength?: string;
+  description?: string;
+  pricing?: any;
+  architecture?: string;
 }
 
 interface UserContext {
@@ -108,31 +115,10 @@ export default function DevEngine() {
   const [user, setUser] = useState<UserContext | null>(null);
   
   // Persistence States
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('dg_sessions');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [customSkills, setCustomSkills] = useState<Skill[]>(() => {
-    const saved = localStorage.getItem('dg_custom_skills');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>(() => {
-    const saved = localStorage.getItem('dg_api_keys');
-    if (!saved) return [];
-    try {
-      const parsed = JSON.parse(saved);
-      return parsed.map((k: any) => ({
-        ...k,
-        provider: k.provider || Provider.GOOGLE,
-        limit: k.limit || 500000,
-        usage: k.usage || 0,
-        lastReset: k.lastReset || Date.now()
-      }));
-    } catch (e) {
-      return [];
-    }
-  });
-  const [activeKeyId, setActiveKeyId] = useState<string>(() => localStorage.getItem('dg_active_key_id') || '');
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [customSkills, setCustomSkills] = useState<Skill[]>([]);
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
+  const [activeKeyId, setActiveKeyId] = useState<string>('');
   
   // Model Queue Sync
   useEffect(() => {
@@ -142,19 +128,15 @@ export default function DevEngine() {
     } else {
       geminiService.resetQueue();
     }
-    // Force currentModel state to sync with the new queue OR restore from persistence
-    const savedModel = localStorage.getItem('dg_current_model');
     const currentQueue = geminiService.getCurrentQueue();
-    if (savedModel && currentQueue.includes(savedModel)) {
-      setCurrentModel(savedModel);
+    if (currentModel && currentQueue.includes(currentModel)) {
+      setCurrentModel(currentModel);
     } else {
       setCurrentModel(geminiService.getCurrentModel());
     }
   }, [activeKeyId, apiKeys]);
 
-  const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome' | 'light'>(() => 
-    (localStorage.getItem('dg_theme') as any) || 'midnight'
-  );
+  const [theme, setTheme] = useState<'midnight' | 'cyberpunk' | 'monochrome' | 'light'>('midnight');
 
   // Active Session State
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
@@ -167,20 +149,21 @@ export default function DevEngine() {
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState('');
-  const [usages, setUsages] = useState<Record<string, number>>(() => geminiService.getAllUsage());
-  const [currentModel, setCurrentModel] = useState<string>(() => {
-    try {
-      return localStorage.getItem('dg_current_model') || geminiService.getCurrentModel();
-    } catch (e) {
-      return geminiService.getCurrentModel();
-    }
-  });
+  const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
+  const [modelCatalog, setModelCatalog] = useState<ModelInformation[]>([]);
+  
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
   const [isImageMode, setIsImageMode] = useState(false);
   const [isVideoMode, setIsVideoMode] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [showSkillSuggestions, setShowSkillSuggestions] = useState(true);
+  
+  const toggleSkillSuggestions = () => {
+    setShowSkillSuggestions(prev => !prev);
+  };
+
   const [isSkillsExpanded, setIsSkillsExpanded] = useState(false);
   const [isEnhancingPrompt, setIsEnhancingPrompt] = useState(false);
   const [isAddingKey, setIsAddingKey] = useState(false);
@@ -213,10 +196,12 @@ export default function DevEngine() {
     document.title = "Dashboard | DevEngine";
   }, [currentSessionId, sessions]);
 
+  const [isStateLoaded, setIsStateLoaded] = useState(false);
+
   // Initial Data Fetch
   useEffect(() => {
     document.title = "Dashboard | DevEngine";
-    const fetchUser = async () => {
+    const fetchUserAndState = async () => {
       try {
         const token = localStorage.getItem('session');
         if (!token) return;
@@ -226,54 +211,72 @@ export default function DevEngine() {
         if (res.ok) {
           const data = await res.json();
           setUser(data);
+
+          // Now fetch state
+          const stateRes = await fetch('/api/user/state', {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          if (stateRes.ok) {
+            const stateData = await stateRes.json();
+            if (stateData.preferences) {
+              setTheme(stateData.preferences.theme || 'midnight');
+              setCurrentModel(stateData.preferences.currentModel || geminiService.getCurrentModel());
+              setActiveKeyId(stateData.preferences.activeKeyId || '');
+              setShowSkillSuggestions(stateData.preferences.showSkillSuggestions ?? true);
+            }
+            if (stateData.apiKeys) setApiKeys(stateData.apiKeys);
+            if (stateData.customSkills) setCustomSkills(stateData.customSkills);
+            if (stateData.sessions) {
+              setSessions(stateData.sessions);
+            }
+          }
+
+          // Fetch model catalog
+          const modelsRes = await fetch('/api/models/info');
+          if (modelsRes.ok) {
+            const modelsData = await modelsRes.json();
+            setModelCatalog(modelsData);
+          }
         }
       } catch (e) {
         console.error("Failed to fetch user context", e);
+      } finally {
+        setIsStateLoaded(true);
       }
     };
-    fetchUser();
+    fetchUserAndState();
   }, []);
 
   // Persistence Sync
   useEffect(() => {
-    try {
-      localStorage.setItem('dg_api_keys', JSON.stringify(apiKeys));
-    } catch (e) {}
-  }, [apiKeys]);
+    if (!isStateLoaded) return;
+    const token = localStorage.getItem('session');
+    if (!token) return;
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('dg_active_key_id', activeKeyId);
-    } catch (e) {}
-  }, [activeKeyId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('dg_theme', theme);
-    } catch (e) {}
-  }, [theme]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('dg_current_model', currentModel);
-    } catch (e) {}
-  }, [currentModel]);
+    const timer = setTimeout(async () => {
+      try {
+        await fetch('/api/user/state', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            preferences: { theme, currentModel, activeKeyId, showSkillSuggestions },
+            apiKeys,
+            customSkills,
+            sessions
+          })
+        });
+      } catch (e) {
+        console.error("Failed to sync state", e);
+      }
+    }, 1500); // Debounce
+    return () => clearTimeout(timer);
+  }, [sessions, customSkills, apiKeys, activeKeyId, theme, currentModel, showSkillSuggestions, isStateLoaded]);
   
   useEffect(() => {
-    const checkReset = () => {
-      const now = Date.now();
-      setApiKeys(prev => prev.map(k => {
-        const lastDate = new Date(k.lastReset || 0).toDateString();
-        const currentDate = new Date(now).toDateString();
-        if (lastDate !== currentDate) {
-          return { ...k, usage: 0, lastReset: now };
-        }
-        return k;
-      }));
-    };
-    checkReset();
-    const interval = setInterval(checkReset, 1000 * 60 * 60); // Check every hour
-    return () => clearInterval(interval);
+    // Legacy reset handler removed
   }, []);
   const [thinkingMode, setThinkingMode] = useState<string>('none');
   const [useSearch, setUseSearch] = useState(false);
@@ -283,7 +286,7 @@ export default function DevEngine() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Modals / Views
-  const [view, setView] = useState<'chat' | 'skills'>('chat');
+  const [view, setView] = useState<'chat' | 'skills' | 'models' | 'performance'>('chat');
   const [showHistory, setShowHistory] = useState(false);
   const [newSkillPrompt, setNewSkillPrompt] = useState('');
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
@@ -301,58 +304,11 @@ export default function DevEngine() {
     }
   }, [messages, autoScroll, isLoading]);
 
-  // Sync Persistence
-  useEffect(() => {
-    try {
-      localStorage.setItem('dg_sessions', JSON.stringify(sessions));
-    } catch (e: any) {
-      if (e.name === 'QuotaExceededError' || e.code === 22) {
-        console.warn("Storage quota reached. Pruning sessions...");
-        // Auto-prune logic: remove oldest sessions until it fits or only 1 remains
-        const pruneSessions = async () => {
-          let currentSessions = [...sessions];
-          while (currentSessions.length > 1) {
-            currentSessions.pop(); // Remove oldest
-            try {
-              localStorage.setItem('dg_sessions', JSON.stringify(currentSessions));
-              setSessions(currentSessions);
-              console.log("Pruned oldest session to save space.");
-              return;
-            } catch (innerE) {
-              // Continue pruning
-            }
-          }
-          // If still failing with 1 session, try stripping media
-          if (currentSessions.length === 1) {
-            currentSessions[0].messages = currentSessions[0].messages.map(m => ({
-              ...m,
-              imageUrl: undefined,
-              videoUrl: undefined
-            }));
-            try {
-              localStorage.setItem('dg_sessions', JSON.stringify(currentSessions));
-              setSessions(currentSessions);
-              console.warn("Stripped media data from current session to save space.");
-            } catch (finalE) {
-              console.error("Extreme quota failure: could not even save one stripped session.");
-            }
-          }
-        };
-        pruneSessions();
-      } else {
-        console.error("Persistence error:", e);
-      }
-    }
-  }, [sessions]);
 
-  useEffect(() => {
-    localStorage.setItem('dg_custom_skills', JSON.stringify(customSkills));
-  }, [customSkills]);
 
   // Usage & Metrics Polling
   useEffect(() => {
     const interval = setInterval(() => {
-      setUsages(geminiService.getAllUsage());
       setMetrics(geminiService.getAllMetrics());
     }, 2000);
     return () => clearInterval(interval);
@@ -933,11 +889,6 @@ export default function DevEngine() {
               } catch (e) {
                 console.error("Model switch handling failed", e);
               }
-            },
-            onTokenUpdate: (tokens) => {
-              if (activeKeyId) {
-                setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));
-              }
             }
           },
           (fullContent) => {
@@ -1037,12 +988,7 @@ export default function DevEngine() {
             customKey: activeKey?.key,
             provider: activeKey?.provider,
             customInstructions: user?.customInstructions,
-            githubToken: user?.githubToken,
-            onTokenUpdate: (tokens) => {
-              if (activeKeyId) {
-                setApiKeys(prev => prev.map(k => k.id === activeKeyId ? { ...k, usage: (k.usage || 0) + tokens } : k));
-              }
-            }
+            githubToken: user?.githubToken
           },
           (fullContent) => {
             setMessages(prev => {
@@ -1221,6 +1167,30 @@ export default function DevEngine() {
               <History size={14} />
               History Archive
             </button>
+            <button 
+              onClick={() => setView('models')}
+              className={cn(
+                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
+                view === 'models' 
+                  ? (theme === 'light' ? "bg-amber-50 text-amber-600 border border-amber-200 shadow-sm" : "bg-amber-900/20 text-amber-400 border border-amber-800/30") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
+              )}
+            >
+              <Database size={14} />
+              Model Catalog
+            </button>
+            <button 
+              onClick={() => setView('performance')}
+              className={cn(
+                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
+                view === 'performance' 
+                  ? (theme === 'light' ? "bg-green-50 text-green-600 border border-green-200 shadow-sm" : "bg-green-900/20 text-green-400 border border-green-800/30") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
+              )}
+            >
+              <Activity size={14} />
+              Performance
+            </button>
           </nav>
 
           {/* History Bubble (Inline or Overlay) */}
@@ -1278,32 +1248,14 @@ export default function DevEngine() {
             </div>
             
             {geminiService.getCurrentQueue().map(model => {
-              const usageVal = usages[model] || 0;
-              const isHeavy = usageVal > 90;
               return (
-                <div key={model} className="space-y-1.5 group" title={`Current usage for ${model}: ${usageVal.toFixed(1)}%`}>
+                <div key={model} className="space-y-1.5 group">
                   <div className="flex justify-between items-center">
                     <div className="flex items-center gap-1">
                       <span className="text-[9px] font-mono text-zinc-500 group-hover:text-cyan-400/80 transition-colors uppercase tracking-tighter truncate max-w-[140px]">
                         {model.split('/').pop()?.replace('gemini-1.5-', '').replace('gemini-3.1-', '')}
                       </span>
-                      {isHeavy && <AlertTriangle size={8} className="text-red-500 animate-pulse" />}
                     </div>
-                    <span className={cn(
-                      "text-[9px] font-mono",
-                      isHeavy ? "text-red-500" : "text-cyan-500/80"
-                    )}>{Math.round(usageVal)}%</span>
-                  </div>
-                  <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden shadow-inner border border-white/5">
-                    <div 
-                      className={cn(
-                        "h-full transition-all duration-700 ease-out",
-                        usageVal > 90 ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]" : 
-                        usageVal > 50 ? "bg-amber-500/80" : 
-                        "bg-cyan-500/80"
-                      )}
-                      style={{ width: `${usageVal}%` }} 
-                    />
                   </div>
                 </div>
               );
@@ -1497,6 +1449,20 @@ export default function DevEngine() {
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
                 
                 <button 
+                  onClick={toggleSkillSuggestions}
+                  className={cn(
+                    "p-2 rounded-xl transition-all border outline-none active:scale-90 flex items-center gap-1.5",
+                    showSkillSuggestions 
+                      ? "bg-purple-500/10 text-purple-400 border-purple-500/20 shadow-[0_0_10px_rgba(168,85,247,0.1)]" 
+                      : "hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 border-transparent hover:border-zinc-800"
+                  )}
+                  title={showSkillSuggestions ? "Skill Suggestions ON" : "Skill Suggestions OFF"}
+                >
+                  <Sparkles size={14} className={cn("transition-transform", showSkillSuggestions ? "animate-pulse" : "")} />
+                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline-block">Skills Suggest</span>
+                </button>
+
+                <button 
                   onClick={() => setAutoScroll(!autoScroll)}
                   className={cn(
                     "p-2 rounded-xl transition-all border outline-none active:scale-90 flex items-center gap-1.5",
@@ -1575,29 +1541,29 @@ export default function DevEngine() {
                     />
                   ))
                 )}
-                {isLoading && (
-                  <div className="p-8 flex gap-4 animate-pulse opacity-50">
-                    <div className="w-8 h-8 rounded border border-zinc-800 bg-[#0a0a0c]" />
-                    <div className="flex-1 space-y-3 pt-2">
-                       <div className="h-2 w-16 bg-zinc-800 rounded" />
-                       <div className="h-2 w-full bg-zinc-900 rounded" />
-                    </div>
-                  </div>
-                )}
               </div>
             </div>
 
             {/* Float Input Bar */}
             <div className="absolute bottom-0 left-0 right-0 p-8 pt-0 pointer-events-none z-30">
               <div className="max-w-4xl mx-auto pointer-events-auto relative">
-                {suggestedSkills.length > 0 && (
+                {showSkillSuggestions && suggestedSkills.length > 0 && (
                   <div className={cn(
                     "absolute bottom-full left-0 mb-4 w-full z-50 rounded-2xl border p-1 shadow-2xl backdrop-blur-md overflow-hidden animate-in fade-in slide-in-from-bottom-2",
                     theme === 'light' ? "bg-white/95 border-slate-200" : "bg-black/95 border-zinc-800"
                   )}>
-                     <div className="px-3 py-2 flex items-center gap-2 mb-1 border-b border-white/5">
-                        <Sparkles size={12} className="text-cyan-500" />
-                        <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500">Suggested Skills</span>
+                     <div className="px-3 py-2 flex items-center justify-between mb-1 border-b border-white/5">
+                        <div className="flex items-center gap-2">
+                          <Sparkles size={12} className="text-cyan-500" />
+                          <span className="text-[10px] font-mono font-bold uppercase tracking-widest text-zinc-500">Suggested Skills</span>
+                        </div>
+                        <button 
+                          onClick={() => toggleSkillSuggestions()}
+                          className="text-zinc-500 hover:text-zinc-300 transition-colors p-1"
+                          title="Hide Suggestions"
+                        >
+                          <X size={14} />
+                        </button>
                      </div>
                     {suggestedSkills.map(skill => (
                       <button
@@ -1997,7 +1963,7 @@ export default function DevEngine() {
               </div>
             </div>
           </>
-        ) : (
+        ) : view === 'skills' ? (
           <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
             <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
               <header className="flex justify-between items-end border-b border-border-dim pb-8">
@@ -2162,7 +2128,220 @@ export default function DevEngine() {
               </div>
             </div>
           </div>
-        )}
+        ) : view === 'models' ? (
+          <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+            <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
+              <header className="flex justify-between items-end border-b border-border-dim pb-8">
+                <div>
+                  <h1 className="text-4xl font-mono font-bold tracking-tighter text-white mb-2 uppercase">Model Catalog</h1>
+                  <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest tracking-tighter opacity-60">Neural Engine Configurations</p>
+                </div>
+              </header>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24">
+                {modelCatalog.length === 0 ? (
+                  <div className="col-span-full text-zinc-500 text-xs text-center py-6 font-mono border border-dashed border-zinc-800 rounded-xl">Fetching latest models mapping... Please wait or refresh later.</div>
+                ) : (
+                  modelCatalog.map((model) => {
+                    const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
+                    const isActiveModel = activeModels.includes(model.id);
+                    return (
+                      <div key={model.id} className={cn("p-5 bg-black/40 border rounded-2xl relative overflow-hidden flex flex-col gap-3 group transition-colors", isActiveModel ? "border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]" : "border-zinc-900 hover:border-cyan-500/30")}>
+                        <div className={cn("absolute top-0 right-0 w-32 h-32 rounded-full blur-[40px] pointer-events-none transition-colors", isActiveModel ? "bg-cyan-500/10" : "bg-cyan-500/5 group-hover:bg-cyan-500/10")} />
+                        <div className="flex items-start justify-between relative z-10">
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              {isActiveModel && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse" />}
+                              <h3 className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors">{model.name}</h3>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded-md text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest hover:text-cyan-400 cursor-default">
+                                {model.provider}
+                              </span>
+                              {model.architecture && (
+                                <span className="text-[10px] text-zinc-500 font-mono tracking-tighter truncate max-w-[150px]">{model.architecture}</span>
+                              )}
+                            </div>
+                          </div>
+                          {model.contextLength && (
+                            <div className="flex flex-col flex-end items-end text-right">
+                              <span className="text-[14px] font-mono font-bold text-emerald-500">{Number(model.contextLength).toLocaleString()}</span>
+                              <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">Max Context</span>
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">{model.description}</p>
+                        {model.pricing && (
+                          <div className="flex gap-6 mt-2 pt-4 border-t border-white/5 relative z-10">
+                            <div className="flex flex-col">
+                              <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Prompt Cost</span>
+                              <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                ${Number(model.pricing.prompt || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                              </span>
+                            </div>
+                            <div className="flex flex-col">
+                              <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Completion Cost</span>
+                              <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                ${Number(model.pricing.completion || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+          </div>
+        ) : view === 'performance' ? (
+          <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+            <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
+              <header className="flex justify-between items-end border-b border-border-dim pb-8">
+                <div>
+                  <h1 className="text-4xl font-mono font-bold tracking-tighter text-white mb-2 uppercase">Performance Metrics</h1>
+                  <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest tracking-tighter opacity-60">Neural Telemetry & Usage Analytics</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Live Updates</span>
+                  <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse shadow-[0_0_10px_rgba(34,197,94,0.5)]" />
+                </div>
+              </header>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {activeKey && (
+                  <div className="p-6 bg-cyan-950/20 border border-cyan-500/20 rounded-2xl flex flex-col justify-center">
+                    <div className="flex items-center gap-3 mb-4">
+                      <Bot size={20} className="text-cyan-400" />
+                      <div className="space-y-1">
+                        <span className="text-[12px] font-bold uppercase tracking-tight text-white block">Token Quota</span>
+                        <span className="text-[10px] font-mono text-zinc-500 uppercase">{activeKey.name}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col">
+                      <span className={cn(
+                        "text-xl font-bold",
+                        (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "text-red-400" : "text-cyan-300"
+                      )}>
+                        {((activeKey.usage || 0) / 1000).toFixed(1)}k <span className="text-xs text-zinc-600 font-mono">/ {((activeKey.limit || 500000) / 1000).toFixed(0)}k</span>
+                      </span>
+                      <div className="w-full h-1.5 bg-zinc-900 rounded-full mt-3 overflow-hidden">
+                        <div 
+                          className={cn(
+                            "h-full transition-all duration-700 ease-out",
+                            (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "bg-red-500" : "bg-cyan-500"
+                          )}
+                          style={{ width: `${Math.min(100, ((activeKey.usage || 0) / (activeKey.limit || 500000)) * 100)}%` }} 
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="p-6 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex flex-col justify-center">
+                  <div className="flex items-center gap-3 mb-4">
+                    <Database size={20} className="text-zinc-500" />
+                    <div className="space-y-1">
+                      <span className="text-[12px] font-bold uppercase tracking-tight text-white block">Local Storage</span>
+                      <span className="text-[10px] font-mono text-zinc-500 uppercase">Synchronized State</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xl font-bold text-zinc-300">
+                      Synced <span className="text-xs text-zinc-600 font-mono">LIVE / FAST ACCES</span>
+                    </span>
+                  </div>
+                </div>
+                <div className="p-6 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex flex-col justify-center">
+                  <div className="flex items-center gap-3 mb-4">
+                    <Activity size={20} className="text-amber-500" />
+                    <div className="space-y-1">
+                      <span className="text-[12px] font-bold uppercase tracking-tight text-white block">Engine Health</span>
+                      <span className="text-[10px] font-mono text-zinc-500 uppercase">Model Dispatcher</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col">
+                    <span className="text-xl font-bold text-emerald-400">
+                      Optimal <span className="text-xs text-zinc-600 font-mono">/ NO BOTTLENECKS</span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-6 pb-24">
+                <h2 className="text-sm font-mono font-bold text-white uppercase tracking-widest border-b border-border-dim pb-4">Node Telemetry</h2>
+                <div className="grid grid-cols-1 gap-6">
+                  {Object.entries(metrics).length === 0 ? (
+                    <div className="p-8 text-center bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-900">
+                      <Activity size={24} className="mx-auto mb-3 text-zinc-800" />
+                      <p className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No metrics recorded yet. Engage models to initiate telemetry.</p>
+                    </div>
+                  ) : (
+                    Object.entries(metrics).map(([modelId, data]) => {
+                      const isHealthy = data.errorRate < 10;
+                      return (
+                        <motion.div 
+                          key={modelId}
+                          initial={{ opacity: 0, y: 5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="p-6 bg-black/40 border border-zinc-900/50 rounded-2xl group hover:border-cyan-500/20 transition-all bg-gradient-to-b from-transparent to-zinc-950/30 shadow-lg"
+                        >
+                          <div className="flex items-center justify-between mb-8">
+                            <div className="flex items-center gap-3">
+                              <div className={cn(
+                                "w-2.5 h-2.5 rounded-full",
+                                isHealthy ? "bg-green-500 shadow-[0_0_12px_rgba(34,197,94,0.4)]" : "bg-red-500 shadow-[0_0_12px_rgba(239,68,68,0.4)]"
+                              )} />
+                              <span className="text-sm font-bold uppercase tracking-tight text-white">{modelId.split('/').pop()}</span>
+                            </div>
+                            <span className="text-[10px] font-mono text-zinc-500 uppercase">Last used: {new Date(data.lastUsed).toLocaleTimeString()}</span>
+                          </div>
+
+                          <div className="grid grid-cols-3 gap-8">
+                            <div className="space-y-2 p-4 bg-zinc-900/30 rounded-xl border border-white/5">
+                              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest leading-none block font-bold">Latency</span>
+                              <div className="flex items-baseline gap-1">
+                                <span className={cn(
+                                  "text-2xl font-bold font-mono",
+                                  data.avgResponseTime < 2000 ? "text-cyan-400" : data.avgResponseTime < 5000 ? "text-amber-400" : "text-red-400"
+                                )}>{(data.avgResponseTime / 1000).toFixed(2)}</span>
+                                <span className="text-[10px] text-zinc-600 font-mono">s avg</span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 p-4 bg-zinc-900/30 rounded-xl border border-white/5">
+                              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest leading-none block font-bold">Throughput</span>
+                              <div className="flex items-baseline gap-1">
+                                <span className="text-2xl font-bold text-amber-500 font-mono">{Math.round(data.tokenRate)}</span>
+                                <span className="text-[10px] text-zinc-600 font-mono">t/s</span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-2 p-4 bg-zinc-900/30 rounded-xl border border-white/5">
+                              <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest leading-none block font-bold">Reliability</span>
+                              <div className="flex items-baseline gap-1">
+                                <span className={cn(
+                                  "text-2xl font-bold font-mono",
+                                  isHealthy ? "text-green-400" : "text-red-400"
+                                )}>{(100 - data.errorRate).toFixed(1)}%</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-8 pt-6 border-t border-white/5 flex flex-wrap justify-between items-center text-xs font-mono uppercase font-bold text-zinc-500">
+                            <div className="flex items-center gap-6">
+                              <span className="flex items-center gap-2">Success: <span className="text-emerald-500/80 bg-emerald-500/10 px-2 py-0.5 rounded">{data.successCount}</span></span>
+                              <span className="flex items-center gap-2">Failures: <span className="text-red-500/80 bg-red-500/10 px-2 py-0.5 rounded">{data.failureCount}</span></span>
+                            </div>
+                            <span className="flex items-center gap-2">Efficiency Index <span className="text-cyan-400 bg-cyan-900/40 px-2 py-0.5 rounded">{(data.tokenRate / (data.avgResponseTime / 1000 + 1)).toFixed(2)}</span></span>
+                          </div>
+                        </motion.div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : null}
       </main>
 
       {/* Transparency Dashboard Modal */}
@@ -2205,7 +2384,7 @@ export default function DevEngine() {
                 "flex gap-8 border-b mb-8 overflow-x-auto",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['profile', 'keys', 'context', 'theme', 'performance'].map((tab) => (
+                {['profile', 'keys', 'context', 'theme', 'models'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
@@ -2303,161 +2482,63 @@ export default function DevEngine() {
                     </div>
                   </div>
                 )}
-                {settingsTab === 'performance' && (
-                  <div className="space-y-6 max-h-[450px] overflow-y-auto custom-scrollbar pr-2">
+                {settingsTab === 'models' && (
+                  <div className="space-y-6 max-h-[550px] overflow-y-auto custom-scrollbar pr-2">
                     <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Neural Performance Dashboard</label>
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Model Catalog & Benchmarks</label>
                       <div className="flex items-center gap-3">
-                        <button 
-                          onClick={() => {
-                            if (confirm('Are you sure you want to clear all sessions and keys? This cannot be undone.')) {
-                              localStorage.clear();
-                              window.location.reload();
-                            }
-                          }}
-                          className="text-[8px] font-mono text-red-500/60 hover:text-red-500 uppercase tracking-tighter border border-red-500/20 px-2 py-0.5 rounded transition-colors"
-                        >
-                          Purge Neural Cache
-                        </button>
-                        <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-tighter">Live Neural Feed</span>
+                        <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-tighter shadow-sm">Live Neural Feed</span>
                       </div>
                     </div>
 
-                    {/* Storage Metric */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                      {/* Token Quota Metric */}
-                      {activeKey && (
-                        <div className="p-4 bg-cyan-950/20 border border-cyan-500/20 rounded-2xl flex items-center justify-between">
-                          <div className="flex items-center gap-3">
-                            <Bot size={16} className="text-cyan-400" />
-                            <div className="space-y-0.5">
-                              <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Token Quota</span>
-                              <span className="text-[8px] font-mono text-zinc-600 uppercase">{activeKey.name}</span>
-                            </div>
-                          </div>
-                          <div className="flex flex-col items-end">
-                            <span className={cn(
-                              "text-sm font-bold",
-                              (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "text-red-400" : "text-cyan-300"
-                            )}>
-                              {((activeKey.usage || 0) / 1000).toFixed(1)}k <span className="text-[10px] text-zinc-600 font-mono">/ {((activeKey.limit || 500000) / 1000).toFixed(0)}k</span>
-                            </span>
-                            <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
-                              <div 
-                                className={cn(
-                                  "h-full",
-                                  (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "bg-red-500" : "bg-cyan-500"
-                                )}
-                                style={{ width: `${Math.min(100, ((activeKey.usage || 0) / (activeKey.limit || 500000)) * 100)}%` }} 
-                              />
-                            </div>
-                          </div>
-                        </div>
-                      )}
-
-                      <div className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Database size={16} className="text-zinc-500" />
-                          <div className="space-y-0.5">
-                            <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Local Storage</span>
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase">Neural Sessions</span>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end">
-                          <span className="text-sm font-bold text-zinc-300">
-                            {(JSON.stringify(localStorage).length / 1024 / 1024).toFixed(2)} <span className="text-[10px] text-zinc-600 font-mono">MB</span>
-                          </span>
-                          <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
-                            <div 
-                              className="h-full bg-cyan-500/50" 
-                              style={{ width: `${Math.min(100, (JSON.stringify(localStorage).length / (5 * 1024 * 1024)) * 100)}%` }} 
-                            />
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="p-4 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <Zap size={16} className="text-amber-500" />
-                          <div className="space-y-0.5">
-                            <span className="text-[10px] font-bold uppercase tracking-tight text-white block">Sandbox Cache</span>
-                            <span className="text-[8px] font-mono text-zinc-600 uppercase">Agent Tool Access</span>
-                          </div>
-                        </div>
-                        <div className="flex flex-col items-end">
-                          <span className="text-sm font-bold text-amber-500">
-                            84% <span className="text-[10px] text-zinc-600 font-mono">/ OPT</span>
-                          </span>
-                          <div className="w-20 h-1 bg-zinc-900 rounded-full mt-1 overflow-hidden">
-                            <div className="h-full bg-amber-500/50" style={{ width: '84%' }} />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 gap-4">
-                      {Object.entries(metrics).length === 0 ? (
-                        <div className="p-8 text-center bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-900">
-                          <Activity size={24} className="mx-auto mb-3 text-zinc-800" />
-                          <p className="text-[10px] font-mono text-zinc-600 uppercase tracking-widest">No metrics recorded yet. Engage models to initiate telemetry.</p>
-                        </div>
+                    <div className="space-y-3">
+                      {modelCatalog.length === 0 ? (
+                        <div className="text-zinc-500 text-xs text-center py-6 font-mono border border-dashed border-zinc-800 rounded-xl">Fetching latest models mapping... Please wait or refresh later.</div>
                       ) : (
-                        Object.entries(metrics).map(([modelId, data]) => {
-                          const isHealthy = data.errorRate < 10;
-                          return (
-                            <motion.div 
-                              key={modelId}
-                              initial={{ opacity: 0, y: 5 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="p-5 bg-black/40 border border-zinc-900 rounded-2xl group hover:border-cyan-500/20 transition-all"
-                            >
-                              <div className="flex items-center justify-between mb-4">
-                                <div className="flex items-center gap-3">
-                                  <div className={cn(
-                                    "w-2 h-2 rounded-full",
-                                    isHealthy ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" : "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.4)]"
-                                  )} />
-                                  <span className="text-[11px] font-bold uppercase tracking-tight text-white">{modelId.split('/').pop()}</span>
-                                </div>
-                                <span className="text-[8px] font-mono text-zinc-600">Last used: {new Date(data.lastUsed).toLocaleTimeString()}</span>
-                              </div>
-
-                              <div className="grid grid-cols-3 gap-6">
-                                <div className="space-y-1">
-                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Latency</span>
-                                  <div className="flex items-baseline gap-1">
-                                    <span className="text-sm font-bold text-cyan-400">{(data.avgResponseTime / 1000).toFixed(2)}</span>
-                                    <span className="text-[9px] text-zinc-600 font-mono">s</span>
-                                  </div>
-                                </div>
-
-                                <div className="space-y-1">
-                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Throughput</span>
-                                  <div className="flex items-baseline gap-1">
-                                    <span className="text-sm font-bold text-amber-500">{Math.round(data.tokenRate)}</span>
-                                    <span className="text-[9px] text-zinc-600 font-mono">t/s</span>
-                                  </div>
-                                </div>
-
-                                <div className="space-y-1">
-                                  <span className="text-[8px] font-mono text-zinc-500 uppercase tracking-widest leading-none block">Reliability</span>
-                                  <div className="flex items-baseline gap-1">
-                                    <span className={cn(
-                                      "text-sm font-bold",
-                                      isHealthy ? "text-green-400" : "text-red-400"
-                                    )}>{(100 - data.errorRate).toFixed(1)}%</span>
-                                  </div>
+                        modelCatalog.map((model) => (
+                          <div key={model.id} className="p-5 bg-black/40 border border-zinc-900 rounded-2xl relative overflow-hidden flex flex-col gap-3 group hover:border-cyan-500/30 transition-colors">
+                            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] pointer-events-none group-hover:bg-cyan-500/10 transition-colors" />
+                            
+                            <div className="flex items-start justify-between relative z-10">
+                              <div>
+                                <h3 className="text-sm font-bold text-white mb-2 group-hover:text-cyan-400 transition-colors">{model.name}</h3>
+                                <div className="flex items-center gap-2">
+                                  <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded-md text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest hover:text-cyan-400 cursor-default">
+                                    {model.provider}
+                                  </span>
+                                  {model.architecture && (
+                                    <span className="text-[10px] text-zinc-500 font-mono tracking-tighter truncate max-w-[150px]">{model.architecture}</span>
+                                  )}
                                 </div>
                               </div>
-
-                              <div className="mt-4 pt-4 border-t border-white/5 flex justify-between items-center text-[9px] font-mono text-zinc-700 uppercase">
-                                <span>Success: <span className="text-zinc-500">{data.successCount}</span></span>
-                                <span>Failures: <span className="text-zinc-500">{data.failureCount}</span></span>
-                                <span>Efficiency Index: <span className="text-cyan-500/50">{(data.tokenRate / (data.avgResponseTime / 1000 + 1)).toFixed(2)}</span></span>
+                              {model.contextLength && (
+                                <div className="flex flex-col flex-end items-end text-right">
+                                  <span className="text-[14px] font-mono font-bold text-emerald-500">{Number(model.contextLength).toLocaleString()}</span>
+                                  <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">Max Context</span>
+                                </div>
+                              )}
+                            </div>
+                            
+                            <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">{model.description}</p>
+                            
+                            {model.pricing && (
+                              <div className="flex gap-6 mt-2 pt-4 border-t border-white/5 relative z-10">
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Prompt Cost</span>
+                                  <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                    ${Number(model.pricing.prompt || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                                  </span>
+                                </div>
+                                <div className="flex flex-col">
+                                  <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Completion Cost</span>
+                                  <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                    ${Number(model.pricing.completion || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                                  </span>
+                                </div>
                               </div>
-                            </motion.div>
-                          );
-                        })
+                            )}
+                          </div>
+                        ))
                       )}
                     </div>
                   </div>
@@ -2702,9 +2783,6 @@ export default function DevEngine() {
                           </div>
                           <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
                             {(apiKeys.find(k => k.id === activeKeyId)?.models || []).map((modelId, idx) => {
-                              const usageVal = usages[modelId] || 0;
-                              const isHeavy = usageVal > 90;
-                              
                               return (
                                 <div key={`${modelId}-${idx}`} className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node">
                                   <div className="flex items-center justify-between">
@@ -2716,32 +2794,6 @@ export default function DevEngine() {
                                         <span className="text-[10px] font-mono text-zinc-300 truncate uppercase tracking-tight">
                                           {modelId.split('/').pop()}
                                         </span>
-                                        <div className="flex items-center gap-1.5 mt-1">
-                                          <div className="w-24 h-1 bg-zinc-800 rounded-full overflow-hidden">
-                                            <motion.div 
-                                              initial={{ width: 0 }}
-                                              animate={{ width: `${usageVal}%` }}
-                                              className={cn(
-                                                "h-full transition-colors",
-                                                isHeavy ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]" : "bg-cyan-500"
-                                              )}
-                                            />
-                                          </div>
-                                          <span className={cn(
-                                            "text-[8px] font-bold font-mono tracking-tighter",
-                                            isHeavy ? "text-red-400" : "text-zinc-500"
-                                          )}>
-                                            {usageVal.toFixed(0)}%
-                                          </span>
-                                          {isHeavy && (
-                                            <motion.div
-                                              animate={{ opacity: [0.4, 1, 0.4] }}
-                                              transition={{ repeat: Infinity, duration: 1.5 }}
-                                            >
-                                              <AlertTriangle size={10} className="text-red-500" />
-                                            </motion.div>
-                                          )}
-                                        </div>
                                       </div>
                                     </div>
                                     <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">

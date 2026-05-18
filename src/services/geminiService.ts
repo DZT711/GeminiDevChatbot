@@ -123,7 +123,6 @@ class GeminiService {
   private aiInstance: GoogleGenAI | null = null;
   private modelQueue: string[] = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
   private currentModelIndex: number = 0;
-  private usage: Record<string, number> = {};
   private metrics: Record<string, ModelMetrics> = {};
 
   private initMetrics(model: string) {
@@ -186,13 +185,6 @@ class GeminiService {
     if (models.length > 0) {
       this.modelQueue = models;
       this.currentModelIndex = 0;
-      // Initialize usage for new models if they don't exist
-      models.forEach(m => {
-        if (this.usage[m] === undefined) {
-          // Initialize with some random "discovered" usage if it's the first time
-          this.usage[m] = Math.floor(Math.random() * 30);
-        }
-      });
     }
   }
 
@@ -215,53 +207,6 @@ class GeminiService {
 
   getCurrentQueue(): string[] {
     return [...this.modelQueue];
-  }
-
-  getUsagePercentage(modelId: string): number {
-    return this.usage[modelId] || 0;
-  }
-
-  getAllUsage(): Record<string, number> {
-    return { ...this.usage };
-  }
-
-  async syncUsageFromProvider(key: string, provider: Provider): Promise<Record<string, number>> {
-    // In a real scenario, this would call provider-specific billing/usage APIs.
-    // For OpenAI, it might hit /v1/usage. For Google, it's mostly internal.
-    // We simulate a "Neural Probe" that crawls the network for token footprints.
-    
-    await new Promise(resolve => setTimeout(resolve, 1500)); // Simulate crawl latency
-    
-    const now = new Date();
-    const dateStr = now.toISOString().split('T')[0];
-    
-    try {
-      if (provider === Provider.OPENAI) {
-        // Attempting a real crawl (this might fail due to CORS in some envs, hence the fallback)
-        const response = await fetch(`${PROVIDER_CONFIGS[Provider.OPENAI].baseUrl}/usage?date=${dateStr}`, {
-          headers: { "Authorization": `Bearer ${key}` }
-        }).catch(() => null);
-
-        if (response && response.ok) {
-          const data = await response.json();
-          // Map real usage data if available
-          console.log("Real usage crawled:", data);
-        }
-      }
-    } catch (e) {
-      console.warn("Direct crawl blocked by CORS - falling back to Neural Inference simulation");
-    }
-
-    // Advanced Simulation: Usage is derived from "Neural Latency"
-    // We update all active model nodes in the queue
-    Object.keys(this.usage).forEach(m => {
-      // Simulate usage crawl logic
-      const baseUsage = this.usage[m] || 10;
-      const flux = (Math.random() * 15) - 7; // ±7% fluctuation
-      this.usage[m] = Math.max(2, Math.min(98, baseUsage + flux));
-    });
-    
-    return { ...this.usage };
   }
 
   private rotateModel() {
@@ -399,17 +344,9 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
             if (config.signal?.aborted) throw new Error("Operation aborted");
             const model = this.modelQueue[(startIndex + attempts) % this.modelQueue.length];
 
-            // Check usage limit
-            if ((this.usage[model] || 0) >= 100) {
-              console.warn(`Quota reached for ${model}, rotating...`);
-              attempts++;
-              continue;
-            }
-
             try {
               const startTime = Date.now();
               if (attempts > 0) config.onModelSwitch?.(model);
-              this.usage[model] = Math.min(100, (this.usage[model] || 0) + 2);
               
               const coreTools = {
                 functionDeclarations: [
@@ -796,19 +733,30 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
               config.onTokenUpdate?.(tokens);
               return finalAccumulatedText;
             } catch (error: any) {
-          this.updateMetrics(model, 0, false);
-          if (error.message === "Operation aborted") throw error;
-          if (error?.message?.toLowerCase().includes("429") || error?.message?.toLowerCase().includes("quota")) {
-            this.rotateModel();
-            attempts++;
-          } else throw error;
+              this.updateMetrics(model, 0, false);
+              if (error.message === "Operation aborted") throw error;
+              
+              const isResourceError = error?.message?.toLowerCase().includes("429") || error?.message?.toLowerCase().includes("quota") || error?.message?.toLowerCase().includes("overloaded");
+              const nextModelId = this.modelQueue[(startIndex + attempts + 1) % this.modelQueue.length];
+              
+              if (attempts < this.modelQueue.length - 1) {
+                // We have a fallback
+                const errorCode = error?.status || error?.code || (error?.message?.includes("429") ? "429" : error?.message?.includes("503") ? "503" : "ERR_NEURAL_FAULT");
+                const errorMsg = `\n\n\`\`\`ansi\n\x1b[31m[NEURAL_ERROR: ${errorCode}]\x1b[0m ${error.message}\n\x1b[33m[FALLBACK_ACTIVATED]\x1b[0m Rerouting payload to node: ${nextModelId.split('/').pop()}\n\`\`\`\n\n`;
+                onChunk?.(errorMsg);
+                
+                this.rotateModel();
+                attempts++;
+                continue;
+              } else {
+                throw error;
+              }
         }
       }
       throw new Error("All models limits reached.");
     } else {
       // Non-Google Providers (OpenAI-compatible)
       const providerConfig = PROVIDER_CONFIGS[provider];
-      const model = config.model || this.modelQueue[0];
       const apiKey = config.customKey;
       
       if (!apiKey) throw new Error(`API Key required for ${providerConfig.name}`);
@@ -827,9 +775,10 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       });
 
       // Add system prompt for non-Google providers
-      const allSkills = [...DEFAULT_SKILLS, ...customSkills];
-      const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
-      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant. ${activeSkills.map(s => s.systemPrompt).join(' ')}`;
+      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant.`;
+      if (customSkills) {
+         systemPrompt += ` ${[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => s.systemPrompt).join(' ')}`;
+      }
       
       if (config.customInstructions) {
         systemPrompt += `\n\nUser Custom Personalization/Instructions:\n${config.customInstructions}`;
@@ -837,53 +786,83 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       
       messages.unshift({ role: 'system', content: systemPrompt });
 
-      const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: model,
-          messages,
-          stream: true
-        }),
-        signal: config.signal
-      });
+      let attempts = 0;
+      let startIndex = this.modelQueue.indexOf(config.model || this.getCurrentModel());
+      if (startIndex === -1) startIndex = 0;
 
-      if (!response.ok) {
-        const err = await response.json().catch(() => ({ error: { message: "Request failed" } }));
-        throw new Error(err.error?.message || "Provider error");
-      }
+      while (attempts < this.modelQueue.length) {
+        if (config.signal?.aborted) throw new Error("Operation aborted");
+        const model = this.modelQueue[(startIndex + attempts) % this.modelQueue.length];
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      let accumulatedText = "";
+        try {
+          if (attempts > 0) config.onModelSwitch?.(model);
 
-      if (!reader) throw new Error("Response body is not readable");
+          const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              model: model,
+              messages,
+              stream: true
+            }),
+            signal: config.signal
+          });
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+          if (!response.ok) {
+            const err = await response.json().catch(() => ({ error: { message: "Request failed" } }));
+            throw new Error(err.error?.message || `HTTP error ${response.status}`);
+          }
 
-        const chunk = decoder.decode(value, { stream: true });
-        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+          const reader = response.body?.getReader();
+          const decoder = new TextDecoder();
+          let accumulatedText = "";
 
-        for (const line of lines) {
-          if (line.includes('[DONE]')) break;
-          if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              const content = data.choices?.[0]?.delta?.content || "";
-              accumulatedText += content;
-              onChunk?.(accumulatedText);
-            } catch (e) {
-              console.warn("Error parsing chunk", e);
+          if (!reader) throw new Error("Response body is not readable");
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+            for (const line of lines) {
+              if (line.includes('[DONE]')) break;
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.slice(6));
+                  const content = data.choices?.[0]?.delta?.content || "";
+                  accumulatedText += content;
+                  onChunk?.(accumulatedText);
+                } catch (e) {
+                  console.warn("Error parsing chunk", e);
+                }
+              }
             }
+          }
+          return accumulatedText;
+        } catch (error: any) {
+          if (error.message === "Operation aborted") throw error;
+              
+          const nextModelId = this.modelQueue[(startIndex + attempts + 1) % this.modelQueue.length];
+              
+          if (attempts < this.modelQueue.length - 1) {
+             const errorCode = error?.status || error?.code || (error?.message?.includes("429") ? "429" : error?.message?.includes("503") ? "503" : error?.message?.includes("403") ? "403" : "ERR_NEURAL_FAULT");
+             const errorMsg = `\n\n\`\`\`ansi\n\x1b[31m[NEURAL_ERROR: ${errorCode}]\x1b[0m ${error.message}\n\x1b[33m[FALLBACK_ACTIVATED]\x1b[0m Rerouting payload to node: ${nextModelId.split('/').pop()}\n\`\`\`\n\n`;
+             onChunk?.(errorMsg);
+                
+             this.rotateModel();
+             attempts++;
+             continue;
+          } else {
+             throw error;
           }
         }
       }
-      return accumulatedText;
+      throw new Error("All models limits reached.");
     }
   }
 
@@ -901,7 +880,6 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
-          this.usage[ModelId.IMAGE] = Math.min(100, (this.usage[ModelId.IMAGE] || 0) + 5);
           this.updateMetrics(ModelId.IMAGE, Date.now() - startTime, true);
           return `data:image/png;base64,${part.inlineData.data}`;
         }
@@ -942,7 +920,6 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       for (const part of response.candidates?.[0]?.content?.parts || []) {
         if (part.inlineData) {
           onProgress?.("Neural Rendering Finalized", 100);
-          this.usage[ModelId.VIDEO] = Math.min(100, (this.usage[ModelId.VIDEO] || 0) + 12);
           this.updateMetrics(ModelId.VIDEO, Date.now() - startTime, true);
           return `data:video/mp4;base64,${part.inlineData.data}`;
         }
@@ -950,7 +927,6 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       
       onProgress?.("Temporal Simulation Finalized (Fallback Path)", 100);
       // Fallback simulation for the demo environment if model supports call but returns no binary
-      this.usage[ModelId.VIDEO] = Math.min(100, (this.usage[ModelId.VIDEO] || 0) + 12);
       this.updateMetrics(ModelId.VIDEO, Date.now() - startTime, true);
       return "https://storage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4"; 
     } catch (e: any) {
