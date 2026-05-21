@@ -28,6 +28,7 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash'),
   name: varchar('name', { length: 255 }),
   avatarUrl: varchar('avatar_url', { length: 2048 }),
+  role: varchar('role', { length: 50 }).notNull().default('USER'),
   customInstructions: text('custom_instructions'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
@@ -99,16 +100,44 @@ export const messages = pgTable('messages', {
 // Knowledge Nodes Table (Vector Database)
 export const knowledgeNodes = pgTable('knowledge_nodes', {
   id: uuid('id').defaultRandom().primaryKey(),
-  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
   nodeType: nodeTypeEnum('node_type'),
   content: text('content').notNull(),
   embedding: vectorType('embedding'),
   metadata: jsonb('metadata').default('{}'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
 }, (t) => [
-  pgPolicy('users can manage their own knowledge', {
+  pgPolicy('users can select all knowledge', {
+    for: 'select',
+    using: sql`true`,
+  }),
+  pgPolicy('admins can manage knowledge', {
     for: 'all',
-    using: sql`${t.userId} = current_setting('app.current_user_id', true)::uuid`,
+    using: sql`exists (select 1 from users u where u.id = current_setting('app.current_user_id', true)::uuid and u.role = 'ADMIN')`,
+  })
+]);
+
+// Knowledge Proposals Table (Human-in-the-loop updates)
+export const knowledgeProposals = pgTable('knowledge_proposals', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  actionType: varchar('action_type', { length: 50 }).notNull(), // 'INSERT', 'UPDATE', 'DELETE'
+  targetNodeId: uuid('target_node_id').references(() => knowledgeNodes.id, { onDelete: 'set null' }),
+  proposedContent: text('proposed_content'),
+  reason: text('reason'),
+  status: varchar('status', { length: 50 }).default('PENDING').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  pgPolicy('users can see all proposals', {
+    for: 'select',
+    using: sql`true`,
+  }),
+  pgPolicy('users can create proposals', {
+    for: 'insert',
+    withCheck: sql`${t.userId} = current_setting('app.current_user_id', true)::uuid`,
+  }),
+  pgPolicy('admins can manage all proposals', {
+    for: 'all',
+    using: sql`exists (select 1 from users u where u.id = current_setting('app.current_user_id', true)::uuid and u.role = 'ADMIN')`,
   })
 ]);
 
@@ -132,6 +161,7 @@ export const apiKeys = pgTable('api_keys', {
   name: varchar('name', { length: 255 }).notNull(),
   key: varchar('api_key_value', { length: 1024 }).notNull(),
   provider: varchar('provider', { length: 255 }).notNull(),
+  models: jsonb('models').$type<string[]>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
@@ -160,7 +190,7 @@ export const userPreferences = pgTable('user_preferences', {
 export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),
   sessions: many(sessions),
-  knowledgeNodes: many(knowledgeNodes),
+  knowledgeProposals: many(knowledgeProposals),
   apiKeys: many(apiKeys),
   customSkills: many(customSkills),
   preferences: one(userPreferences, {
@@ -191,9 +221,17 @@ export const messagesRelations = relations(messages, ({ one }) => ({
   }),
 }));
 
-export const knowledgeNodesRelations = relations(knowledgeNodes, ({ one }) => ({
+export const knowledgeNodesRelations = relations(knowledgeNodes, ({ many }) => ({
+  proposals: many(knowledgeProposals),
+}));
+
+export const knowledgeProposalsRelations = relations(knowledgeProposals, ({ one }) => ({
   user: one(users, {
-    fields: [knowledgeNodes.userId],
+    fields: [knowledgeProposals.userId],
     references: [users.id],
+  }),
+  targetNode: one(knowledgeNodes, {
+    fields: [knowledgeProposals.targetNodeId],
+    references: [knowledgeNodes.id],
   }),
 }));

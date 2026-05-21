@@ -7,6 +7,7 @@ import path from 'path';
 
 import { db } from './db/index.js';
 import { users, accounts, userPreferences, apiKeys, customSkills, sessions, messages, modelInformation } from './db/schema.js';
+import { encryptKey, decryptKey } from './lib/encryption.js';
 
 export const apiRouter = express.Router();
 
@@ -150,6 +151,448 @@ apiRouter.put('/auth/me', async (req, res) => {
   }
 });
 
+apiRouter.post('/knowledge/proposals', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { actionType, targetNodeId, proposedContent, reason } = req.body;
+    const { knowledgeProposals } = await import('./db/schema.js');
+
+    const [proposal] = await db.insert(knowledgeProposals).values({
+      userId: payload.id as string,
+      actionType,
+      targetNodeId: targetNodeId || null,
+      proposedContent,
+      reason,
+      status: 'PENDING'
+    }).returning();
+
+    res.json(proposal);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+async function resolveGoogleApiKey(userId: string, customKey?: string): Promise<string | undefined> {
+  let apiKey = customKey || process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    const [prefs] = await db.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+    if (prefs?.activeKeyId) {
+      const [userKey] = await db.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
+      if (userKey && (userKey.provider === 'google' || userKey.provider === 'GOOGLE') && userKey.key) {
+        apiKey = decryptKey(userKey.key);
+      }
+    }
+    
+    if (!apiKey) {
+      const userKeys = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+      const googleKey = userKeys.find(k => k.provider === 'google' || k.provider === 'GOOGLE');
+      if (googleKey && googleKey.key) {
+        apiKey = decryptKey(googleKey.key);
+      }
+    }
+  }
+  return apiKey;
+}
+
+apiRouter.post('/knowledge/search', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { query, limit = 5, customKey } = req.body;
+    if (!query) {
+      return res.status(400).json({ error: 'Query is required for search' });
+    }
+
+    const apiKey = await resolveGoogleApiKey(payload.id as string, customKey);
+
+    if (!apiKey) {
+      return res.status(400).json({ error: 'API key not valid. Please configure a valid API key or set one up in active settings.' });
+    }
+
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+    
+    // Generate embedding for the query using the updated gemini-embedding-2-preview model
+    const embedResponse = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: query
+    });
+    
+    const embeddingVector = embedResponse.embeddings?.[0]?.values;
+    if (!embeddingVector) {
+      throw new Error('Failed to generate embeddings for query');
+    }
+
+    const { knowledgeNodes } = await import('./db/schema.js');
+    const { cosineDistance } = await import('drizzle-orm');
+
+    // Perform vector search
+    const results = await db.select({
+      id: knowledgeNodes.id,
+      content: knowledgeNodes.content,
+      nodeType: knowledgeNodes.nodeType,
+      metadata: knowledgeNodes.metadata,
+      similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
+    })
+    .from(knowledgeNodes)
+    .orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector))
+    .limit(limit);
+
+    res.json({ results });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /knowledge - Get all knowledge nodes for the authenticated user
+apiRouter.get('/knowledge', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { knowledgeNodes } = await import('./db/schema.js');
+    const nodes = await db.select().from(knowledgeNodes);
+    
+    res.json(nodes);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /knowledge/:id - Update directly a knowledge node (generates new embeddings)
+apiRouter.put('/knowledge/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Role check: Only ADMIN can directly update knowledge nodes
+    const { users, knowledgeNodes } = await import('./db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    if (!userObj || userObj.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can update knowledge nodes directly.' });
+    }
+
+    const { content, nodeType, metadata } = req.body;
+    if (!content) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+
+    const [existingNode] = await db.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    if (!existingNode) {
+      return res.status(404).json({ error: 'Knowledge node not found' });
+    }
+
+    const apiKey = await resolveGoogleApiKey(payload.id as string);
+    if (!apiKey) {
+      return res.status(400).json({ error: 'API key not configured. Cannot update vector embeddings.' });
+    }
+
+    const { GoogleGenAI } = await import('@google/genai');
+    const ai = new GoogleGenAI({ apiKey: apiKey });
+    
+    const embedResponse = await ai.models.embedContent({
+      model: 'gemini-embedding-2-preview',
+      contents: content
+    });
+    
+    const embeddingVector = embedResponse.embeddings?.[0]?.values;
+    if (!embeddingVector) {
+      throw new Error('Failed to generate embedding');
+    }
+
+    const [updatedNode] = await db.update(knowledgeNodes).set({
+      content,
+      nodeType: nodeType || existingNode.nodeType,
+      metadata: metadata || existingNode.metadata,
+      embedding: embeddingVector
+    }).where(eq(knowledgeNodes.id, req.params.id)).returning();
+
+    res.json(updatedNode);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /knowledge/:id - Directly delete a knowledge node
+apiRouter.delete('/knowledge/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Role check: Only ADMIN can directly delete knowledge nodes
+    const { users, knowledgeNodes } = await import('./db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    if (!userObj || userObj.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can delete knowledge nodes directly.' });
+    }
+
+    const [existingNode] = await db.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    if (!existingNode) {
+      return res.status(404).json({ error: 'Knowledge node not found' });
+    }
+
+    await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+
+    res.json({ message: 'Knowledge node deleted successfully' });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /knowledge/proposals - Retrieve list of proposals
+apiRouter.get('/knowledge/proposals', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { knowledgeProposals } = await import('./db/schema.js');
+    const proposals = await db.select().from(knowledgeProposals);
+    
+    res.json(proposals);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /knowledge/proposals/:id - Update content of a proposal
+apiRouter.put('/knowledge/proposals/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+        const { proposedContent, reason, status } = req.body;
+    const { users, knowledgeProposals } = await import('./db/schema.js');
+
+    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    if (!proposal) {
+      return res.status(404).json({ error: 'Proposal not found' });
+    }
+
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+
+    if (proposal.userId !== (payload.id as string) && (!userObj || userObj.role !== 'ADMIN')) {
+      return res.status(403).json({ error: 'Unauthorized to modify this proposal' });
+    }
+
+    const [updated] = await db.update(knowledgeProposals).set({
+      proposedContent: proposedContent !== undefined ? proposedContent : proposal.proposedContent,
+      reason: reason !== undefined ? reason : proposal.reason,
+      status: status !== undefined ? status : proposal.status
+    }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+
+    res.json(updated);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /knowledge/proposals/:id/approve - Approve and apply a proposal
+apiRouter.post('/knowledge/proposals/:id/approve', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Role check: Only ADMIN can approve proposals
+    const { users, knowledgeProposals, knowledgeNodes } = await import('./db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    if (!userObj || userObj.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can approve proposals.' });
+    }
+
+    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    if (!proposal) {
+      return res.status(404).json({ error: 'Proposal not found' });
+    }
+
+    if (proposal.status !== 'PENDING') {
+      return res.status(400).json({ error: 'Proposal has already been processed' });
+    }
+
+    const apiKey = await resolveGoogleApiKey(payload.id as string);
+    if (!apiKey) {
+      return res.status(400).json({ error: 'API key not configured. Cannot process vector embeddings for approval.' });
+    }
+
+    if (proposal.actionType === 'INSERT' || proposal.actionType === 'UPDATE') {
+      const content = proposal.proposedContent;
+      if (!content) {
+        return res.status(400).json({ error: 'Proposal missing content to encode' });
+      }
+
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey: apiKey });
+      
+      const embedResponse = await ai.models.embedContent({
+        model: 'gemini-embedding-2-preview',
+        contents: content
+      });
+      
+      const embeddingVector = embedResponse.embeddings?.[0]?.values;
+      if (!embeddingVector) {
+        throw new Error('Failed to generate embedding');
+      }
+
+      if (proposal.actionType === 'INSERT') {
+        const [insertedNode] = await db.insert(knowledgeNodes).values({
+          content: content,
+          nodeType: 'web_data', // fallback default
+          embedding: embeddingVector,
+          metadata: { reason: proposal.reason }
+        }).returning();
+
+        await db.update(knowledgeProposals).set({
+          status: 'APPROVED',
+          targetNodeId: insertedNode.id
+        }).where(eq(knowledgeProposals.id, req.params.id));
+
+      } else if (proposal.actionType === 'UPDATE') {
+        if (!proposal.targetNodeId) {
+          return res.status(400).json({ error: 'Update proposal is missing targetNodeId' });
+        }
+
+        await db.update(knowledgeNodes).set({
+          content: content,
+          embedding: embeddingVector
+        }).where(eq(knowledgeNodes.id, proposal.targetNodeId));
+
+        await db.update(knowledgeProposals).set({
+          status: 'APPROVED'
+        }).where(eq(knowledgeProposals.id, req.params.id));
+      }
+
+    } else if (proposal.actionType === 'DELETE') {
+      if (!proposal.targetNodeId) {
+        return res.status(400).json({ error: 'Delete proposal is missing targetNodeId' });
+      }
+
+      await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, proposal.targetNodeId));
+
+      await db.update(knowledgeProposals).set({
+        status: 'APPROVED'
+      }).where(eq(knowledgeProposals.id, req.params.id));
+    }
+
+    const [updatedProposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    res.json(updatedProposal);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /knowledge/proposals/:id/reject - Reject a proposal
+apiRouter.post('/knowledge/proposals/:id/reject', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    // Role check: Only ADMIN can reject proposals
+    const { users, knowledgeProposals } = await import('./db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    if (!userObj || userObj.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can reject proposals.' });
+    }
+
+    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    if (!proposal) {
+      return res.status(404).json({ error: 'Proposal not found' });
+    }
+
+    const [updatedProposal] = await db.update(knowledgeProposals).set({
+      status: 'REJECTED'
+    }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+
+    res.json(updatedProposal);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 apiRouter.post('/auth/guest', async (req, res) => {
   try {
     const guestEmail = `guest_${crypto.randomUUID()}@guest.local`;
@@ -190,6 +633,12 @@ apiRouter.get('/auth/me', async (req, res) => {
     });
     if (!user) return res.status(401).json({ error: 'User not found' });
     
+    let userRole = user.role;
+    if (user.email === 'nguyensihuynsh711@gmail.com' && user.role !== 'ADMIN') {
+      await db.update(users).set({ role: 'ADMIN' }).where(eq(users.id, user.id));
+      userRole = 'ADMIN';
+    }
+
     const githubAccount = user.accounts?.find(a => a.provider === 'github');
     const githubToken = githubAccount?.accessToken;
 
@@ -198,6 +647,7 @@ apiRouter.get('/auth/me', async (req, res) => {
       email: user.email, 
       name: user.name, 
       avatarUrl: user.avatarUrl, 
+      role: userRole,
       customInstructions: user.customInstructions, 
       isGuest: !!payload.isGuest,
       githubToken
@@ -243,7 +693,7 @@ apiRouter.get('/user/state', async (req, res) => {
 
     res.json({
       preferences: userPrefs,
-      apiKeys: userKeys,
+      apiKeys: userKeys.map(k => ({ ...k, key: decryptKey(k.key) })),
       customSkills: userSkills,
       sessions: formattedSessions,
     });
@@ -282,8 +732,9 @@ apiRouter.put('/user/state', async (req, res) => {
             id: k.id,
             userId,
             name: k.name,
-            key: k.key,
+            key: encryptKey(k.key),
             provider: k.provider,
+            models: k.models,
           })));
         }
       }

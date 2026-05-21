@@ -45,7 +45,12 @@ import {
   ArrowDown,
   Wind,
   Layers,
-  AlertTriangle
+  AlertTriangle,
+  Maximize2,
+  Minimize2,
+  Coffee,
+  Braces,
+  Binary
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -67,7 +72,7 @@ import { ThinkingLevel } from '@google/genai';
 import { useDropzone } from 'react-dropzone';
 import JSZip from 'jszip';
 
-const ICON_MAP: Record<string, any> = { Code2, Palette, Server, Cpu, Database, Cloud, Shield };
+const ICON_MAP: Record<string, any> = { Code2, Palette, Server, Cpu, Database, Cloud, Shield, Terminal, Zap, Globe, Coffee, Braces, Binary, Layers };
 
 const PROVIDER_ICONS: Record<string, any> = {
   [Provider.GOOGLE]: Bot,
@@ -123,8 +128,15 @@ export default function DevEngine() {
   // Model Queue Sync
   useEffect(() => {
     const activeKey = apiKeys.find(k => k.id === activeKeyId);
-    if (activeKey && activeKey.models && activeKey.models.length > 0) {
-      geminiService.setCustomQueue(activeKey.models);
+    if (activeKey) {
+      if (activeKey.models && activeKey.models.length > 0) {
+        geminiService.setCustomQueue(activeKey.models);
+      } else {
+        const fallbackQueue = activeKey.provider === Provider.GOOGLE 
+          ? ['gemini-1.5-pro', 'gemini-1.5-flash']
+          : ['gpt-4o', 'gpt-4o-mini', 'claude-3-5-sonnet-20241022'];
+        geminiService.setCustomQueue(fallbackQueue);
+      }
     } else {
       geminiService.resetQueue();
     }
@@ -144,11 +156,14 @@ export default function DevEngine() {
   
   // UI & Input States
   const [input, setInput] = useState('');
+  const [isInputMaximized, setIsInputMaximized] = useState(false);
   const [suggestedSkills, setSuggestedSkills] = useState<Skill[]>([]);
   const [autocompleteSuggestion, setAutocompleteSuggestion] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState('');
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [catalogFilter, setCatalogFilter] = useState('');
   const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
   const [modelCatalog, setModelCatalog] = useState<ModelInformation[]>([]);
   
@@ -173,13 +188,212 @@ export default function DevEngine() {
   const [validationStatus, setValidationStatus] = useState<{ type: 'error' | 'success', message: string } | null>(null);
   const [newKeyName, setNewKeyName] = useState('');
   const [newKeyVal, setNewKeyVal] = useState('');
-  const [newKeyLimit, setNewKeyLimit] = useState(500000);
   const [newKeyProvider, setNewKeyProvider] = useState<Provider>(Provider.GOOGLE);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'keys' | 'context' | 'theme' | 'performance'>('keys');
+  const [settingsTab, setSettingsTab] = useState<'profile' | 'keys' | 'context' | 'theme' | 'performance' | 'knowledge'>('keys');
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
   const [repoUrl, setRepoUrl] = useState('');
+
+  // Knowledge Base States
+  const [knowledgeNodes, setKnowledgeNodes] = useState<{ id: string; content: string; nodeType: string; metadata: any; createdAt: string }[]>([]);
+  const [knowledgeProposals, setKnowledgeProposals] = useState<{ id: string; actionType: string; targetNodeId: string | null; proposedContent: string | null; reason: string | null; status: string; createdAt: string }[]>([]);
+  const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
+  const [isKnowledgeActionLoading, setIsKnowledgeActionLoading] = useState<string | null>(null);
+  const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
+  const [editingNodeContent, setEditingNodeContent] = useState('');
+  const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
+  const [editingProposalContent, setEditingProposalContent] = useState('');
+  
+  // Knowledge search/testing states
+  const [kSearchQuery, setKSearchQuery] = useState('');
+  const [kSearchResults, setKSearchResults] = useState<{ id: string; content: string; nodeType: string; similarity: number }[]>([]);
+  const [isKSearching, setIsKSearching] = useState(false);
+  const [kSearchError, setKSearchError] = useState('');
+
+  const fetchKnowledgeData = async () => {
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeLoading(true);
+    try {
+      const [nodesRes, proposalsRes] = await Promise.all([
+        fetch('/api/knowledge', { headers: { Authorization: `Bearer ${token}` } }),
+        fetch('/api/knowledge/proposals', { headers: { Authorization: `Bearer ${token}` } })
+      ]);
+      if (nodesRes.ok) {
+        const nodesData = await nodesRes.json();
+        setKnowledgeNodes(nodesData);
+      }
+      if (proposalsRes.ok) {
+        const proposalsData = await proposalsRes.json();
+        setKnowledgeProposals(proposalsData);
+      }
+    } catch (e) {
+      console.error("Failed to fetch knowledge details", e);
+    } finally {
+      setIsKnowledgeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (showSettings && settingsTab === 'knowledge') {
+      fetchKnowledgeData();
+    }
+  }, [showSettings, settingsTab]);
+
+  const handleApproveProposal = async (proposalId: string) => {
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeActionLoading(proposalId);
+    try {
+      const res = await fetch(`/api/knowledge/proposals/${proposalId}/approve`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        alert(errData.error || 'Failed to approve proposal');
+      } else {
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setIsKnowledgeActionLoading(null);
+    }
+  };
+
+  const handleRejectProposal = async (proposalId: string) => {
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeActionLoading(proposalId);
+    try {
+      const res = await fetch(`/api/knowledge/proposals/${proposalId}/reject`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        alert(errData.error || 'Failed to reject proposal');
+      } else {
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setIsKnowledgeActionLoading(null);
+    }
+  };
+
+  const handleSaveProposalEdit = async (proposalId: string) => {
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeActionLoading(proposalId);
+    try {
+      const res = await fetch(`/api/knowledge/proposals/${proposalId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ proposedContent: editingProposalContent })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        alert(errData.error || 'Failed to update proposal');
+      } else {
+        setEditingProposalId(null);
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setIsKnowledgeActionLoading(null);
+    }
+  };
+
+  const handleDeleteNode = async (nodeId: string) => {
+    if (!confirm('Are you sure you want to delete this knowledge node directly from your vector index?')) return;
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeActionLoading(nodeId);
+    try {
+      const res = await fetch(`/api/knowledge/${nodeId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        alert(errData.error || 'Failed to delete node');
+      } else {
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setIsKnowledgeActionLoading(null);
+    }
+  };
+
+  const handleSaveNodeEdit = async (nodeId: string) => {
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKnowledgeActionLoading(nodeId);
+    try {
+      const res = await fetch(`/api/knowledge/${nodeId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ content: editingNodeContent })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        alert(errData.error || 'Failed to update node');
+      } else {
+        setEditingNodeId(null);
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      alert("Error: " + err.message);
+    } finally {
+      setIsKnowledgeActionLoading(null);
+    }
+  };
+
+  const handleKSearch = async () => {
+    if (!kSearchQuery.trim()) return;
+    const token = localStorage.getItem('session');
+    if (!token) return;
+    setIsKSearching(true);
+    setKSearchError('');
+    try {
+      const res = await fetch('/api/knowledge/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({ query: kSearchQuery, limit: 3 })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        setKSearchError(errData.error || 'Failed to execute query search');
+      } else {
+        const data = await res.json();
+        setKSearchResults(data.results || []);
+      }
+    } catch (err: any) {
+      setKSearchError(err.message);
+    } finally {
+      setIsKSearching(false);
+    }
+  };
   
   const activeKey = apiKeys.find(k => k.id === activeKeyId);
   const activeApiKey = activeKey?.key || '';
@@ -271,7 +485,7 @@ export default function DevEngine() {
       } catch (e) {
         console.error("Failed to sync state", e);
       }
-    }, 1500); // Debounce
+    }, 300); // Debounce
     return () => clearTimeout(timer);
   }, [sessions, customSkills, apiKeys, activeKeyId, theme, currentModel, showSkillSuggestions, isStateLoaded]);
   
@@ -905,8 +1119,6 @@ export default function DevEngine() {
           }
         );
 
-        setUsages(geminiService.getAllUsage());
-
         setMessages(prev => {
           saveCurrentSession(prev, sessionId);
           return prev;
@@ -1002,7 +1214,6 @@ export default function DevEngine() {
           }
         );
 
-        setUsages(geminiService.getAllUsage());
         setMessages(prev => {
           saveCurrentSession(prev, sessionId);
           return prev;
@@ -1856,18 +2067,28 @@ export default function DevEngine() {
                                <span className="text-[9px] font-mono text-zinc-800 uppercase tracking-widest font-bold">Standard Compute</span>
                             )}
                           </div>
-                          <button 
-                            type="button"
-                            onClick={handleEnhancePrompt}
-                            disabled={!input.trim() || isEnhancingPrompt}
-                            className={cn(
-                              "p-1.5 rounded-lg transition-all active:scale-95",
-                              isEnhancingPrompt ? "text-amber-400 animate-spin" : "text-zinc-600 hover:text-cyan-400 hover:bg-white/5"
-                            )}
-                            title="Neural Refinement"
-                          >
-                            <Sparkles size={14} />
-                          </button>
+                          <div className="flex gap-1.5 items-center">
+                            <button 
+                              type="button"
+                              onClick={() => setIsInputMaximized(!isInputMaximized)}
+                              className="p-1.5 rounded-lg transition-all text-zinc-600 hover:text-cyan-400 hover:bg-white/5 active:scale-95"
+                              title={isInputMaximized ? "Minimize Text Area" : "Maximize Text Area"}
+                            >
+                              {isInputMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                            </button>
+                            <button 
+                              type="button"
+                              onClick={handleEnhancePrompt}
+                              disabled={!input.trim() || isEnhancingPrompt}
+                              className={cn(
+                                "p-1.5 rounded-lg transition-all active:scale-95",
+                                isEnhancingPrompt ? "text-amber-400 animate-spin" : "text-zinc-600 hover:text-cyan-400 hover:bg-white/5"
+                              )}
+                              title="Neural Refinement"
+                            >
+                              <Sparkles size={14} />
+                            </button>
+                          </div>
                         </div>
                         <textarea 
                           value={input}
@@ -1875,8 +2096,9 @@ export default function DevEngine() {
                           onPaste={handlePaste}
                           placeholder="Inject system commands..."
                           className={cn(
-                            "bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none min-h-[48px] max-h-64 custom-scrollbar px-2 py-1 relative z-10 transition-colors",
-                            theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-800 text-zinc-200"
+                            "bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none custom-scrollbar px-2 py-1 relative z-10 transition-all",
+                            theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-800 text-zinc-200",
+                            isInputMaximized ? "min-h-[50vh] max-h-[80vh]" : "min-h-[96px] max-h-64"
                           )}
                           onKeyDown={(e) => {
                             if (e.key === 'Tab' && autocompleteSuggestion) {
@@ -2131,17 +2353,54 @@ export default function DevEngine() {
         ) : view === 'models' ? (
           <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
             <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
-              <header className="flex justify-between items-end border-b border-border-dim pb-8">
+              <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-6 border-b border-border-dim pb-8">
                 <div>
                   <h1 className="text-4xl font-mono font-bold tracking-tighter text-white mb-2 uppercase">Model Catalog</h1>
                   <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest tracking-tighter opacity-60">Neural Engine Configurations</p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-3 min-w-[300px]">
+                  <div className="relative flex-1">
+                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+                    <input 
+                      type="text" 
+                      placeholder="Search models..." 
+                      value={catalogSearch}
+                      onChange={e => setCatalogSearch(e.target.value)}
+                      className="w-full bg-black/40 border border-zinc-800 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-cyan-500/50 font-mono transition-all"
+                    />
+                  </div>
+                  <select 
+                    value={catalogFilter} 
+                    onChange={e => setCatalogFilter(e.target.value)}
+                    className="bg-black/40 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs text-zinc-300 focus:outline-none focus:border-cyan-500/50 font-mono appearance-none min-w-[120px] transition-all"
+                    style={{ backgroundImage: `url('data:image/svg+xml;utf8,<svg fill="none" viewBox="0 0 24 24" stroke="gray"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>')`, backgroundRepeat: 'no-repeat', backgroundPositionX: 'calc(100% - 12px)', backgroundPositionY: 'center', backgroundSize: '12px' }}
+                  >
+                    <option value="">All Providers</option>
+                    {[...new Set(modelCatalog.map(m => m.provider))].sort().map(p => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
                 </div>
               </header>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24">
                 {modelCatalog.length === 0 ? (
                   <div className="col-span-full text-zinc-500 text-xs text-center py-6 font-mono border border-dashed border-zinc-800 rounded-xl">Fetching latest models mapping... Please wait or refresh later.</div>
                 ) : (
-                  modelCatalog.map((model) => {
+                  [...modelCatalog]
+                  .filter(m => {
+                    if (catalogFilter && m.provider !== catalogFilter) return false;
+                    if (catalogSearch && !m.name.toLowerCase().includes(catalogSearch.toLowerCase()) && !m.id.toLowerCase().includes(catalogSearch.toLowerCase())) return false;
+                    return true;
+                  })
+                  .sort((a, b) => {
+                    const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
+                    const aActive = activeModels.includes(a.id);
+                    const bActive = activeModels.includes(b.id);
+                    if (aActive && !bActive) return -1;
+                    if (!aActive && bActive) return 1;
+                    if (aActive && bActive) return activeModels.indexOf(a.id) - activeModels.indexOf(b.id);
+                    return 0;
+                  }).map((model) => {
                     const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
                     const isActiveModel = activeModels.includes(model.id);
                     return (
@@ -2207,35 +2466,7 @@ export default function DevEngine() {
                 </div>
               </header>
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {activeKey && (
-                  <div className="p-6 bg-cyan-950/20 border border-cyan-500/20 rounded-2xl flex flex-col justify-center">
-                    <div className="flex items-center gap-3 mb-4">
-                      <Bot size={20} className="text-cyan-400" />
-                      <div className="space-y-1">
-                        <span className="text-[12px] font-bold uppercase tracking-tight text-white block">Token Quota</span>
-                        <span className="text-[10px] font-mono text-zinc-500 uppercase">{activeKey.name}</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-col">
-                      <span className={cn(
-                        "text-xl font-bold",
-                        (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "text-red-400" : "text-cyan-300"
-                      )}>
-                        {((activeKey.usage || 0) / 1000).toFixed(1)}k <span className="text-xs text-zinc-600 font-mono">/ {((activeKey.limit || 500000) / 1000).toFixed(0)}k</span>
-                      </span>
-                      <div className="w-full h-1.5 bg-zinc-900 rounded-full mt-3 overflow-hidden">
-                        <div 
-                          className={cn(
-                            "h-full transition-all duration-700 ease-out",
-                            (activeKey.usage || 0) > (activeKey.limit || 500000) * 0.9 ? "bg-red-500" : "bg-cyan-500"
-                          )}
-                          style={{ width: `${Math.min(100, ((activeKey.usage || 0) / (activeKey.limit || 500000)) * 100)}%` }} 
-                        />
-                      </div>
-                    </div>
-                  </div>
-                )}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="p-6 bg-zinc-950/40 border border-zinc-900 rounded-2xl flex flex-col justify-center">
                   <div className="flex items-center gap-3 mb-4">
                     <Database size={20} className="text-zinc-500" />
@@ -2384,7 +2615,7 @@ export default function DevEngine() {
                 "flex gap-8 border-b mb-8 overflow-x-auto",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['profile', 'keys', 'context', 'theme', 'models'].map((tab) => (
+                {['profile', 'keys', 'context', 'theme', 'knowledge'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
@@ -2482,67 +2713,7 @@ export default function DevEngine() {
                     </div>
                   </div>
                 )}
-                {settingsTab === 'models' && (
-                  <div className="space-y-6 max-h-[550px] overflow-y-auto custom-scrollbar pr-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Model Catalog & Benchmarks</label>
-                      <div className="flex items-center gap-3">
-                        <span className="text-[8px] font-mono text-zinc-600 uppercase tracking-tighter shadow-sm">Live Neural Feed</span>
-                      </div>
-                    </div>
 
-                    <div className="space-y-3">
-                      {modelCatalog.length === 0 ? (
-                        <div className="text-zinc-500 text-xs text-center py-6 font-mono border border-dashed border-zinc-800 rounded-xl">Fetching latest models mapping... Please wait or refresh later.</div>
-                      ) : (
-                        modelCatalog.map((model) => (
-                          <div key={model.id} className="p-5 bg-black/40 border border-zinc-900 rounded-2xl relative overflow-hidden flex flex-col gap-3 group hover:border-cyan-500/30 transition-colors">
-                            <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/5 rounded-full blur-[40px] pointer-events-none group-hover:bg-cyan-500/10 transition-colors" />
-                            
-                            <div className="flex items-start justify-between relative z-10">
-                              <div>
-                                <h3 className="text-sm font-bold text-white mb-2 group-hover:text-cyan-400 transition-colors">{model.name}</h3>
-                                <div className="flex items-center gap-2">
-                                  <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded-md text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest hover:text-cyan-400 cursor-default">
-                                    {model.provider}
-                                  </span>
-                                  {model.architecture && (
-                                    <span className="text-[10px] text-zinc-500 font-mono tracking-tighter truncate max-w-[150px]">{model.architecture}</span>
-                                  )}
-                                </div>
-                              </div>
-                              {model.contextLength && (
-                                <div className="flex flex-col flex-end items-end text-right">
-                                  <span className="text-[14px] font-mono font-bold text-emerald-500">{Number(model.contextLength).toLocaleString()}</span>
-                                  <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">Max Context</span>
-                                </div>
-                              )}
-                            </div>
-                            
-                            <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">{model.description}</p>
-                            
-                            {model.pricing && (
-                              <div className="flex gap-6 mt-2 pt-4 border-t border-white/5 relative z-10">
-                                <div className="flex flex-col">
-                                  <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Prompt Cost</span>
-                                  <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
-                                    ${Number(model.pricing.prompt || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
-                                  </span>
-                                </div>
-                                <div className="flex flex-col">
-                                  <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Completion Cost</span>
-                                  <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
-                                    ${Number(model.pricing.completion || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
-                                  </span>
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </div>
-                )}
                 {settingsTab === 'keys' && (
                   <div className="space-y-6">
                     <div className="space-y-4">
@@ -2581,104 +2752,94 @@ export default function DevEngine() {
                             </button>
                           </div>
                           
-                          <div className="space-y-3 relative z-10">
-                            <div className="space-y-1.5">
-                              <label className="text-[8px] font-mono text-zinc-500 uppercase">AI Provider Platform</label>
-                              <select 
-                                value={newKeyProvider}
-                                onChange={(e) => setNewKeyProvider(e.target.value as Provider)}
-                                className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono appearance-none"
-                              >
-                                {Object.entries(PROVIDER_CONFIGS).map(([id, config]) => (
-                                  <option key={id} value={id} className="bg-zinc-950">{config.name}</option>
-                                ))}
-                              </select>
+                          <div className="space-y-4 relative z-10 bg-zinc-900/60 border border-zinc-800/80 p-5 rounded-2xl shadow-xl backdrop-blur-md">
+                            <div className="flex items-center justify-between border-b border-zinc-800/50 pb-2.5 mb-1">
+                              <span className="text-[10px] font-mono tracking-widest text-cyan-400 uppercase font-bold">Secure Credential Enrollment</span>
+                              <span className="text-[8px] font-mono bg-cyan-950/40 text-cyan-400 px-2 py-0.5 rounded-full border border-cyan-500/15">Active Session</span>
                             </div>
 
-                            <div className="grid grid-cols-3 gap-3">
-                              <div className="space-y-1.5">
-                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Provider Alias</label>
+                            <div className="space-y-1.5 text-left">
+                              <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase flex items-center justify-between">
+                                <span>AI Provider Platform</span>
+                                <span className="text-[7px] text-zinc-600 lowercase font-normal">Select engine gateway</span>
+                              </label>
+                              <div className="relative">
+                                <select 
+                                  value={newKeyProvider}
+                                  onChange={(e) => setNewKeyProvider(e.target.value as Provider)}
+                                  className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 font-mono transition-all cursor-pointer"
+                                >
+                                  {Object.entries(PROVIDER_CONFIGS).map(([id, config]) => (
+                                    <option key={id} value={id} className="bg-zinc-950">{config.name}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-left">
+                              <div className="space-y-1.5 md:col-span-1">
+                                <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">Provider Alias</label>
                                 <input 
                                   type="text"
                                   placeholder="Work Key"
                                   value={newKeyName}
                                   onChange={(e) => setNewKeyName(e.target.value)}
-                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
+                                  className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
                                 />
                               </div>
-                              <div className="space-y-1.5">
-                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Input Secret Key</label>
+                              <div className="space-y-1.5 md:col-span-2">
+                                <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">Input Secret Key</label>
                                 <input 
                                   type="password"
                                   placeholder={newKeyProvider === Provider.GOOGLE ? "AIzaSy..." : "sk-..."}
                                   value={newKeyVal}
                                   onChange={(e) => setNewKeyVal(e.target.value)}
-                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 placeholder:text-zinc-800 font-mono"
+                                  className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
                                 />
-                              </div>
-                              <div className="space-y-1.5">
-                                <label className="text-[8px] font-mono text-zinc-500 uppercase">Daily Limit (Tokens)</label>
-                                <select
-                                  id="limit-selector"
-                                  value={newKeyLimit}
-                                  onChange={(e) => {
-                                    setNewKeyLimit(parseInt(e.target.value));
-                                  }}
-                                  className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono"
-                                >
-                                  <option value={100000}>100k</option>
-                                  <option value={500000}>500k</option>
-                                  <option value={1000000}>1M</option>
-                                  <option value={5000000}>5M</option>
-                                </select>
                               </div>
                             </div>
                             
                             {validationStatus && (
                               <div className={cn(
-                                "p-3 rounded-xl border text-[9px] font-mono animate-in slide-in-from-top-1",
-                                validationStatus.type === 'error' ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-green-500/10 border-green-500/20 text-green-400"
+                                "p-3 rounded-xl border text-[9px] font-mono animate-in slide-in-from-top-1 text-left",
+                                validationStatus.type === 'error' ? "bg-red-500/10 border-red-500/20 text-red-400" : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.05)]"
                               )}>
+                                <span className="font-bold mr-1">{validationStatus.type === 'error' ? '▶ ERROR:' : '▶ STATUS:'}</span>
                                 {validationStatus.message}
                               </div>
                             )}
 
-                            <div className="flex gap-2 pt-2">
+                            <div className="flex gap-2.5 pt-1">
                               <button 
                                 onClick={async () => {
                                   if (!newKeyVal.trim()) {
-                                    setValidationStatus({ type: 'error', message: 'ERROR: Key cannot be empty' });
+                                    setValidationStatus({ type: 'error', message: 'Key cannot be empty' });
                                     return;
                                   }
-                                  setValidationStatus({ type: 'success', message: `CONNECTING TO ${newKeyProvider.toUpperCase()}...` });
+                                  setValidationStatus({ type: 'success', message: `CONNECTING TO ${newKeyProvider.toUpperCase()} GATEWAY WORKSPACE...` });
                                   const result = await geminiService.checkKey(newKeyVal, newKeyProvider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
-                                    setValidationStatus({ type: 'success', message: `SUCCESS: ${discovered.length} NODES DISCOVERED` });
+                                    setValidationStatus({ type: 'success', message: `ESTABLISHED COGNITIVE LINK: ${discovered.length} NODES DISCOVERED` });
                                     
                                     const keyObj: ApiKey = { 
                                       id: `key-${Date.now()}`, 
                                       name: newKeyName || PROVIDER_CONFIGS[newKeyProvider].name, 
                                       key: newKeyVal,
                                       provider: newKeyProvider,
-                                      models: discovered.map(m => m.id),
-                                      limit: newKeyLimit,
-                                      usage: 0,
-                                      lastReset: Date.now()
+                                      models: discovered.map(m => m.id)
                                     };
                                     setApiKeys(prev => [...prev, keyObj]);
                                     setActiveKeyId(keyObj.id);
-                                    setTimeout(() => {
-                                      setIsAddingKey(false);
-                                      setNewKeyName('');
-                                      setNewKeyVal('');
-                                      setValidationStatus(null);
-                                    }, 1500);
+                                    setIsAddingKey(false);
+                                    setNewKeyName('');
+                                    setNewKeyVal('');
+                                    setValidationStatus(null);
                                   } else {
                                     setValidationStatus({ type: 'error', message: `REJECTED: ${result.error}` });
                                   }
                                 }}
-                                className="flex-1 py-3 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-[0.98]"
+                                className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-400 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(6,182,212,0.15)] hover:shadow-[0_0_25px_rgba(6,182,212,0.3)] active:scale-[0.98] cursor-pointer"
                               >
                                 Authenticate & Discover Nodes
                               </button>
@@ -2734,8 +2895,6 @@ export default function DevEngine() {
                                   const result = await geminiService.checkKey(k.key, k.provider);
                                   if (result.valid) {
                                     const discovered = result.models || [];
-                                    const usage = await geminiService.syncUsageFromProvider(k.key, k.provider);
-                                    setUsages(usage);
                                     setApiKeys(prev => prev.map(prevK => 
                                       prevK.id === k.id ? { ...prevK, models: discovered.map(m => m.id) } : prevK
                                     ));
@@ -2901,6 +3060,261 @@ export default function DevEngine() {
                         <span className="text-[9px] font-bold uppercase tracking-widest">{t === 'monochrome' ? 'Classic' : t === 'light' ? 'Lab Light' : t}</span>
                       </button>
                     ))}
+                  </div>
+                )}
+
+                {settingsTab === 'knowledge' && (
+                  <div className="space-y-6 max-h-[480px] overflow-y-auto pr-2 font-sans">
+                    {/* Header/Intro */}
+                    <div>
+                      <h3 className={cn("text-sm font-semibold flex items-center gap-2", theme === 'light' ? "text-slate-900" : "text-white")}>
+                        <Database size={16} className="text-cyan-500" />
+                        Knowledge Engine (RAG Index)
+                      </h3>
+                      <p className={cn("text-xs mt-1", theme === 'light' ? "text-slate-500" : "text-zinc-500")}>
+                        Configure, approve, and direct what semantic memories the AI model queries during conversations.
+                      </p>
+                    </div>
+
+                    {/* Similarity tester block */}
+                    <div className={cn("p-4 rounded-xl border space-y-3", theme === 'light' ? "bg-slate-50 border-slate-200" : "bg-black/30 border-zinc-800")}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-400">Search Similarity Vector Tester</span>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={kSearchQuery}
+                          onChange={(e) => setKSearchQuery(e.target.value)}
+                          placeholder="Type model memories query to test..."
+                          className="flex-1 bg-black/40 border border-zinc-850 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-cyan-500"
+                        />
+                        <button
+                          onClick={handleKSearch}
+                          disabled={isKSearching}
+                          className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-all"
+                        >
+                          {isKSearching ? 'Searching...' : 'Test Index'}
+                        </button>
+                      </div>
+
+                      {kSearchError && (
+                        <div className="text-xs text-red-500 mt-1 font-mono">{kSearchError}</div>
+                      )}
+
+                      {kSearchResults.length > 0 && (
+                        <div className="pt-2 space-y-2 max-h-[150px] overflow-y-auto">
+                          {kSearchResults.map((node) => (
+                            <div key={node.id} className="p-2.5 bg-zinc-950/80 rounded-lg border border-zinc-800/80 space-y-1">
+                              <div className="flex justify-between items-center text-[10px] font-mono">
+                                <span className="text-zinc-400 font-semibold">{node.nodeType.toUpperCase()}</span>
+                                <span className="text-green-400 font-bold">Cosine Dist: {node.similarity.toFixed(4)}</span>
+                              </div>
+                              <p className="text-[10px] text-zinc-300 font-mono line-clamp-2">{node.content}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Proposals Section */}
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Pending & History Proposals</label>
+                        <span className="text-[10px] font-mono text-zinc-500">{knowledgeProposals.length} total</span>
+                      </div>
+
+                      {knowledgeProposals.length === 0 ? (
+                        <div className="text-center py-6 border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
+                          No model-proposed index modifications found.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {knowledgeProposals.map((prop) => (
+                            <div 
+                              key={prop.id} 
+                              className={cn(
+                                "p-4 rounded-xl border flex flex-col gap-3 transition-colors",
+                                theme === 'light' ? "bg-white border-slate-200" : "bg-[#0b0b0e] border-zinc-800/80"
+                              )}
+                            >
+                              <div className="flex justify-between items-start gap-2">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className={cn(
+                                    "px-2 py-0.5 rounded text-[8px] font-bold tracking-wider",
+                                    prop.actionType === 'INSERT' && "bg-green-500/10 text-green-400 border border-green-500/20",
+                                    prop.actionType === 'UPDATE' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                                    prop.actionType === 'DELETE' && "bg-red-500/10 text-red-400 border border-red-500/20"
+                                  )}>
+                                    {prop.actionType}
+                                  </span>
+                                  {prop.targetNodeId && (
+                                    <span className="text-[8px] font-mono text-zinc-500">Node Ref: {prop.targetNodeId.slice(0, 8)}...</span>
+                                  )}
+                                </div>
+                                <span className={cn(
+                                  "text-[8px] px-1.5 py-0.5 rounded font-bold uppercase",
+                                  prop.status === 'PENDING' && "bg-amber-500/10 text-amber-500",
+                                  prop.status === 'APPROVED' && "bg-emerald-500/10 text-emerald-500",
+                                  prop.status === 'REJECTED' && "bg-zinc-500/10 text-zinc-400"
+                                )}>
+                                  {prop.status}
+                                </span>
+                              </div>
+
+                              <div className="text-xs space-y-1">
+                                <span className="text-[8px] text-zinc-500 font-mono uppercase block">Proposed content:</span>
+                                {editingProposalId === prop.id ? (
+                                  <div className="space-y-2">
+                                    <textarea
+                                      value={editingProposalContent}
+                                      onChange={(e) => setEditingProposalContent(e.target.value)}
+                                      className="w-full h-24 bg-zinc-950 border border-zinc-805 rounded-lg p-2 text-xs font-mono text-zinc-300 outline-none focus:border-cyan-500"
+                                    />
+                                    <div className="flex gap-2">
+                                      <button
+                                        onClick={() => handleSaveProposalEdit(prop.id)}
+                                        className="px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-[10px] uppercase font-bold"
+                                      >
+                                        Save
+                                      </button>
+                                      <button
+                                        onClick={() => setEditingProposalId(null)}
+                                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] uppercase font-bold"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="p-2 bg-black/30 rounded border border-zinc-900 font-mono text-[10px] text-zinc-300 break-words whitespace-pre-wrap max-h-[140px] overflow-y-auto">
+                                    {prop.proposedContent || '(Direct deletion request)'}
+                                  </div>
+                                )}
+                              </div>
+
+                              {prop.reason && (
+                                <p className="text-[10px] italic text-zinc-400 font-mono pl-1">
+                                  &ldquo;{prop.reason}&rdquo;
+                                </p>
+                              )}
+
+                              {prop.status === 'PENDING' && (
+                                <div className="flex justify-end gap-2 pt-1 border-t border-zinc-900">
+                                  {editingProposalId !== prop.id && (
+                                    <button
+                                      disabled={isKnowledgeActionLoading !== null}
+                                      onClick={() => {
+                                        setEditingProposalId(prop.id);
+                                        setEditingProposalContent(prop.proposedContent || '');
+                                      }}
+                                      className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-700 text-zinc-400 text-[9px] font-bold uppercase rounded transition-all mr-auto"
+                                    >
+                                      Edit
+                                    </button>
+                                  )}
+                                  <button
+                                    disabled={isKnowledgeActionLoading !== null}
+                                    onClick={() => handleRejectProposal(prop.id)}
+                                    className="px-3 py-1.5 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-[9px] font-bold uppercase rounded transition-all"
+                                  >
+                                    Reject
+                                  </button>
+                                  <button
+                                    disabled={isKnowledgeActionLoading !== null}
+                                    onClick={() => handleApproveProposal(prop.id)}
+                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold uppercase rounded transition-all shadow"
+                                  >
+                                    {isKnowledgeActionLoading === prop.id ? 'Approving...' : 'Approve & Index'}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Active Nodes Section */}
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">Indexed Knowledge Nodes</label>
+                        <span className="text-[10px] font-mono text-zinc-500">{knowledgeNodes.length} active</span>
+                      </div>
+
+                      {knowledgeNodes.length === 0 ? (
+                        <div className="text-center py-6 border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-400">
+                          No knowledge records active. Ask DevGenie or provide structural prompts to form semantic storage.
+                        </div>
+                      ) : (
+                        <div className="space-y-3">
+                          {knowledgeNodes.map((node) => (
+                            <div 
+                              key={node.id} 
+                              className={cn(
+                                "p-4 rounded-xl border flex flex-col gap-2 transition-colors",
+                                theme === 'light' ? "bg-white border-slate-200" : "bg-[#0b0b0e] border-zinc-800/80"
+                              )}
+                            >
+                              <div className="flex justify-between items-center">
+                                <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400">
+                                  {node.nodeType || 'CODE_BLOCK'}
+                                </span>
+                                <span className="text-[8px] font-mono text-zinc-500">ID: {node.id.slice(0, 8)}...</span>
+                              </div>
+
+                              <div className="text-xs space-y-1">
+                                {editingNodeId === node.id ? (
+                                  <div className="space-y-2">
+                                    <textarea
+                                      value={editingNodeContent}
+                                      onChange={(e) => setEditingNodeContent(e.target.value)}
+                                      className="w-full h-24 bg-zinc-950 border border-zinc-800 rounded-lg p-2 text-xs font-mono text-zinc-300 outline-none focus:border-cyan-500"
+                                    />
+                                    <div className="flex gap-2">
+                                      <button
+                                        onClick={() => handleSaveNodeEdit(node.id)}
+                                        className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-[10px] uppercase font-bold"
+                                      >
+                                        Update Node
+                                      </button>
+                                      <button
+                                        onClick={() => setEditingNodeId(null)}
+                                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] uppercase font-bold"
+                                      >
+                                        Cancel
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <p className="p-2.5 bg-zinc-950/40 rounded border border-zinc-900 text-[10.5px] font-mono text-zinc-300 break-words whitespace-pre-wrap max-h-[140px] overflow-y-auto">
+                                    {node.content}
+                                  </p>
+                                )}
+                              </div>
+
+                              {editingNodeId !== node.id && (
+                                <div className="flex justify-end gap-2 pt-1 border-t border-zinc-900 font-sans">
+                                  <button
+                                    onClick={() => handleDeleteNode(node.id)}
+                                    className="px-2.5 py-1 text-red-500 hover:text-red-400 text-[10px] font-bold uppercase flex items-center gap-1 transition-all cursor-pointer"
+                                  >
+                                    <Trash2 size={12} /> Delete Node
+                                  </button>
+                                  <button
+                                    onClick={() => {
+                                      setEditingNodeId(node.id);
+                                      setEditingNodeContent(node.content);
+                                    }}
+                                    className="px-2.5 py-1 text-cyan-500 hover:text-cyan-400 text-[10px] font-bold uppercase flex items-center gap-1 transition-all cursor-pointer"
+                                  >
+                                    Edit Node
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

@@ -95,6 +95,55 @@ export const DEFAULT_SKILLS: Skill[] = [
     systemPrompt: "You are a senior Full-Stack Engineer. Provide robust backend logic, API designs, and database schemas using Node.js and Express."
   },
   {
+    id: "python-expert",
+    name: "Python & AI Specialist",
+    description: "Expert in Python, FastAPI, Django, Pandas, and ML pipelines.",
+    icon: "Terminal",
+    systemPrompt: "You are an expert Python and ML Engineer. Provide clean, modern Python code adhering to PEP 8. Excel in FastAPI, asynchronous tasks, Django, Pandas/Numpy data processing, and machine learning pipeline designs."
+  },
+  {
+    id: "go-expert",
+    name: "Go Systems Engineer",
+    description: "High-performance microservices, concurrency, and systems programming in Go.",
+    icon: "Zap",
+    systemPrompt: "You are a senior Go (Golang) Systems Engineer. Provide idiomatic, clean, and highly concurrent Go code. Focus on performance, microservices architecture, clean channels usage, robust error handling, and standard library best practices."
+  },
+  {
+    id: "rust-expert",
+    name: "Rust Systems Architect",
+    description: "Memory-safe systems, WebAssembly, and high-performance Rust pipelines.",
+    icon: "Shield",
+    systemPrompt: "You are a senior Rust Systems Architect. Write safe, idiomatic, and extremely fast Rust code. Focus on zero-cost abstractions, lifetime structures, memory safety without garbage collection, WebAssembly (Wasm) architecture, and asynchronous code (Tokio)."
+  },
+  {
+    id: "js-expert",
+    name: "JS/TS Deep Engineer",
+    description: "Asynchronous JavaScript, Node.js internals, V8 optimizations, and build tools.",
+    icon: "Braces",
+    systemPrompt: "You are an expert JS/TS Engineer. Excel in Core JavaScript and TypeScript, V8 engine optimizations, Event Loop mechanics, custom bundlers and compilation pipelines, and elegant TypeScript type-wizardry."
+  },
+  {
+    id: "java-expert",
+    name: "Java Enterprise Architect",
+    description: "Scalable enterprise systems, Spring Boot microservices, and JVM tuning.",
+    icon: "Coffee",
+    systemPrompt: "You are an expert Java Enterprise Architect. Provide robust, clean Enterprise Java code utilizing Spring Boot, Hibernate/JPA, structural design patterns, multithreaded workflows, JVM garbage collection tuning, and highly scalable microservices."
+  },
+  {
+    id: "csharp-expert",
+    name: "C# .NET Architect",
+    description: "Modern .NET, ASP.NET Core, EF Core, and multithreaded backends.",
+    icon: "Layers",
+    systemPrompt: "You are an expert C# and .NET Software Architect. Provide enterprise-grade .NET C# solutions. Excel in ASP.NET Core, Entity Framework Core, LINQ optimization, Task Parallel Library (TPL), and clean architectures."
+  },
+  {
+    id: "cpp-expert",
+    name: "C/C++ Systems Expert",
+    description: "Bare-metal, low-latency, memory management, and modern C++.",
+    icon: "Binary",
+    systemPrompt: "You are an expert C/C++ Systems Programmer. Write highly optimized, low-latency, and modern C++ code (C++17/20/23). Excel in manual memory management, pointer manipulation, hardware-level interactions, multi-threading, and compilation flags optimization."
+  },
+  {
     id: "code-explainer",
     name: "Code Explainer",
     description: "Expert in dissecting and explaining complex code logic.",
@@ -324,10 +373,32 @@ class GeminiService {
       const allSkills = [...DEFAULT_SKILLS, ...customSkills];
       const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
       
-      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant.
+      let systemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository. You communicate directly with the project owner to review architecture, debug code, and implement features.
+
+### TECH STACK PROFILE
+- Language: Strict TypeScript (99.3%+ codebase mapping)
+- Tooling: Vite, npm workspace, Vercel Serverless configurations (vercel.json)
+- Database: Drizzle ORM interacting with a Supabase PostgreSQL instance utilizing pgvector.
+- Capabilities: Modular agent frameworks with execution scripts located in .agents/skills.
+
+### CORE OPERATING RULES
+1. Strict Grounding: You must construct your analysis and recommendations using ONLY the retrieved code contexts provided in the prompt. Do not assume APIs, routes, or database columns exist unless explicitly documented in the retrieved nodes.
+2. File Path References: Whenever you mention a module, function, interface, or configuration block, you must explicitly state its full File Path as extracted from the vector database metadata.
+3. TypeScript Excellence: All code modifications, refactoring patterns, or script implementations you provide must be valid, modern TypeScript with proper type definitions matching the existing project style.
+4. Context Deficit Protocol: If the retrieved database contexts do not contain enough codebase layout details to answer the developer's question confidently, state: "Based on the currently indexed codebase nodes, I cannot locate the implementation details for [X]." Then, suggest structural query keywords for them to search or sync.
+
+### RESPONSE ARCHITECTURE
+- Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
+- Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
+- Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+
+### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
+- If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
+- Clearly articulate the \`reason\` field for the engineer.
+- Explicitly tell the developer in the final chat response that a pending proposal has been lodged for their review, and do not assume database changes are active until approved.
+
 ${activeSkills.map(s => `[Skill: ${s.name}] ${s.systemPrompt}`).join('\n')}
 
-Current project context: A web application using React, Vite, and Tailwind.
 Always provide full, runnable code blocks where applicable. Use Markdown for formatting.`;
 
       if (config.customInstructions) {
@@ -417,6 +488,32 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         prompt: { type: Type.STRING, description: "Detailed description of the video to generate." }
                       },
                       required: ["prompt"]
+                    }
+                  },
+                  {
+                    name: "proposeKnowledgeUpdate",
+                    description: "Proactively propose updates to the vector database if indexed codebase knowledge is outdated, incorrect, or missing. Creates a pending proposal for the developer to review.",
+                    parameters: {
+                      type: Type.OBJECT,
+                      properties: {
+                        actionType: { type: Type.STRING, description: "The type of change: 'INSERT', 'UPDATE', or 'DELETE'" },
+                        targetNodeId: { type: Type.STRING, description: "The UUID of the knowledge node to update/delete. Leave empty for INSERT." },
+                        proposedContent: { type: Type.STRING, description: "The enriched contextual text block generated by the AI agent." },
+                        reason: { type: Type.STRING, description: "Structural explanation of why this modification is needed." }
+                      },
+                      required: ["actionType", "reason"]
+                    }
+                  },
+                  {
+                    name: "queryKnowledgeBase",
+                    description: "Performs a vector similarity search across the current repository's indexed codebase and technical documentation.",
+                    parameters: {
+                      type: Type.OBJECT,
+                      properties: {
+                        query: { type: Type.STRING, description: "The conceptual or technical search query to perform." },
+                        limit: { type: Type.INTEGER, description: "Maximum number of nodes to retrieve (default 5)." }
+                      },
+                      required: ["query"]
                     }
                   }
                 ]
@@ -690,6 +787,88 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         });
                         transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: responsePayload });
                       }
+                    } else if (call.name === 'proposeKnowledgeUpdate') {
+                      const args = call.args as any;
+                      onChunk?.(`[Knowledge Engine: Queuing ${args.actionType} proposal for index...]\n`);
+                      try {
+                        const token = localStorage.getItem('session');
+                        if (!token) throw new Error('Unauthenticated knowledge operation');
+                        
+                        const res = await fetch('/api/knowledge/proposals', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify(args)
+                        });
+                        
+                        if (!res.ok) {
+                          const errData = await res.json();
+                          throw new Error(errData.error || 'Failed to create knowledge proposal');
+                        }
+                        
+                        const data = await res.json();
+                        const responsePayload = { status: "success", proposalId: data.id, message: `Proposal logged. Waiting for user approval.` };
+                        
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: responsePayload
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { proposalId: data.id } });
+                      } catch (err: any) {
+                        const responsePayload = { status: "failed", error: err.message };
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: responsePayload
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: responsePayload });
+                      }
+                    } else if (call.name === 'queryKnowledgeBase') {
+                      const args = call.args as any;
+                      onChunk?.(`[Search Vector Space: Querying "${args.query}"...]\n`);
+                      try {
+                        const token = localStorage.getItem('session');
+                        if (!token) throw new Error('Unauthenticated knowledge operation');
+                        
+                        const res = await fetch('/api/knowledge/search', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify({
+                            ...args,
+                            customKey: config.customKey
+                          })
+                        });
+                        
+                        if (!res.ok) {
+                          const errData = await res.json();
+                          throw new Error(errData.error || 'Failed to query knowledge nodes');
+                        }
+                        const data = await res.json();
+                        
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: { status: "success", results: data.results }
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { resultsFound: data.results?.length } });
+                      } catch (err: any) {
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: { status: "failed", error: err.message }
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: { error: err.message } });
+                      }
                     } else if (call.name === 'googleSearch') {
                       let logic = "Analyzed current context; external real-time data needed for accurate response.";
                       const queryParam = call.args?.query || call.args?.q || "N/A";
@@ -775,7 +954,29 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       });
 
       // Add system prompt for non-Google providers
-      let systemPrompt = `You are DevGenie, a highly capable AI developer assistant.`;
+      let systemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository. You communicate directly with the project owner to review architecture, debug code, and implement features.
+
+### TECH STACK PROFILE
+- Language: Strict TypeScript (99.3%+ codebase mapping)
+- Tooling: Vite, npm workspace, Vercel Serverless configurations (vercel.json)
+- Database: Drizzle ORM interacting with a Supabase PostgreSQL instance utilizing pgvector.
+- Capabilities: Modular agent frameworks with execution scripts located in .agents/skills.
+
+### CORE OPERATING RULES
+1. Strict Grounding: You must construct your analysis and recommendations using ONLY the retrieved code contexts provided in the prompt. Do not assume APIs, routes, or database columns exist unless explicitly documented in the retrieved nodes.
+2. File Path References: Whenever you mention a module, function, interface, or configuration block, you must explicitly state its full File Path as extracted from the vector database metadata.
+3. TypeScript Excellence: All code modifications, refactoring patterns, or script implementations you provide must be valid, modern TypeScript with proper type definitions matching the existing project style.
+4. Context Deficit Protocol: If the retrieved database contexts do not contain enough codebase layout details to answer the developer's question confidently, state: "Based on the currently indexed codebase nodes, I cannot locate the implementation details for [X]." Then, suggest structural query keywords for them to search or sync.
+
+### RESPONSE ARCHITECTURE
+- Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
+- Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
+- Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+
+### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
+- If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
+- Clearly articulate the \`reason\` field for the engineer.
+- Explicitly tell the developer in the final chat response that a pending proposal has been lodged for their review, and do not assume database changes are active until approved.`;
       if (customSkills) {
          systemPrompt += ` ${[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => s.systemPrompt).join(' ')}`;
       }
