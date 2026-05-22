@@ -180,8 +180,57 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
     }
 
     const { actionType, targetNodeId, proposedContent, reason } = req.body;
-    const { knowledgeProposals } = await import('./db/schema.js');
+    const { knowledgeProposals, knowledgeNodes } = await import('./db/schema.js');
 
+    if (actionType === 'INSERT') {
+      const content = proposedContent;
+      if (!content) {
+        return res.status(400).json({ error: 'Proposal missing content to encode' });
+      }
+
+      const apiKey = await resolveGoogleApiKey(payload.id as string);
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Google Gemini API key not configured. Cannot process vector embeddings for automatic insertion.' });
+      }
+
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI({ apiKey: apiKey });
+      
+      const embedResponse = await ai.models.embedContent({
+        model: 'gemini-embedding-2-preview',
+        contents: content
+      });
+      
+      const embeddingVector = embedResponse.embeddings?.[0]?.values;
+      if (!embeddingVector) {
+        throw new Error('Failed to generate embedding');
+      }
+
+      // Create both the knowledge node and the approved proposal record under the user transaction context
+      const proposal = await txWithUser(payload.id as string, async (tx) => {
+        const [insertedNode] = await tx.insert(knowledgeNodes).values({
+          content: content,
+          nodeType: 'web_data', // fallback default
+          embedding: embeddingVector,
+          metadata: { reason: reason || 'Automatically embedded' }
+        }).returning();
+
+        const [createdProposal] = await tx.insert(knowledgeProposals).values({
+          userId: payload.id as string,
+          actionType: 'INSERT',
+          targetNodeId: insertedNode.id,
+          proposedContent: content,
+          reason,
+          status: 'APPROVED'
+        }).returning();
+
+        return createdProposal;
+      });
+
+      return res.json(proposal);
+    }
+
+    // For UPDATE or DELETE, they need administrator approval, so we log as PENDING
     const [proposal] = await txWithUser(payload.id as string, async (tx) => {
       return await tx.insert(knowledgeProposals).values({
         userId: payload.id as string,
@@ -200,26 +249,33 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
 });
 
 async function resolveGoogleApiKey(userId: string, customKey?: string): Promise<string | undefined> {
-  let apiKey = customKey || process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    apiKey = await txWithUser(userId, async (tx) => {
-      const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
-      if (prefs?.activeKeyId) {
-        const [userKey] = await tx.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
-        if (userKey && (userKey.provider === 'google' || userKey.provider === 'GOOGLE') && userKey.key) {
-          return decryptKey(userKey.key);
-        }
+  if (customKey) return customKey;
+
+  // Query database first for configured user-specific keys
+  const dbKey = await txWithUser(userId, async (tx) => {
+    const { userPreferences, apiKeys } = await import('./db/schema.js');
+    const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+    if (prefs?.activeKeyId) {
+      const [userKey] = await tx.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
+      if (userKey && (userKey.provider === 'google' || userKey.provider === 'GOOGLE') && userKey.key) {
+        return decryptKey(userKey.key);
       }
-      
-      const userKeys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
-      const googleKey = userKeys.find(k => k.provider === 'google' || k.provider === 'GOOGLE');
-      if (googleKey && googleKey.key) {
-        return decryptKey(googleKey.key);
-      }
-      return undefined;
-    });
+    }
+    
+    const userKeys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+    const googleKey = userKeys.find(k => k.provider === 'google' || k.provider === 'GOOGLE');
+    if (googleKey && googleKey.key) {
+      return decryptKey(googleKey.key);
+    }
+    return undefined;
+  });
+
+  if (dbKey) {
+    return dbKey;
   }
-  return apiKey;
+
+  // Fallback to process.env if no DB credentials exist
+  return process.env.GEMINI_API_KEY;
 }
 
 apiRouter.post('/knowledge/search', async (req, res) => {

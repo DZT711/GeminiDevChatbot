@@ -437,8 +437,8 @@ class GeminiService {
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
 - If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
-- Clearly articulate the \`reason\` field for the engineer.
-- Explicitly tell the developer in the final chat response that a pending proposal has been lodged for their review, and do not assume database changes are active until approved.
+- For additions (INSERT), the system immediately embeds and auto-commits the node directly into the active index without requiring approval. Inform the developer that the knowledge is active and live instantly!
+- For updates (UPDATE) or deletions (DELETE), the change is queued as a PENDING proposal needing administrator approval before taking effect. Inform the developer that a pending admin review proposal has been queued.
 
 ${activeSkills.map(s => `[Skill: ${s.name}] ${s.systemPrompt}`).join('\n')}
 
@@ -1071,8 +1071,8 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
 - If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
-- Clearly articulate the \`reason\` field for the engineer.
-- Explicitly tell the developer in the final chat response that a pending proposal has been lodged for their review, and do not assume database changes are active until approved.`;
+- For additions (INSERT), the system immediately embeds and auto-commits the node directly into the active index without requiring approval. Inform the developer that the knowledge is active and live instantly!
+- For updates (UPDATE) or deletions (DELETE), the change is queued as a PENDING proposal needing administrator approval before taking effect. Inform the developer that a pending admin review proposal has been queued.`;
       if (customSkills) {
          systemPrompt += ` ${[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => s.systemPrompt).join(' ')}`;
       }

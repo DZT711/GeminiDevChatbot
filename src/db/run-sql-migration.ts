@@ -26,6 +26,12 @@ async function main() {
     await pool.query(`ALTER TABLE knowledge_nodes DROP COLUMN IF EXISTS user_id CASCADE;`);
     console.log('Success: Dropped "user_id" column from "knowledge_nodes" table.');
     
+    // 3. Recreate policy for inserting knowledge nodes directly
+    await pool.query(`ALTER TABLE knowledge_nodes ENABLE ROW LEVEL SECURITY;`);
+    await pool.query(`DROP POLICY IF EXISTS "users can insert knowledge" ON knowledge_nodes;`);
+    await pool.query(`CREATE POLICY "users can insert knowledge" ON knowledge_nodes FOR INSERT WITH CHECK (current_setting('app.current_user_id', true) IS NOT NULL);`);
+    console.log('Success: Recreated "users can insert knowledge" RLS rule.');
+    
     console.log('Database schema successfully migrated!');
   } catch (err: any) {
     console.error('Migration failed:', err.message || err);

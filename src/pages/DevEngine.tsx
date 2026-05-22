@@ -327,20 +327,47 @@ export default function DevEngine() {
   };
 
   const handleDeleteNode = async (nodeId: string) => {
-    if (!confirm('Are you sure you want to delete this knowledge node directly from your vector index?')) return;
+    const isAdmin = user?.role === 'ADMIN';
+    const message = isAdmin 
+      ? 'Are you sure you want to delete this knowledge node directly from your vector index?'
+      : 'As a standard user, you do not have direct deletion privileges. Would you like to submit a deletion proposal for administrator approval?';
+
+    if (!confirm(message)) return;
     const token = localStorage.getItem('session');
     if (!token) return;
     setIsKnowledgeActionLoading(nodeId);
     try {
-      const res = await fetch(`/api/knowledge/${nodeId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!res.ok) {
-        const errData = await res.json();
-        alert(errData.error || 'Failed to delete node');
+      if (isAdmin) {
+        const res = await fetch(`/api/knowledge/${nodeId}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          alert(errData.error || 'Failed to delete node');
+        } else {
+          fetchKnowledgeData();
+        }
       } else {
-        fetchKnowledgeData();
+        const res = await fetch('/api/knowledge/proposals', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            actionType: 'DELETE',
+            targetNodeId: nodeId,
+            reason: 'User deletion proposal requested from UI dashboard.'
+          })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          alert(errData.error || 'Failed to submit deletion proposal');
+        } else {
+          alert('Deletion proposal submitted successfully! Pending admin approval.');
+          fetchKnowledgeData();
+        }
       }
     } catch (err: any) {
       alert("Error: " + err.message);
@@ -354,20 +381,45 @@ export default function DevEngine() {
     if (!token) return;
     setIsKnowledgeActionLoading(nodeId);
     try {
-      const res = await fetch(`/api/knowledge/${nodeId}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
-        },
-        body: JSON.stringify({ content: editingNodeContent })
-      });
-      if (!res.ok) {
-        const errData = await res.json();
-        alert(errData.error || 'Failed to update node');
+      const isAdmin = user?.role === 'ADMIN';
+      if (isAdmin) {
+        const res = await fetch(`/api/knowledge/${nodeId}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ content: editingNodeContent })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          alert(errData.error || 'Failed to update node');
+        } else {
+          setEditingNodeId(null);
+          fetchKnowledgeData();
+        }
       } else {
-        setEditingNodeId(null);
-        fetchKnowledgeData();
+        const res = await fetch('/api/knowledge/proposals', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({
+            actionType: 'UPDATE',
+            targetNodeId: nodeId,
+            proposedContent: editingNodeContent,
+            reason: 'User edit proposal requested from UI dashboard.'
+          })
+        });
+        if (!res.ok) {
+          const errData = await res.json();
+          alert(errData.error || 'Failed to submit update proposal');
+        } else {
+          alert('Update proposal submitted successfully! Pending admin approval.');
+          setEditingNodeId(null);
+          fetchKnowledgeData();
+        }
       }
     } catch (err: any) {
       alert("Error: " + err.message);
@@ -530,6 +582,55 @@ export default function DevEngine() {
       window.removeEventListener('error', handleGlobalError);
       window.removeEventListener('unhandledrejection', handleUnhandledRejection);
     };
+  }, [user]);
+
+  const lastStatesRef = useRef<Record<string, { status?: string; description?: string }>>({});
+
+  // Synchronize transparency actions and output failures with administrative CLI console logs
+  useEffect(() => {
+    if (user?.role !== 'ADMIN') return;
+
+    const unsubscribe = transparencyLogger.subscribe((actions) => {
+      // Process from oldest to newest (chronological order)
+      const reversed = [...actions].reverse();
+      const newLogs: string[] = [];
+      const updatedStates = { ...lastStatesRef.current };
+
+      for (const action of reversed) {
+        const lastState = lastStatesRef.current[action.id];
+        const currentStatus = action.status || 'pending';
+
+        if (!lastState) {
+          // Entirely new action
+          newLogs.push(`[SYSTEM] RUNNING: ${action.category} - ${action.description}`);
+          updatedStates[action.id] = { status: currentStatus, description: action.description };
+        } else if (lastState.status !== currentStatus) {
+          // Transitioned state
+          if (currentStatus === 'completed') {
+            newLogs.push(`[SUCCESS] Task "${action.description}" completed successfully.`);
+          } else if (currentStatus === 'failed') {
+            let errorMsg = '';
+            const payload = action.outputPayload;
+            if (payload) {
+              if (payload.error) {
+                errorMsg = typeof payload.error === 'object' ? JSON.stringify(payload.error) : String(payload.error);
+              } else {
+                errorMsg = JSON.stringify(payload);
+              }
+            }
+            newLogs.push(`[API_FAILURE] Task "${action.description}" failed: ${errorMsg || 'Unknown integration error arose.'}`);
+          }
+          updatedStates[action.id] = { status: currentStatus, description: action.description };
+        }
+      }
+
+      if (newLogs.length > 0) {
+        setAdminLogs(prev => [...prev, ...newLogs]);
+      }
+      lastStatesRef.current = updatedStates;
+    });
+
+    return unsubscribe;
   }, [user]);
 
   // Persistence Sync
@@ -3175,10 +3276,34 @@ export default function DevEngine() {
                             theme === 'light' ? "bg-white border-slate-200" : "bg-[#0c0c0e] border-zinc-900"
                           )}
                         >
-                          <div className="flex justify-between items-center">
-                            <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400 bg-cyan-950/20 px-2.5 py-0.5 rounded-full border border-cyan-900/30">
-                              {node.nodeType || 'MEM_RECORD'}
-                            </span>
+                          <div className="flex justify-between items-center gap-2 font-sans">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400 bg-cyan-950/20 px-2.5 py-0.5 rounded-full border border-cyan-900/30">
+                                {node.nodeType || 'MEM_RECORD'}
+                              </span>
+                              {(() => {
+                                const pendingProp = knowledgeProposals.find(p => p.targetNodeId === node.id && p.status === 'PENDING');
+                                if (pendingProp?.actionType === 'UPDATE') {
+                                  return (
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-amber-400 bg-amber-950/20 px-2.5 py-0.5 rounded-full border border-amber-500/30 animate-pulse">
+                                      ● PENDING UPDATE
+                                    </span>
+                                  );
+                                } else if (pendingProp?.actionType === 'DELETE') {
+                                  return (
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-red-400 bg-red-950/20 px-2.5 py-0.5 rounded-full border border-red-500/30 animate-pulse">
+                                      ● PENDING DELETE
+                                    </span>
+                                  );
+                                } else {
+                                  return (
+                                    <span className="text-[9px] font-bold uppercase tracking-wider text-emerald-400 bg-emerald-950/20 px-2.5 py-0.5 rounded-full border border-emerald-500/30">
+                                      ● ACTIVE
+                                    </span>
+                                  );
+                                }
+                              })()}
+                            </div>
                             <span className="text-[9px] font-mono text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded">ID: {node.id.slice(0, 8)}...</span>
                           </div>
 
@@ -4056,10 +4181,34 @@ export default function DevEngine() {
                                 theme === 'light' ? "bg-white border-slate-200" : "bg-[#0b0b0e] border-zinc-800/80"
                               )}
                             >
-                              <div className="flex justify-between items-center">
-                                <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400">
-                                  {node.nodeType || 'CODE_BLOCK'}
-                                </span>
+                              <div className="flex justify-between items-center gap-2">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400">
+                                    {node.nodeType || 'CODE_BLOCK'}
+                                  </span>
+                                  {(() => {
+                                    const pendingProp = knowledgeProposals.find(p => p.targetNodeId === node.id && p.status === 'PENDING');
+                                    if (pendingProp?.actionType === 'UPDATE') {
+                                      return (
+                                        <span className="text-[8px] font-bold uppercase tracking-wider text-amber-500 animate-pulse">
+                                          ● PENDING UPDATE
+                                        </span>
+                                      );
+                                    } else if (pendingProp?.actionType === 'DELETE') {
+                                      return (
+                                        <span className="text-[8px] font-bold uppercase tracking-wider text-red-500 animate-pulse">
+                                          ● PENDING DELETE
+                                        </span>
+                                      );
+                                    } else {
+                                      return (
+                                        <span className="text-[8px] font-bold uppercase tracking-wider text-emerald-500">
+                                          ● ACTIVE
+                                        </span>
+                                      );
+                                    }
+                                  })()}
+                                </div>
                                 <span className="text-[8px] font-mono text-zinc-500">ID: {node.id.slice(0, 8)}...</span>
                               </div>
 

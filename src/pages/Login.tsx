@@ -299,13 +299,7 @@ export default function Login() {
           </p>
         </div>
 
-        {/* DB transparency note */}
-        <div className="mt-4 px-4 py-3 rounded-xl bg-gray-800/30 border border-gray-700/40
-                        flex flex-wrap gap-x-6 gap-y-1 justify-center text-xs text-text-secondary">
-          <span>🔐 Tokens → <code className="text-accent-blue">accounts</code> table</span>
-          <span>👤 Profile → <code className="text-accent-blue">users</code> table</span>
-          <span>🔑 Session via signed JWT</span>
-        </div>
+
       </div>
     </div>
   )

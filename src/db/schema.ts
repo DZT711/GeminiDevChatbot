@@ -111,6 +111,10 @@ export const knowledgeNodes = pgTable('knowledge_nodes', {
     for: 'select',
     using: sql`true`,
   }),
+  pgPolicy('users can insert knowledge', {
+    for: 'insert',
+    withCheck: sql`current_setting('app.current_user_id', true) is not null`,
+  }),
   pgPolicy('admins can manage knowledge', {
     for: 'all',
     using: sql`exists (select 1 from users u where u.id = current_setting('app.current_user_id', true)::uuid and u.role = 'ADMIN')`,
