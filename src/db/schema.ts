@@ -1,4 +1,4 @@
-import { pgTable, uuid, varchar, timestamp, text, pgEnum, customType, jsonb, pgPolicy, boolean } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, varchar, timestamp, text, pgEnum, customType, jsonb, pgPolicy, boolean, integer } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 // Custom Vector Type
@@ -81,6 +81,7 @@ export const messages = pgTable('messages', {
   imageUrl: text('image_url'),
   videoUrl: text('video_url'),
   attachments: jsonb('attachments').default('[]'),
+  rating: integer('rating'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   pgPolicy('users can view messages in their sessions', {
@@ -172,6 +173,7 @@ export const customSkills = pgTable('custom_skills', {
   name: varchar('name', { length: 255 }).notNull(),
   description: text('description').notNull(),
   systemPrompt: text('system_prompt').notNull(),
+  model: varchar('model', { length: 255 }),
   isCustom: boolean('is_custom').default(true),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

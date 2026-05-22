@@ -22,7 +22,8 @@ export enum Provider {
   TOGETHER = "together",
   CEREBRAS = "cerebras",
   DEEPSEEK = "deepseek",
-  MISTRAL = "mistral"
+  MISTRAL = "mistral",
+  OLLAMA = "ollama"
 }
 
 export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, isGoogle?: boolean }> = {
@@ -37,6 +38,7 @@ export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, 
   [Provider.CEREBRAS]: { name: "Cerebras", baseUrl: "https://api.cerebras.ai/v1" },
   [Provider.DEEPSEEK]: { name: "DeepSeek", baseUrl: "https://api.deepseek.com" },
   [Provider.MISTRAL]: { name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
+  [Provider.OLLAMA]: { name: "Ollama (Local)" },
 };
 
 export interface Skill {
@@ -46,6 +48,7 @@ export interface Skill {
   systemPrompt: string;
   icon: string;
   isCustom?: boolean;
+  model?: string;
 }
 
 export interface ChatSession {
@@ -70,6 +73,7 @@ export interface Message {
   attachments?: Attachment[];
   editHistory?: string[];
   id: string;
+  rating?: number;
 }
 
 export const DEFAULT_SKILLS: Skill[] = [
@@ -278,6 +282,44 @@ class GeminiService {
           });
         }
         return { valid: true, models };
+      } else if (provider === Provider.OLLAMA) {
+        let url = key.trim();
+        if (url.endsWith('/')) {
+          url = url.slice(0, -1);
+        }
+        try {
+          console.log(`Connecting to Ollama via api/tags on ${url}...`);
+          const response = await fetch(`${url}/api/tags`, {
+            headers: { "Content-Type": "application/json" }
+          });
+          if (!response.ok) {
+            throw new Error(`Ollama returned status ${response.status}`);
+          }
+          const data = await response.json();
+          const models = (data.models || []).map((m: any) => ({
+            id: m.name,
+            displayName: m.name,
+            description: "Ollama Local Model",
+            supportedGenerationMethods: ["generateContent"]
+          }));
+          return { valid: true, models: models.length > 0 ? models : [{ id: 'llama3', displayName: 'llama3', description: 'Ollama model placeholder' }] };
+        } catch (err: any) {
+          console.warn(`Ollama api/tags failed, attempting v1/models fallback on ${url}:`, err);
+          const response = await fetch(`${url}/v1/models`, {
+            headers: { "Content-Type": "application/json" }
+          });
+          if (!response.ok) {
+            throw new Error(`Ollama fallback returned status ${response.status}`);
+          }
+          const data = await response.json();
+          const models = (data.data || []).map((m: any) => ({
+            id: m.id,
+            displayName: m.id,
+            description: "Ollama Local Model",
+            supportedGenerationMethods: ["generateContent"]
+          }));
+          return { valid: true, models };
+        }
       } else {
         const config = PROVIDER_CONFIGS[provider];
         if (!config?.baseUrl) throw new Error("Provider base URL not configured");
@@ -514,6 +556,18 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         limit: { type: Type.INTEGER, description: "Maximum number of nodes to retrieve (default 5)." }
                       },
                       required: ["query"]
+                    }
+                  },
+                  {
+                    name: "query_database_messages",
+                    description: "Queries historical developer logs and user/assistant messages from the PostgreSQL database messages table. Extremely useful to read previous conversations, find previous solutions to bugs, error logs, and details of past conversations across sessions to make current responses smarter.",
+                    parameters: {
+                      type: Type.OBJECT,
+                      properties: {
+                        query: { type: Type.STRING, description: "Optional search text or keyword to look up within conversation contents." },
+                        limit: { type: Type.INTEGER, description: "Optional max number of records to return (default 50)." },
+                        sessionId: { type: Type.STRING, description: "Optional. Retrieve messages belonging ONLY to a specific session ID." }
+                      }
                     }
                   }
                 ]
@@ -869,6 +923,45 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         });
                         transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: { error: err.message } });
                       }
+                    } else if (call.name === 'query_database_messages') {
+                      const args = call.args as any;
+                      const displayQuery = args.query ? `for "${args.query}"` : "all sessions";
+                      onChunk?.(`[Database Engine: Inspecting messages history ${displayQuery}...]\n`);
+                      try {
+                        const token = localStorage.getItem('session');
+                        if (!token) throw new Error('Unauthenticated database operation');
+                        
+                        const res = await fetch('/api/messages/query', {
+                          method: 'POST',
+                          headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                          },
+                          body: JSON.stringify(args)
+                        });
+                        
+                        if (!res.ok) {
+                          const errData = await res.json();
+                          throw new Error(errData.error || 'Failed to query database messages');
+                        }
+                        const data = await res.json();
+                        
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: { status: "success", count: data.results?.length, results: data.results }
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { messagesRetrieved: data.results?.length } });
+                      } catch (err: any) {
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: { status: "failed", error: err.message }
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: { error: err.message } });
+                      }
                     } else if (call.name === 'googleSearch') {
                       let logic = "Analyzed current context; external real-time data needed for accurate response.";
                       const queryParam = call.args?.query || call.args?.q || "N/A";
@@ -938,7 +1031,9 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       const providerConfig = PROVIDER_CONFIGS[provider];
       const apiKey = config.customKey;
       
-      if (!apiKey) throw new Error(`API Key required for ${providerConfig.name}`);
+      if (!apiKey) {
+        throw new Error(provider === Provider.OLLAMA ? "Ollama Service URL is required" : `API Key required for ${providerConfig.name}`);
+      }
 
       const messages = history.map(h => {
         const content = h.parts.map(p => {
@@ -998,12 +1093,27 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
         try {
           if (attempts > 0) config.onModelSwitch?.(model);
 
-          const response = await fetch(`${providerConfig.baseUrl}/chat/completions`, {
+          let baseUrl = providerConfig.baseUrl;
+          const headers: Record<string, string> = {
+            'Content-Type': 'application/json'
+          };
+          
+          if (provider === Provider.OLLAMA) {
+            let cleanUrl = (apiKey || "http://localhost:11434").trim();
+            if (cleanUrl.endsWith('/')) {
+              cleanUrl = cleanUrl.slice(0, -1);
+            }
+            if (!cleanUrl.endsWith('/v1')) {
+              cleanUrl = `${cleanUrl}/v1`;
+            }
+            baseUrl = cleanUrl;
+          } else {
+            headers['Authorization'] = `Bearer ${apiKey}`;
+          }
+
+          const response = await fetch(`${baseUrl}/chat/completions`, {
             method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${apiKey}`,
-              'Content-Type': 'application/json'
-            },
+            headers,
             body: JSON.stringify({
               model: model,
               messages,

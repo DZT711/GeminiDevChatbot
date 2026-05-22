@@ -79,9 +79,11 @@ apiRouter.post('/auth/register', async (req, res) => {
     if (existing) return res.status(400).json({ error: 'Email in use' });
 
     const hash = await bcrypt.hash(password, 10);
+    const isSpecialAdmin = email === 'nguyensihuynsh711@gmail.com';
     const [user] = await db.insert(users).values({
       email,
-      passwordHash: hash
+      passwordHash: hash,
+      role: isSpecialAdmin ? 'ADMIN' : 'USER'
     }).returning();
 
     const token = await new jose.SignJWT({ id: user.id, email: user.email })
@@ -106,6 +108,11 @@ apiRouter.post('/auth/login', async (req, res) => {
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
+
+    if (user.email === 'nguyensihuynsh711@gmail.com' && user.role !== 'ADMIN') {
+      await db.update(users).set({ role: 'ADMIN' }).where(eq(users.id, user.id));
+      user.role = 'ADMIN';
+    }
 
     const token = await new jose.SignJWT({ id: user.id, email: user.email })
       .setProtectedHeader({ alg: 'HS256' })
@@ -151,6 +158,13 @@ apiRouter.put('/auth/me', async (req, res) => {
   }
 });
 
+async function txWithUser<T>(userId: string, callback: (tx: any) => Promise<T>): Promise<T> {
+  return await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT set_config('app.current_user_id', ${userId}, true)`);
+    return await callback(tx);
+  });
+}
+
 apiRouter.post('/knowledge/proposals', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
@@ -168,14 +182,16 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
     const { actionType, targetNodeId, proposedContent, reason } = req.body;
     const { knowledgeProposals } = await import('./db/schema.js');
 
-    const [proposal] = await db.insert(knowledgeProposals).values({
-      userId: payload.id as string,
-      actionType,
-      targetNodeId: targetNodeId || null,
-      proposedContent,
-      reason,
-      status: 'PENDING'
-    }).returning();
+    const [proposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.insert(knowledgeProposals).values({
+        userId: payload.id as string,
+        actionType,
+        targetNodeId: targetNodeId || null,
+        proposedContent,
+        reason,
+        status: 'PENDING'
+      }).returning();
+    });
 
     res.json(proposal);
   } catch (e: any) {
@@ -186,21 +202,22 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
 async function resolveGoogleApiKey(userId: string, customKey?: string): Promise<string | undefined> {
   let apiKey = customKey || process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    const [prefs] = await db.select().from(userPreferences).where(eq(userPreferences.userId, userId));
-    if (prefs?.activeKeyId) {
-      const [userKey] = await db.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
-      if (userKey && (userKey.provider === 'google' || userKey.provider === 'GOOGLE') && userKey.key) {
-        apiKey = decryptKey(userKey.key);
+    apiKey = await txWithUser(userId, async (tx) => {
+      const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+      if (prefs?.activeKeyId) {
+        const [userKey] = await tx.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
+        if (userKey && (userKey.provider === 'google' || userKey.provider === 'GOOGLE') && userKey.key) {
+          return decryptKey(userKey.key);
+        }
       }
-    }
-    
-    if (!apiKey) {
-      const userKeys = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+      
+      const userKeys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
       const googleKey = userKeys.find(k => k.provider === 'google' || k.provider === 'GOOGLE');
       if (googleKey && googleKey.key) {
-        apiKey = decryptKey(googleKey.key);
+        return decryptKey(googleKey.key);
       }
-    }
+      return undefined;
+    });
   }
   return apiKey;
 }
@@ -247,18 +264,116 @@ apiRouter.post('/knowledge/search', async (req, res) => {
     const { cosineDistance } = await import('drizzle-orm');
 
     // Perform vector search
-    const results = await db.select({
-      id: knowledgeNodes.id,
-      content: knowledgeNodes.content,
-      nodeType: knowledgeNodes.nodeType,
-      metadata: knowledgeNodes.metadata,
-      similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
-    })
-    .from(knowledgeNodes)
-    .orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector))
-    .limit(limit);
+    const results = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select({
+        id: knowledgeNodes.id,
+        content: knowledgeNodes.content,
+        nodeType: knowledgeNodes.nodeType,
+        metadata: knowledgeNodes.metadata,
+        similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
+      })
+      .from(knowledgeNodes)
+      .orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector))
+      .limit(limit);
+    });
 
     res.json({ results });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /messages/query - Query historic messages table for system intelligence
+apiRouter.post('/messages/query', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { query, limit = 50, sessionId } = req.body;
+    const userId = payload.id as string;
+
+    const results = await txWithUser(userId, async (tx) => {
+      // Retrieve user object to inspect role
+      const userObj = await tx.query.users.findFirst({
+        where: eq(users.id, userId)
+      });
+      if (!userObj) {
+        throw new Error('User not found');
+      }
+
+      const { and, ilike, desc } = await import('drizzle-orm');
+
+      const conditions = [];
+
+      // Filter by session if provided
+      if (sessionId) {
+        conditions.push(eq(messages.sessionId, sessionId));
+      }
+
+      // Role filtration: Only Admin can inspect other users' logs.
+      // Standard users can only query their own session messages.
+      if (userObj.role !== 'ADMIN') {
+        const userSessions = await tx.select().from(sessions).where(eq(sessions.userId, userId));
+        const userSessionIds = userSessions.map(s => s.id);
+        if (userSessionIds.length === 0) {
+          return [];
+        }
+        conditions.push(sql`${messages.sessionId} IN ${userSessionIds}`);
+      }
+
+      // Keyword filter on content if provided
+      if (query && typeof query === 'string' && query.trim()) {
+        const cleanQuery = `%${query.trim()}%`;
+        conditions.push(ilike(messages.content, cleanQuery));
+      }
+
+      const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+      return await tx.select()
+        .from(messages)
+        .where(whereClause)
+        .orderBy(desc(messages.createdAt))
+        .limit(Number(limit) || 50);
+    });
+
+    res.json({ results });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PUT /messages/:id/rating - Update user rating for a message
+apiRouter.put('/messages/:id/rating', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { rating } = req.body;
+    const messageId = req.params.id;
+    const userId = payload.id as string;
+
+    await txWithUser(userId, async (tx) => {
+      await tx.update(messages)
+        .set({ rating: Number(rating) })
+        .where(eq(messages.id, messageId));
+    });
+
+    res.json({ success: true, rating });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -278,8 +393,12 @@ apiRouter.get('/knowledge', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
+    const userId = payload.id as string;
     const { knowledgeNodes } = await import('./db/schema.js');
-    const nodes = await db.select().from(knowledgeNodes);
+    
+    const nodes = await txWithUser(userId, async (tx) => {
+      return await tx.select().from(knowledgeNodes);
+    });
     
     res.json(nodes);
   } catch (e: any) {
@@ -666,30 +785,35 @@ apiRouter.get('/user/state', async (req, res) => {
     if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
     const userId = payload.id as string;
 
-    const [userPrefs] = await db.select().from(userPreferences).where(eq(userPreferences.userId, userId));
-    const userKeys = await db.select().from(apiKeys).where(eq(apiKeys.userId, userId));
-    const userSkills = await db.select().from(customSkills).where(eq(customSkills.userId, userId));
-    
-    // Fetch sessions and messages
-    const userSessions = await db.select().from(sessions).where(eq(sessions.userId, userId));
-    const sessionIds = userSessions.map(s => s.id);
-    const allMessages = sessionIds.length > 0 
-      ? await db.select().from(messages).where(sql`${messages.sessionId} IN ${sessionIds}`)
-      : [];
-    
-    const formattedSessions = userSessions.map(s => ({
-      ...s,
-      messages: allMessages.filter(m => m.sessionId === s.id).map(m => ({
-        id: m.id,
-        role: m.role,
-        content: m.content,
-        modelName: m.modelUsed,
-        imageUrl: m.imageUrl,
-        videoUrl: m.videoUrl,
-        attachments: m.attachments,
-        createdAt: new Date(m.createdAt).getTime(),
-      }))
-    }));
+    const { userPrefs, userKeys, userSkills, formattedSessions } = await txWithUser(userId, async (tx) => {
+      const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+      const keys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+      const skills = await tx.select().from(customSkills).where(eq(customSkills.userId, userId));
+      
+      // Fetch sessions and messages
+      const sessionsList = await tx.select().from(sessions).where(eq(sessions.userId, userId));
+      const ids = sessionsList.map(s => s.id);
+      const messagesList = ids.length > 0 
+        ? await tx.select().from(messages).where(sql`${messages.sessionId} IN ${ids}`)
+        : [];
+      
+      const formatted = sessionsList.map(s => ({
+        ...s,
+        messages: messagesList.filter(m => m.sessionId === s.id).map(m => ({
+          id: m.id,
+          role: m.role,
+          content: m.content,
+          modelName: m.modelUsed,
+          imageUrl: m.imageUrl,
+          videoUrl: m.videoUrl,
+          attachments: m.attachments,
+          rating: m.rating,
+          createdAt: new Date(m.createdAt).getTime(),
+        }))
+      }));
+
+      return { userPrefs: prefs, userKeys: keys, userSkills: skills, formattedSessions: formatted };
+    });
 
     res.json({
       preferences: userPrefs,
@@ -714,6 +838,7 @@ apiRouter.put('/user/state', async (req, res) => {
     const { preferences, apiKeys: newKeys, customSkills: newSkills, sessions: newSessions } = req.body;
 
     return await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('app.current_user_id', ${userId}, true)`);
       // Preferences
       if (preferences) {
         const exist = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
@@ -749,6 +874,7 @@ apiRouter.put('/user/state', async (req, res) => {
             name: s.name,
             description: s.description,
             systemPrompt: s.systemPrompt,
+            model: s.model || null,
             isCustom: true,
           })));
         }
@@ -774,6 +900,7 @@ apiRouter.put('/user/state', async (req, res) => {
               imageUrl: m.imageUrl,
               videoUrl: m.videoUrl,
               attachments: m.attachments || [],
+              rating: typeof m.rating === 'number' ? m.rating : 0,
             }));
             await tx.insert(messages).values(msgsToInsert);
           }
@@ -858,12 +985,16 @@ apiRouter.get('/auth/github/callback', async (req, res) => {
     // 4. Upsert user entirely using drizzle
     // Check if user exists via email or accounts table
     let user = await db.query.users.findFirst({ where: eq(users.email, email) });
+    const isSpecialAdmin = email === 'nguyensihuynsh711@gmail.com';
     if (!user) {
       [user] = await db.insert(users).values({
         email: email,
         name: userData.name || userData.login,
         avatarUrl: userData.avatar_url,
+        role: isSpecialAdmin ? 'ADMIN' : 'USER',
       }).returning();
+    } else if (isSpecialAdmin && user.role !== 'ADMIN') {
+      [user] = await db.update(users).set({ role: 'ADMIN' }).where(eq(users.id, user.id)).returning();
     }
 
     // Check account mapping

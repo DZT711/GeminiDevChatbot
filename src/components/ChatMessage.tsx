@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { motion, AnimatePresence } from 'motion/react';
-import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw, ChevronDown, ChevronUp, Eye } from 'lucide-react';
+import { User, Bot, Terminal, Pencil, Check, X, FileText, Link as LinkIcon, Copy, History, RotateCcw, ChevronDown, ChevronUp, Eye, ThumbsUp, ThumbsDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Attachment } from '@/services/geminiService';
 import { CodePreview } from './CodePreview';
@@ -92,9 +92,12 @@ interface ChatMessageProps {
   isLoading?: boolean;
   userName?: string;
   userAvatarUrl?: string;
+  id?: string;
+  rating?: number;
+  onRate?: (rating: number) => void;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false, userName, userAvatarUrl }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false, userName, userAvatarUrl, id, rating = 0, onRate }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -308,6 +311,31 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
               >
                 {msgCopied ? <Check size={12} /> : <Copy size={12} />}
               </button>
+            )}
+
+            {!isUser && !isEditing && onRate && (
+              <>
+                <button 
+                  onClick={() => onRate(rating === 1 ? 0 : 1)}
+                  className={cn(
+                    "p-1.5 rounded-lg transition-all",
+                    rating === 1 ? "text-emerald-400 bg-emerald-500/10" : "text-zinc-600 hover:text-emerald-400 hover:bg-zinc-800"
+                  )}
+                  title="Good Response"
+                >
+                  <ThumbsUp size={12} className={rating === 1 ? "fill-emerald-400/20" : ""} />
+                </button>
+                <button 
+                  onClick={() => onRate(rating === -1 ? 0 : -1)}
+                  className={cn(
+                    "p-1.5 rounded-lg transition-all",
+                    rating === -1 ? "text-rose-400 bg-rose-500/10" : "text-zinc-600 hover:text-rose-400 hover:bg-zinc-800"
+                  )}
+                  title="Bad Response"
+                >
+                  <ThumbsDown size={12} className={rating === -1 ? "fill-rose-400/20" : ""} />
+                </button>
+              </>
             )}
 
             {isUser && !isEditing && (

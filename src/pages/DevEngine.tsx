@@ -85,7 +85,8 @@ const PROVIDER_ICONS: Record<string, any> = {
   [Provider.TOGETHER]: Network,
   [Provider.CEREBRAS]: Server,
   [Provider.DEEPSEEK]: Search,
-  [Provider.MISTRAL]: Wind
+  [Provider.MISTRAL]: Wind,
+  [Provider.OLLAMA]: Terminal
 };
 
 interface ApiKey {
@@ -500,10 +501,70 @@ export default function DevEngine() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Modals / Views
-  const [view, setView] = useState<'chat' | 'skills' | 'models' | 'performance'>('chat');
+  const [view, setView] = useState<'chat' | 'skills' | 'knowledge' | 'models' | 'performance'>('chat');
   const [showHistory, setShowHistory] = useState(false);
   const [newSkillPrompt, setNewSkillPrompt] = useState('');
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
+
+  // File Upload Custom Skill Creation States
+  const [newSkillName, setNewSkillName] = useState('');
+  const [newSkillDescription, setNewSkillDescription] = useState('');
+  const [newSkillModel, setNewSkillModel] = useState('');
+  const [newSkillPromptText, setNewSkillPromptText] = useState('');
+  const [uploadedFileName, setUploadedFileName] = useState('');
+
+  const handleUploadSkillFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadedFileName(file.name);
+    
+    if (!newSkillName) {
+      const nameWithoutExt = file.name.replace(/\.[^/.]+$/, "");
+      const cleanName = nameWithoutExt
+        .split(/[-_]/)
+        .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+      setNewSkillName(cleanName);
+    }
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result;
+      if (typeof content === 'string') {
+        setNewSkillPromptText(content);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleCreateCustomSkillManual = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newSkillName.trim() || !newSkillDescription.trim() || !newSkillPromptText.trim()) {
+      setValidationStatus({ type: 'error', message: "NAME, DESCRIPTION, AND PROMPT MATRIX REQUIRED" });
+      setTimeout(() => setValidationStatus(null), 3000);
+      return;
+    }
+
+    const newSkill: Skill = {
+      id: `skill-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      name: newSkillName.trim(),
+      description: newSkillDescription.trim(),
+      systemPrompt: newSkillPromptText.trim(),
+      icon: "Code2",
+      isCustom: true,
+      model: newSkillModel || undefined
+    };
+
+    setCustomSkills(prev => [...prev, newSkill]);
+    
+    setNewSkillName('');
+    setNewSkillDescription('');
+    setNewSkillModel('');
+    setNewSkillPromptText('');
+    setUploadedFileName('');
+    setValidationStatus({ type: 'success', message: 'Neural Skill injected successfully!' });
+    setTimeout(() => setValidationStatus(null), 3000);
+  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -608,6 +669,31 @@ export default function DevEngine() {
       };
       return next;
     });
+  };
+
+  const handleRateMessage = async (messageId: string, rating: number) => {
+    const updatedMessages = messages.map(m => m.id === messageId ? { ...m, rating } : m);
+    setMessages(updatedMessages);
+    
+    if (currentSessionId) {
+      saveCurrentSession(updatedMessages, currentSessionId);
+    }
+    
+    try {
+      const token = localStorage.getItem('session');
+      if (token) {
+        await fetch(`/api/messages/${messageId}/rating`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          },
+          body: JSON.stringify({ rating })
+        });
+      }
+    } catch (e) {
+      console.error("Failed to post rating change", e);
+    }
   };
 
   const handleToggleRepoModal = () => {
@@ -1301,9 +1387,25 @@ export default function DevEngine() {
   };
 
   const toggleSkill = (id: string) => {
-    setActiveSkillIds(prev => 
-      prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id]
-    );
+    setActiveSkillIds(prev => {
+      const isActivating = !prev.includes(id);
+      if (isActivating) {
+        const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
+        if (skill && skill.model && skill.model !== currentModel) {
+          const targetModelObj = modelCatalog.find(m => m.id === skill.model);
+          const currentModelObj = modelCatalog.find(m => m.id === currentModel);
+          const modelName = targetModelObj ? targetModelObj.name : skill.model.split('/').pop();
+          const currentModelName = currentModelObj ? currentModelObj.name : currentModel?.split('/').pop() || 'Unknown';
+          
+          setValidationStatus({ 
+            type: 'error', 
+            message: `ADVISORY: Skill "${skill.name}" is suited for "${modelName}" but current engine is "${currentModelName}". Change model or deactivate skill for effective execution.` 
+          });
+          setTimeout(() => setValidationStatus(null), 7000);
+        }
+      }
+      return prev.includes(id) ? prev.filter(s => s !== id) : [...prev, id];
+    });
   };
 
   const removeCustomSkill = (e: React.MouseEvent, id: string) => {
@@ -1365,6 +1467,18 @@ export default function DevEngine() {
             >
               <Sparkles size={14} />
               Skills Lab
+            </button>
+            <button 
+              onClick={() => setView('knowledge')}
+              className={cn(
+                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
+                view === 'knowledge' 
+                  ? (theme === 'light' ? "bg-cyan-50 text-cyan-600 border border-cyan-200 shadow-sm" : "bg-cyan-900/20 text-cyan-400 border border-cyan-800/30") 
+                  : (theme === 'light' ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50")
+              )}
+            >
+              <Database size={14} />
+              Knowledge Index
             </button>
             <button 
               onClick={() => setShowHistory(!showHistory)}
@@ -1735,6 +1849,7 @@ export default function DevEngine() {
                   messages.filter(m => m).map((m, i) => (
                     <ChatMessage 
                       key={i} 
+                      id={m.id}
                       role={m.role} 
                       content={m.content} 
                       theme={theme}
@@ -1749,6 +1864,8 @@ export default function DevEngine() {
                       isLoading={isLoading}
                       userName={user?.name}
                       userAvatarUrl={user?.avatarUrl}
+                      rating={m.rating || 0}
+                      onRate={(rating) => handleRateMessage(m.id, rating)}
                     />
                   ))
                 )}
@@ -2036,6 +2153,71 @@ export default function DevEngine() {
                       </div>
                     </div>
 
+                    {/* Integrated Compatibility Warning */}
+                    {activeSkillIds.some(id => {
+                      const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
+                      return !!skill && !!skill.model && skill.model !== currentModel;
+                    }) && (
+                      <div className={cn(
+                        "mx-4 my-2 p-3 rounded-xl border flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs font-mono",
+                        theme === 'light' 
+                          ? "bg-amber-50 border-amber-200 text-amber-800" 
+                          : "bg-amber-950/20 border-amber-800/30 text-amber-400"
+                      )}>
+                        <div className="flex items-start gap-2.5">
+                          <AlertTriangle className={cn("shrink-0 mt-0.5", theme === 'light' ? 'text-amber-600' : 'text-amber-500')} size={14} />
+                          <div>
+                            <span className="font-bold uppercase tracking-wider block mb-0.5">Neural Incompatibility Detected</span>
+                            <span>
+                              Some active skills are model-specific and not optimized for <b>{modelCatalog.find(m => m.id === currentModel)?.name || currentModel.split('/').pop()}</b>. Performance may be degraded.
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 shrink-0">
+                          {activeSkillIds
+                            .map(id => [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id))
+                            .filter((s): s is Skill => !!s && !!s.model && s.model !== currentModel)
+                            .map(skill => {
+                              const targetModelName = modelCatalog.find(m => m.id === skill.model)?.name || skill.model?.split('/').pop();
+                              return (
+                                <button
+                                  key={skill.id}
+                                  type="button"
+                                  onClick={() => setCurrentModel(skill.model!)}
+                                  className={cn(
+                                    "px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border transition-all cursor-pointer",
+                                    theme === 'light'
+                                      ? "bg-amber-600 text-white border-amber-500 hover:bg-amber-750"
+                                      : "bg-amber-500/10 text-amber-300 border-amber-500/20 hover:bg-amber-500/20"
+                                  )}
+                                >
+                                  Switch to {targetModelName}
+                                </button>
+                              );
+                            })
+                          }
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const incompatibleIds = activeSkillIds.filter(id => {
+                                const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
+                                return !!skill && !!skill.model && skill.model !== currentModel;
+                              });
+                              setActiveSkillIds(prev => prev.filter(id => !incompatibleIds.includes(id)));
+                            }}
+                            className={cn(
+                              "px-3 py-1.5 rounded-lg text-[9px] font-bold uppercase tracking-wider border cursor-pointer",
+                              theme === 'light'
+                                ? "bg-slate-100 text-slate-700 border-slate-250 hover:bg-slate-200"
+                                : "bg-zinc-900 text-zinc-400 border-zinc-800 hover:bg-zinc-850"
+                            )}
+                          >
+                            Disable Skills
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
                     <form 
                       onSubmit={handleSubmit} 
                       className={cn(
@@ -2266,6 +2448,114 @@ export default function DevEngine() {
                 </div>
               </section>
 
+              {/* Custom Skill Upload/Form Section */}
+              <section className={cn(
+                "p-8 rounded-2xl shadow-xl border relative overflow-hidden group",
+                theme === 'light' ? "bg-white border-slate-200" : "bg-surface-card border-border-dim"
+              )}>
+                <h2 className={cn(
+                  "text-sm font-mono font-bold uppercase tracking-widest mb-6 flex items-center gap-2",
+                  theme === 'light' ? "text-slate-500" : "text-zinc-300"
+                )}>
+                  <Plus size={16} className="text-purple-500" />
+                  Manual Neural Skill Injection
+                </h2>
+                <form onSubmit={handleCreateCustomSkillManual} className="space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Skill Name</label>
+                      <input 
+                        type="text"
+                        value={newSkillName}
+                        onChange={(e) => setNewSkillName(e.target.value)}
+                        placeholder="e.g. Kotlin Master"
+                        className={cn(
+                          "w-full border rounded-xl px-4 py-2.5 text-xs font-mono outline-none focus:border-purple-500 transition-colors shadow-inner",
+                          theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-surface-dark border-zinc-800 text-zinc-100"
+                        )}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Target Model (Compatibility)</label>
+                      <select
+                        value={newSkillModel}
+                        onChange={(e) => setNewSkillModel(e.target.value)}
+                        className={cn(
+                          "w-full border rounded-xl px-4 py-2.5 text-xs font-mono outline-none focus:border-purple-500 transition-colors shadow-inner cursor-pointer",
+                          theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-surface-dark border-zinc-800 text-zinc-100"
+                        )}
+                      >
+                        <option value="">Any Model (General Compatibility)</option>
+                        {modelCatalog.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.provider})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Node Description</label>
+                    <input 
+                      type="text"
+                      value={newSkillDescription}
+                      onChange={(e) => setNewSkillDescription(e.target.value)}
+                      placeholder="Specify the scope and capabilities of this model skill..."
+                      className={cn(
+                        "w-full border rounded-xl px-4 py-2.5 text-xs font-mono outline-none focus:border-purple-500 transition-colors shadow-inner",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-surface-dark border-zinc-800 text-zinc-100"
+                      )}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-end pt-2">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Neural Programming File (.md, .txt, .html)</label>
+                      <div className={cn(
+                        "border border-dashed rounded-xl p-4 text-center cursor-pointer transition-all hover:bg-purple-500/5 relative",
+                        theme === 'light' ? "border-slate-300 hover:border-purple-500" : "border-zinc-800 hover:border-purple-500/50"
+                      )}>
+                        <input 
+                          type="file"
+                          accept=".md,.txt,.html"
+                          onChange={handleUploadSkillFile}
+                          className="absolute inset-0 opacity-0 cursor-pointer w-full h-full"
+                        />
+                        <div className="flex flex-col items-center justify-center gap-1.5">
+                          <Paperclip size={18} className="text-purple-500" />
+                          <span className="text-[10px] font-mono text-zinc-500">
+                            {uploadedFileName ? `Loaded: ${uploadedFileName}` : "Drag file here or click to browse"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Prompt Matrix Content (Alternative/Preview)</label>
+                      <textarea
+                        value={newSkillPromptText}
+                        onChange={(e) => setNewSkillPromptText(e.target.value)}
+                        placeholder="Matrix prompt code will appear here or can be typed/edited directly..."
+                        className={cn(
+                          "w-full border rounded-xl px-4 py-2 text-[10px] font-mono outline-none focus:border-purple-500 transition-colors h-[54px] resize-none",
+                          theme === 'light' ? "bg-slate-50 border-slate-200 text-slate-800" : "bg-surface-dark border-zinc-800 text-zinc-100"
+                        )}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end pt-2">
+                    <button
+                      type="submit"
+                      className="px-8 py-3 bg-gradient-to-r from-purple-600 to-indigo-700 hover:from-purple-500 hover:to-indigo-650 rounded-xl text-white font-mono text-[10px] font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95 cursor-pointer"
+                    >
+                      Inject Custom Skill
+                    </button>
+                  </div>
+                </form>
+              </section>
+
               {/* Grid of Modules */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24">
                 {[...DEFAULT_SKILLS, ...customSkills].map((skill) => {
@@ -2308,7 +2598,7 @@ export default function DevEngine() {
                               theme === 'light' ? "text-slate-700 group-hover:text-cyan-600" : "text-zinc-200 group-hover:text-white"
                             )}>{skill.name}</h3>
                             <span className="text-[8px] font-mono px-1.5 py-0.5 rounded bg-zinc-900 border border-white/5 text-zinc-500 whitespace-nowrap">
-                              {(currentModel || '').split('/').pop() || 'UNKNOWN'}
+                              {skill.model ? modelCatalog.find(m => m.id === skill.model)?.name || skill.model.split('/').pop() : 'All Models'}
                             </span>
                           </div>
                           <p className={cn(
@@ -2572,6 +2862,269 @@ export default function DevEngine() {
               </div>
             </div>
           </div>
+        ) : view === 'knowledge' ? (
+          <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+            <div className="max-w-6xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
+              <header className="flex justify-between items-end border-b border-border-dim pb-8">
+                <div>
+                  <h1 className="text-4xl font-mono font-bold tracking-tighter text-white mb-2 uppercase">Knowledge Engine</h1>
+                  <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest opacity-60">Manage Model RAG Semantic Memories</p>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="text-[10px] font-mono text-zinc-500 uppercase tracking-widest">Active Index Status</span>
+                  <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_10px_rgba(6,182,212,0.5)]" />
+                </div>
+              </header>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 pb-24">
+                {/* Left Column: tester & proposals */}
+                <div className="lg:col-span-7 space-y-8">
+                  {/* Similarity tester block */}
+                  <div className={cn("p-6 rounded-2xl border space-y-4 shadow-sm", theme === 'light' ? "bg-slate-50 border-slate-200" : "bg-zinc-950/40 border-zinc-900")}>
+                    <div className="flex items-center gap-2">
+                      <Database className="text-cyan-500" size={18} />
+                      <span className="text-xs font-bold uppercase tracking-wider text-cyan-400">Search Similarity Vector Tester</span>
+                    </div>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={kSearchQuery}
+                        onChange={(e) => setKSearchQuery(e.target.value)}
+                        placeholder="Type model memories query to test..."
+                        className="flex-1 bg-black/40 border border-zinc-800 rounded-xl px-4 py-3 text-xs font-mono text-white outline-none focus:border-cyan-500 transition-colors"
+                      />
+                      <button
+                        onClick={handleKSearch}
+                        disabled={isKSearching}
+                        className="px-6 py-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all shadow-md"
+                      >
+                        {isKSearching ? 'Searching...' : 'Test Index'}
+                      </button>
+                    </div>
+
+                    {kSearchError && (
+                      <div className="text-xs text-red-500 mt-1 font-mono">{kSearchError}</div>
+                    )}
+
+                    {kSearchResults.length > 0 && (
+                      <div className="pt-2 space-y-3 max-h-[250px] overflow-y-auto custom-scrollbar">
+                        {kSearchResults.map((node) => (
+                          <div key={node.id} className="p-3 bg-zinc-950/80 rounded-xl border border-zinc-900 space-y-2">
+                            <div className="flex justify-between items-center text-[10px] font-mono">
+                              <span className="text-cyan-400 font-bold uppercase">{node.nodeType.toUpperCase()}</span>
+                              <span className="text-emerald-400 font-bold">Cosine Dist: {node.similarity.toFixed(4)}</span>
+                            </div>
+                            <p className="text-[11px] text-zinc-300 font-mono leading-relaxed">{node.content}</p>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Proposals Section */}
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center border-b border-border-dim pb-2">
+                      <label className="text-xs font-bold uppercase tracking-widest text-zinc-400">Pending & History Proposals</label>
+                      <span className="text-[10px] font-mono bg-zinc-900 text-zinc-500 px-2 py-0.5 rounded-full">{knowledgeProposals.length} total</span>
+                    </div>
+
+                    {knowledgeProposals.length === 0 ? (
+                      <div className="text-center py-12 border border-dashed border-zinc-800 rounded-2xl text-xs text-zinc-500">
+                        No model-proposed index modifications found.
+                      </div>
+                    ) : (
+                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
+                        {knowledgeProposals.map((prop) => (
+                          <div 
+                            key={prop.id} 
+                            className={cn(
+                              "p-5 rounded-2xl border flex flex-col gap-4 shadow-sm transition-all",
+                              theme === 'light' ? "bg-white border-slate-200" : "bg-[#0c0c0e] border-zinc-900"
+                            )}
+                          >
+                            <div className="flex justify-between items-start gap-2">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className={cn(
+                                  "px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider",
+                                  prop.actionType === 'INSERT' && "bg-green-500/10 text-green-400 border border-green-500/20",
+                                  prop.actionType === 'UPDATE' && "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                                  prop.actionType === 'DELETE' && "bg-red-500/10 text-red-400 border border-red-500/20"
+                                )}>
+                                  {prop.actionType}
+                                </span>
+                                {prop.targetNodeId && (
+                                  <span className="text-[9px] font-mono text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded">Node Ref: {prop.targetNodeId.slice(0, 8)}...</span>
+                                )}
+                              </div>
+                              <span className={cn(
+                                "text-[9px] px-2 py-0.5 rounded font-bold uppercase tracking-wider",
+                                prop.status === 'PENDING' && "bg-amber-500/10 text-amber-500",
+                                prop.status === 'APPROVED' && "bg-emerald-500/10 text-emerald-500",
+                                prop.status === 'REJECTED' && "bg-zinc-500/10 text-zinc-400"
+                              )}>
+                                {prop.status}
+                              </span>
+                            </div>
+
+                            <div className="text-xs space-y-1">
+                              <span className="text-[9px] text-zinc-500 font-mono uppercase block">Proposed Content:</span>
+                              {editingProposalId === prop.id ? (
+                                <div className="space-y-3">
+                                  <textarea
+                                    value={editingProposalContent}
+                                    onChange={(e) => setEditingProposalContent(e.target.value)}
+                                    className="w-full h-28 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs font-mono text-zinc-350 outline-none focus:border-cyan-500"
+                                  />
+                                  <div className="flex gap-2">
+                                    <button
+                                      onClick={() => handleSaveProposalEdit(prop.id)}
+                                      className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-xs uppercase font-bold transition-colors"
+                                    >
+                                      Save Content
+                                    </button>
+                                    <button
+                                      onClick={() => setEditingProposalId(null)}
+                                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors"
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="p-3 bg-black/40 rounded-xl border border-zinc-900 font-mono text-xs text-zinc-300 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar">
+                                  {prop.proposedContent || '(Direct deletion request)'}
+                                </div>
+                              )}
+                            </div>
+
+                            {prop.reason && (
+                              <p className="text-xs italic text-zinc-400 font-mono bg-zinc-950/20 p-3 rounded-lg border border-zinc-900/50">
+                                &ldquo;{prop.reason}&rdquo;
+                              </p>
+                            )}
+
+                            {prop.status === 'PENDING' && (
+                              <div className="flex justify-end gap-2 pt-3 border-t border-zinc-900/50">
+                                {editingProposalId !== prop.id && (
+                                  <button
+                                    disabled={isKnowledgeActionLoading !== null}
+                                    onClick={() => {
+                                      setEditingProposalId(prop.id);
+                                      setEditingProposalContent(prop.proposedContent || '');
+                                    }}
+                                    className="px-4 py-2 border border-zinc-805 hover:border-zinc-700 text-zinc-400 text-xs font-bold uppercase rounded-lg transition-all mr-auto"
+                                  >
+                                    Edit Details
+                                  </button>
+                                )}
+                                <button
+                                  disabled={isKnowledgeActionLoading !== null}
+                                  onClick={() => handleRejectProposal(prop.id)}
+                                  className="px-4 py-2 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-xs font-bold uppercase rounded-lg transition-all"
+                                >
+                                  Reject
+                                </button>
+                                <button
+                                  disabled={isKnowledgeActionLoading !== null}
+                                  onClick={() => handleApproveProposal(prop.id)}
+                                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase rounded-lg transition-all shadow"
+                                >
+                                  {isKnowledgeActionLoading === prop.id ? 'Approving...' : 'Approve & Index'}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right Column: active index list */}
+                <div className="lg:col-span-5 space-y-4">
+                  <div className="flex justify-between items-center border-b border-border-dim pb-2">
+                    <label className="text-xs font-bold uppercase tracking-widest text-zinc-400">Indexed Knowledge Records</label>
+                    <span className="text-[10px] font-mono bg-cyan-950/30 border border-cyan-900/20 text-cyan-400 px-2 py-0.5 rounded-full">{knowledgeNodes.length} active</span>
+                  </div>
+
+                  {knowledgeNodes.length === 0 ? (
+                    <div className="text-center py-12 border border-dashed border-zinc-800 rounded-2xl text-xs text-zinc-400">
+                      No active knowledge records found.
+                    </div>
+                  ) : (
+                    <div className="space-y-4 max-h-[750px] overflow-y-auto pr-2 custom-scrollbar">
+                      {knowledgeNodes.map((node) => (
+                        <div 
+                          key={node.id} 
+                          className={cn(
+                            "p-5 rounded-2xl border flex flex-col gap-3 shadow-xs transition-all",
+                            theme === 'light' ? "bg-white border-slate-200" : "bg-[#0c0c0e] border-zinc-900"
+                          )}
+                        >
+                          <div className="flex justify-between items-center">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-cyan-400 bg-cyan-950/20 px-2.5 py-0.5 rounded-full border border-cyan-900/30">
+                              {node.nodeType || 'MEM_RECORD'}
+                            </span>
+                            <span className="text-[9px] font-mono text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded">ID: {node.id.slice(0, 8)}...</span>
+                          </div>
+
+                          <div className="text-xs space-y-1">
+                            {editingNodeId === node.id ? (
+                              <div className="space-y-3 animate-in fade-in">
+                                <textarea
+                                  value={editingNodeContent}
+                                  onChange={(e) => setEditingNodeContent(e.target.value)}
+                                  className="w-full h-28 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs font-mono text-zinc-300 outline-none focus:border-cyan-500"
+                                />
+                                <div className="flex gap-2">
+                                  <button
+                                    onClick={() => handleSaveNodeEdit(node.id)}
+                                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs uppercase font-bold transition-colors"
+                                  >
+                                    Update Node
+                                  </button>
+                                  <button
+                                    onClick={() => setEditingNodeId(null)}
+                                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-xs font-mono text-zinc-300 leading-relaxed font-sans mt-1 bg-black/20 p-3 rounded-xl border border-zinc-900/50 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar">
+                                {node.content}
+                              </p>
+                            )}
+                          </div>
+
+                          {editingNodeId !== node.id && (
+                            <div className="flex justify-end gap-2 pt-2 border-t border-zinc-900/40">
+                              <button
+                                onClick={() => {
+                                  setEditingNodeId(node.id);
+                                  setEditingNodeContent(node.content);
+                                }}
+                                className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-705 text-zinc-400 text-[10px] font-bold uppercase rounded-lg transition-colors"
+                              >
+                                Edit Node
+                              </button>
+                              <button
+                                onClick={() => handleDeleteNode(node.id)}
+                                className="px-3 py-1.5 border border-red-900/30 hover:bg-red-950/10 text-red-400 text-[10px] font-bold uppercase rounded-lg transition-colors"
+                              >
+                                Delete Node
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
         ) : null}
       </main>
 
@@ -2615,7 +3168,7 @@ export default function DevEngine() {
                 "flex gap-8 border-b mb-8 overflow-x-auto",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['profile', 'keys', 'context', 'theme', 'knowledge'].map((tab) => (
+                {['profile', 'keys', 'context', 'theme'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
@@ -2788,10 +3341,12 @@ export default function DevEngine() {
                                 />
                               </div>
                               <div className="space-y-1.5 md:col-span-2">
-                                <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">Input Secret Key</label>
+                                <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">
+                                  {newKeyProvider === Provider.OLLAMA ? "Ollama Service URL" : "Input Secret Key"}
+                                </label>
                                 <input 
-                                  type="password"
-                                  placeholder={newKeyProvider === Provider.GOOGLE ? "AIzaSy..." : "sk-..."}
+                                  type={newKeyProvider === Provider.OLLAMA ? "text" : "password"}
+                                  placeholder={newKeyProvider === Provider.OLLAMA ? "http://localhost:11434" : (newKeyProvider === Provider.GOOGLE ? "AIzaSy..." : "sk-...")}
                                   value={newKeyVal}
                                   onChange={(e) => setNewKeyVal(e.target.value)}
                                   className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
@@ -3383,6 +3938,25 @@ export default function DevEngine() {
                         theme === 'light' ? "bg-slate-50 border-slate-200 focus:border-cyan-500" : "bg-black/60 border-zinc-800 focus:border-cyan-500"
                       )}
                     />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold font-mono uppercase text-zinc-500">Compatible Neural Model</label>
+                    <select
+                      value={isEditingSkill.model || ''}
+                      onChange={(e) => setIsEditingSkill({...isEditingSkill, model: e.target.value || undefined})}
+                      className={cn(
+                        "w-full border rounded-xl px-4 py-3 text-sm font-mono outline-none transition-all cursor-pointer",
+                        theme === 'light' ? "bg-slate-50 border-slate-200 focus:border-cyan-500 text-slate-800" : "bg-black/60 border-zinc-800 focus:border-cyan-500 text-zinc-100"
+                      )}
+                    >
+                      <option value="">Any Model (General Compatibility)</option>
+                      {modelCatalog.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.name} ({m.provider})
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="space-y-2">
