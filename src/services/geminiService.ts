@@ -4,6 +4,7 @@ import { transparencyLogger } from '../utils/transparencyLogger';
 
 export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
+  FLASH_3_5 = "gemini-3.5-flash",
   FLASH = "gemini-3-flash-preview",
   LITE = "gemini-3.1-flash-lite-preview",
   IMAGE = "gemini-2.5-flash-image",
@@ -174,7 +175,7 @@ export interface UsageLimit {
 
 class GeminiService {
   private aiInstance: GoogleGenAI | null = null;
-  private modelQueue: string[] = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
+  private modelQueue: string[] = [ModelId.PRO, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE];
   private currentModelIndex: number = 0;
   private metrics: Record<string, ModelMetrics> = {};
 
@@ -242,7 +243,7 @@ class GeminiService {
   }
 
   resetQueue() {
-    this.modelQueue = [ModelId.PRO, ModelId.FLASH, ModelId.LITE];
+    this.modelQueue = [ModelId.PRO, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE];
     this.currentModelIndex = 0;
   }
 
