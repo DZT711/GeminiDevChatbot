@@ -215,6 +215,17 @@ export default function DevEngine() {
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [editingProposalContent, setEditingProposalContent] = useState('');
   
+  // Floating Toast Notifications States
+  const [notifications, setNotifications] = useState<{ id: string; message: string; type: 'info' | 'success' | 'warning' | 'error'; timestamp: Date }[]>([]);
+
+  const addNotification = (message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setNotifications(prev => [{ id, message, type, timestamp: new Date() }, ...prev]);
+    setTimeout(() => {
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    }, 6000);
+  };
+
   // Knowledge search/testing states
   const [kSearchQuery, setKSearchQuery] = useState('');
   const [kSearchResults, setKSearchResults] = useState<{ id: string; content: string; nodeType: string; similarity: number }[]>([]);
@@ -251,6 +262,19 @@ export default function DevEngine() {
     }
   }, [showSettings, settingsTab]);
 
+  useEffect(() => {
+    const handleInteraction = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail && detail.message) {
+        addNotification(detail.message, detail.action === 'query' ? 'info' : 'success');
+        // Automatically sync knowledge details when any new proposal or query interaction occurs
+        fetchKnowledgeData();
+      }
+    };
+    window.addEventListener('knowledge-interaction', handleInteraction);
+    return () => window.removeEventListener('knowledge-interaction', handleInteraction);
+  }, []);
+
   const handleApproveProposal = async (proposalId: string) => {
     const token = localStorage.getItem('session');
     if (!token) return;
@@ -264,12 +288,13 @@ export default function DevEngine() {
       });
       if (!res.ok) {
         const errData = await res.json();
-        alert(errData.error || 'Failed to approve proposal');
+        addNotification(errData.error || 'Failed to approve proposal', 'error');
       } else {
+        addNotification('Proposal approved successfully. Node integrated into active memory index.', 'success');
         fetchKnowledgeData();
       }
     } catch (err: any) {
-      alert("Error: " + err.message);
+      addNotification("Error approving proposal: " + err.message, 'error');
     } finally {
       setIsKnowledgeActionLoading(null);
     }
@@ -288,12 +313,13 @@ export default function DevEngine() {
       });
       if (!res.ok) {
         const errData = await res.json();
-        alert(errData.error || 'Failed to reject proposal');
+        addNotification(errData.error || 'Failed to reject proposal', 'error');
       } else {
+        addNotification('Knowledge proposal successfully rejected.', 'warning');
         fetchKnowledgeData();
       }
     } catch (err: any) {
-      alert("Error: " + err.message);
+      addNotification("Error rejecting proposal: " + err.message, 'error');
     } finally {
       setIsKnowledgeActionLoading(null);
     }
@@ -314,13 +340,14 @@ export default function DevEngine() {
       });
       if (!res.ok) {
         const errData = await res.json();
-        alert(errData.error || 'Failed to update proposal');
+        addNotification(errData.error || 'Failed to update proposal', 'error');
       } else {
+        addNotification('Proposed content updated successfully.', 'success');
         setEditingProposalId(null);
         fetchKnowledgeData();
       }
     } catch (err: any) {
-      alert("Error: " + err.message);
+      addNotification("Error updating proposal: " + err.message, 'error');
     } finally {
       setIsKnowledgeActionLoading(null);
     }
@@ -344,8 +371,9 @@ export default function DevEngine() {
         });
         if (!res.ok) {
           const errData = await res.json();
-          alert(errData.error || 'Failed to delete node');
+          addNotification(errData.error || 'Failed to delete node', 'error');
         } else {
+          addNotification('Knowledge record successfully removed from active memory context.', 'success');
           fetchKnowledgeData();
         }
       } else {
@@ -363,14 +391,14 @@ export default function DevEngine() {
         });
         if (!res.ok) {
           const errData = await res.json();
-          alert(errData.error || 'Failed to submit deletion proposal');
+          addNotification(errData.error || 'Failed to submit deletion proposal', 'error');
         } else {
-          alert('Deletion proposal submitted successfully! Pending admin approval.');
+          addNotification('Deletion proposal submitted successfully! Pending administrator approval.', 'success');
           fetchKnowledgeData();
         }
       }
     } catch (err: any) {
-      alert("Error: " + err.message);
+      addNotification("Error: " + err.message, 'error');
     } finally {
       setIsKnowledgeActionLoading(null);
     }
@@ -393,8 +421,9 @@ export default function DevEngine() {
         });
         if (!res.ok) {
           const errData = await res.json();
-          alert(errData.error || 'Failed to update node');
+          addNotification(errData.error || 'Failed to update node', 'error');
         } else {
+          addNotification('Knowledge record updated successfully in vector space.', 'success');
           setEditingNodeId(null);
           fetchKnowledgeData();
         }
@@ -414,15 +443,15 @@ export default function DevEngine() {
         });
         if (!res.ok) {
           const errData = await res.json();
-          alert(errData.error || 'Failed to submit update proposal');
+          addNotification(errData.error || 'Failed to submit update proposal', 'error');
         } else {
-          alert('Update proposal submitted successfully! Pending admin approval.');
+          addNotification('Update proposal submitted successfully! Pending administrator approval.', 'success');
           setEditingNodeId(null);
           fetchKnowledgeData();
         }
       }
     } catch (err: any) {
-      alert("Error: " + err.message);
+      addNotification("Error: " + err.message, 'error');
     } finally {
       setIsKnowledgeActionLoading(null);
     }
@@ -673,6 +702,13 @@ export default function DevEngine() {
 
   // Modals / Views
   const [view, setView] = useState<'chat' | 'skills' | 'knowledge' | 'models' | 'performance' | 'admin-debug'>('chat');
+
+  useEffect(() => {
+    if (view === 'knowledge') {
+      fetchKnowledgeData();
+    }
+  }, [view]);
+
   const [showHistory, setShowHistory] = useState(false);
   const [newSkillPrompt, setNewSkillPrompt] = useState('');
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
@@ -3206,8 +3242,32 @@ export default function DevEngine() {
                                   </div>
                                 </div>
                               ) : (
-                                <div className="p-3 bg-black/40 rounded-xl border border-zinc-900 font-mono text-xs text-zinc-300 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar">
-                                  {prop.proposedContent || '(Direct deletion request)'}
+                                <div className="space-y-3">
+                                  {prop.actionType === 'UPDATE' && prop.targetNodeId && (
+                                    <div className="p-3 bg-zinc-950/40 rounded-xl border border-zinc-900 font-mono text-xs text-zinc-400">
+                                      <span className="text-[9px] text-zinc-500 font-mono uppercase block mb-1">Original Active Memory:</span>
+                                      {(() => {
+                                        const targetNode = knowledgeNodes.find(node => node.id === prop.targetNodeId);
+                                        return targetNode ? targetNode.content : '(Memory not found)';
+                                      })()}
+                                    </div>
+                                  )}
+                                  <div className={cn(
+                                    "p-3 rounded-xl border font-mono text-xs text-zinc-300 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar",
+                                    prop.actionType === 'DELETE' ? "bg-red-950/15 border-red-900/25 text-red-200" : "bg-black/40 border-zinc-900"
+                                  )}>
+                                    {prop.actionType === 'DELETE' ? (
+                                      <>
+                                        <span className="text-[9px] text-red-400 font-mono uppercase block mb-1">Target Active Memory to Delete:</span>
+                                        {(() => {
+                                          const targetNode = knowledgeNodes.find(node => node.id === prop.targetNodeId);
+                                          return targetNode ? targetNode.content : '(Memory content not active/already deleted)';
+                                        })()}
+                                      </>
+                                    ) : (
+                                      prop.proposedContent || '(No content proposed)'
+                                    )}
+                                  </div>
                                 </div>
                               )}
                             </div>
@@ -4112,8 +4172,32 @@ export default function DevEngine() {
                                     </div>
                                   </div>
                                 ) : (
-                                  <div className="p-2 bg-black/30 rounded border border-zinc-900 font-mono text-[10px] text-zinc-300 break-words whitespace-pre-wrap max-h-[140px] overflow-y-auto">
-                                    {prop.proposedContent || '(Direct deletion request)'}
+                                  <div className="space-y-1.5">
+                                    {prop.actionType === 'UPDATE' && prop.targetNodeId && (
+                                      <div className="p-2 bg-[#0c0c0e] rounded border border-zinc-900 font-mono text-[9px] text-zinc-400">
+                                        <span className="text-[8px] text-zinc-500 font-mono uppercase block mb-0.5">Original Memory:</span>
+                                        {(() => {
+                                          const targetNode = knowledgeNodes.find(node => node.id === prop.targetNodeId);
+                                          return targetNode ? targetNode.content : '(Memory not found)';
+                                        })()}
+                                      </div>
+                                    )}
+                                    <div className={cn(
+                                      "p-2 rounded border font-mono text-[10px] text-zinc-300 break-words whitespace-pre-wrap max-h-[140px] overflow-y-auto",
+                                      prop.actionType === 'DELETE' ? "bg-red-950/10 border-red-900/20 text-red-200" : "bg-black/30 border-zinc-900"
+                                    )}>
+                                      {prop.actionType === 'DELETE' ? (
+                                        <>
+                                          <span className="text-[8px] text-red-400 font-mono uppercase block mb-0.5">Target Memory to Delete:</span>
+                                          {(() => {
+                                            const targetNode = knowledgeNodes.find(node => node.id === prop.targetNodeId);
+                                            return targetNode ? targetNode.content : '(Memory already deleted)';
+                                          })()}
+                                        </>
+                                      ) : (
+                                        prop.proposedContent || '(No content proposed)'
+                                      )}
+                                    </div>
                                   </div>
                                 )}
                               </div>
@@ -4389,6 +4473,43 @@ export default function DevEngine() {
         )}
 
       </AnimatePresence>
+
+      {/* Floating System & Neural Activity Notifications */}
+      <div className="fixed top-6 right-6 z-[210] flex flex-col gap-3 max-w-sm pointer-events-none">
+        {notifications.map((notif) => (
+          <div
+            key={notif.id}
+            className={cn(
+              "p-4 rounded-xl shadow-lg border flex gap-3 items-start pointer-events-auto transition-all duration-300",
+              notif.type === 'success' && "bg-emerald-950/90 border-emerald-500/20 text-emerald-200 shadow-[0_0_15px_rgba(16,185,129,0.1)]",
+              notif.type === 'error' && "bg-red-955/90 border-red-500/20 text-red-200 shadow-[0_0_15px_rgba(239,68,68,0.1)]",
+              notif.type === 'warning' && "bg-amber-955/90 border-amber-500/20 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.1)]",
+              notif.type === 'info' && "bg-zinc-950/95 border-cyan-500/35 text-zinc-100 shadow-[0_0_20px_rgba(6,182,212,0.15)]"
+            )}
+          >
+            <div className="flex-1 text-xs font-sans">
+              <div className="font-semibold text-[9px] uppercase tracking-widest mb-1.5 opacity-80 flex justify-between items-center gap-4">
+                <span className={cn(
+                  notif.type === 'info' && "text-cyan-400 font-mono",
+                  notif.type === 'success' && "text-emerald-400 font-mono",
+                  notif.type === 'error' && "text-red-400 font-mono",
+                  notif.type === 'warning' && "text-amber-400 font-mono"
+                )}>
+                  {notif.type === 'info' ? '✦ NEURAL SYNC MEMORY' : '■ SYSTEM MEMORY UPDATE'}
+                </span>
+                <span className="text-[8px] font-mono text-zinc-500">{notif.timestamp.toLocaleTimeString()}</span>
+              </div>
+              <p className="font-mono text-[10px] leading-relaxed break-words">{notif.message}</p>
+            </div>
+            <button 
+              onClick={() => setNotifications(prev => prev.filter(n => n.id !== notif.id))}
+              className="text-zinc-500 hover:text-zinc-300 transition-colors pointer-events-auto text-xs ml-1"
+            >
+              &times;
+            </button>
+          </div>
+        ))}
+      </div>
 
       {/* Global Validation Toast */}
       <AnimatePresence>

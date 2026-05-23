@@ -866,6 +866,16 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         const data = await res.json();
                         const responsePayload = { status: "success", proposalId: data.id, message: `Proposal logged. Waiting for user approval.` };
                         
+                        // Dispatch custom event for real-time notification
+                        window.dispatchEvent(new CustomEvent('knowledge-interaction', {
+                          detail: {
+                            action: 'propose',
+                            source: 'model',
+                            message: `DevGenie proposed a ${args.actionType} suggestion: "${args.proposedContent || 'Delete memory ' + (args.targetNodeId || '').slice(0, 8) + '...'}"`,
+                            timestamp: new Date()
+                          }
+                        }));
+
                         toolResponses.push({
                           functionResponse: {
                             name: call.name,
@@ -907,6 +917,16 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                           throw new Error(errData.error || 'Failed to query knowledge nodes');
                         }
                         const data = await res.json();
+                        
+                        // Dispatch custom event for real-time notification
+                        window.dispatchEvent(new CustomEvent('knowledge-interaction', {
+                          detail: {
+                            action: 'query',
+                            source: 'model',
+                            message: `DevGenie investigated semantic memory: "${args.query}"`,
+                            timestamp: new Date()
+                          }
+                        }));
                         
                         toolResponses.push({
                           functionResponse: {

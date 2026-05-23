@@ -198,7 +198,10 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
       
       const embedResponse = await ai.models.embedContent({
         model: 'gemini-embedding-2-preview',
-        contents: content
+        contents: content,
+        config: {
+          outputDimensionality: 768
+        }
       });
       
       const embeddingVector = embedResponse.embeddings?.[0]?.values;
@@ -244,7 +247,27 @@ apiRouter.post('/knowledge/proposals', async (req, res) => {
 
     res.json(proposal);
   } catch (e: any) {
-    res.status(500).json({ error: e.message });
+    console.error('ERROR in /api/knowledge/proposals:', e);
+    console.error('ERROR details:', {
+      name: e.name,
+      message: e.message,
+      detail: e.detail,
+      hint: e.hint,
+      code: e.code,
+      column: e.column,
+      constraint: e.constraint,
+      table: e.table,
+      severity: e.severity,
+      stack: e.stack
+    });
+    res.status(500).json({
+      error: e.message,
+      detail: e.detail,
+      hint: e.hint,
+      code: e.code,
+      constraint: e.constraint,
+      postgresError: e.internalQuery || e.originalError || e.cause || e
+    });
   }
 });
 
@@ -308,7 +331,10 @@ apiRouter.post('/knowledge/search', async (req, res) => {
     // Generate embedding for the query using the updated gemini-embedding-2-preview model
     const embedResponse = await ai.models.embedContent({
       model: 'gemini-embedding-2-preview',
-      contents: query
+      contents: query,
+      config: {
+        outputDimensionality: 768
+      }
     });
     
     const embeddingVector = embedResponse.embeddings?.[0]?.values;
@@ -490,7 +516,9 @@ apiRouter.put('/knowledge/:id', async (req, res) => {
       return res.status(400).json({ error: 'Content is required' });
     }
 
-    const [existingNode] = await db.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    const [existingNode] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    });
     if (!existingNode) {
       return res.status(404).json({ error: 'Knowledge node not found' });
     }
@@ -505,7 +533,10 @@ apiRouter.put('/knowledge/:id', async (req, res) => {
     
     const embedResponse = await ai.models.embedContent({
       model: 'gemini-embedding-2-preview',
-      contents: content
+      contents: content,
+      config: {
+        outputDimensionality: 768
+      }
     });
     
     const embeddingVector = embedResponse.embeddings?.[0]?.values;
@@ -513,12 +544,14 @@ apiRouter.put('/knowledge/:id', async (req, res) => {
       throw new Error('Failed to generate embedding');
     }
 
-    const [updatedNode] = await db.update(knowledgeNodes).set({
-      content,
-      nodeType: nodeType || existingNode.nodeType,
-      metadata: metadata || existingNode.metadata,
-      embedding: embeddingVector
-    }).where(eq(knowledgeNodes.id, req.params.id)).returning();
+    const [updatedNode] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.update(knowledgeNodes).set({
+        content,
+        nodeType: nodeType || existingNode.nodeType,
+        metadata: metadata || existingNode.metadata,
+        embedding: embeddingVector
+      }).where(eq(knowledgeNodes.id, req.params.id)).returning();
+    });
 
     res.json(updatedNode);
   } catch (e: any) {
@@ -549,12 +582,16 @@ apiRouter.delete('/knowledge/:id', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Only administrators can delete knowledge nodes directly.' });
     }
 
-    const [existingNode] = await db.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    const [existingNode] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    });
     if (!existingNode) {
       return res.status(404).json({ error: 'Knowledge node not found' });
     }
 
-    await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    await txWithUser(payload.id as string, async (tx) => {
+      await tx.delete(knowledgeNodes).where(eq(knowledgeNodes.id, req.params.id));
+    });
 
     res.json({ message: 'Knowledge node deleted successfully' });
   } catch (e: any) {
@@ -577,7 +614,9 @@ apiRouter.get('/knowledge/proposals', async (req, res) => {
     }
 
     const { knowledgeProposals } = await import('./db/schema.js');
-    const proposals = await db.select().from(knowledgeProposals);
+    const proposals = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeProposals);
+    });
     
     res.json(proposals);
   } catch (e: any) {
@@ -599,10 +638,12 @@ apiRouter.put('/knowledge/proposals/:id', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-        const { proposedContent, reason, status } = req.body;
+    const { proposedContent, reason, status } = req.body;
     const { users, knowledgeProposals } = await import('./db/schema.js');
 
-    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    const [proposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    });
     if (!proposal) {
       return res.status(404).json({ error: 'Proposal not found' });
     }
@@ -615,11 +656,13 @@ apiRouter.put('/knowledge/proposals/:id', async (req, res) => {
       return res.status(403).json({ error: 'Unauthorized to modify this proposal' });
     }
 
-    const [updated] = await db.update(knowledgeProposals).set({
-      proposedContent: proposedContent !== undefined ? proposedContent : proposal.proposedContent,
-      reason: reason !== undefined ? reason : proposal.reason,
-      status: status !== undefined ? status : proposal.status
-    }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+    const [updated] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.update(knowledgeProposals).set({
+        proposedContent: proposedContent !== undefined ? proposedContent : proposal.proposedContent,
+        reason: reason !== undefined ? reason : proposal.reason,
+        status: status !== undefined ? status : proposal.status
+      }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+    });
 
     res.json(updated);
   } catch (e: any) {
@@ -650,7 +693,9 @@ apiRouter.post('/knowledge/proposals/:id/approve', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Only administrators can approve proposals.' });
     }
 
-    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    const [proposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    });
     if (!proposal) {
       return res.status(404).json({ error: 'Proposal not found' });
     }
@@ -675,7 +720,10 @@ apiRouter.post('/knowledge/proposals/:id/approve', async (req, res) => {
       
       const embedResponse = await ai.models.embedContent({
         model: 'gemini-embedding-2-preview',
-        contents: content
+        contents: content,
+        config: {
+          outputDimensionality: 768
+        }
       });
       
       const embeddingVector = embedResponse.embeddings?.[0]?.values;
@@ -683,48 +731,59 @@ apiRouter.post('/knowledge/proposals/:id/approve', async (req, res) => {
         throw new Error('Failed to generate embedding');
       }
 
-      if (proposal.actionType === 'INSERT') {
-        const [insertedNode] = await db.insert(knowledgeNodes).values({
-          content: content,
-          nodeType: 'web_data', // fallback default
-          embedding: embeddingVector,
-          metadata: { reason: proposal.reason }
-        }).returning();
+      const updatedProposal = await txWithUser(payload.id as string, async (tx) => {
+        if (proposal.actionType === 'INSERT') {
+          const [insertedNode] = await tx.insert(knowledgeNodes).values({
+            content: content,
+            nodeType: 'web_data', // fallback default
+            embedding: embeddingVector,
+            metadata: { reason: proposal.reason }
+          }).returning();
 
-        await db.update(knowledgeProposals).set({
-          status: 'APPROVED',
-          targetNodeId: insertedNode.id
-        }).where(eq(knowledgeProposals.id, req.params.id));
+          await tx.update(knowledgeProposals).set({
+            status: 'APPROVED',
+            targetNodeId: insertedNode.id
+          }).where(eq(knowledgeProposals.id, req.params.id));
 
-      } else if (proposal.actionType === 'UPDATE') {
-        if (!proposal.targetNodeId) {
-          return res.status(400).json({ error: 'Update proposal is missing targetNodeId' });
+        } else if (proposal.actionType === 'UPDATE') {
+          if (!proposal.targetNodeId) {
+            throw new Error('Update proposal is missing targetNodeId');
+          }
+
+          await tx.update(knowledgeNodes).set({
+            content: content,
+            embedding: embeddingVector
+          }).where(eq(knowledgeNodes.id, proposal.targetNodeId));
+
+          await tx.update(knowledgeProposals).set({
+            status: 'APPROVED'
+          }).where(eq(knowledgeProposals.id, req.params.id));
         }
 
-        await db.update(knowledgeNodes).set({
-          content: content,
-          embedding: embeddingVector
-        }).where(eq(knowledgeNodes.id, proposal.targetNodeId));
+        const [finalProposal] = await tx.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+        return finalProposal;
+      });
 
-        await db.update(knowledgeProposals).set({
-          status: 'APPROVED'
-        }).where(eq(knowledgeProposals.id, req.params.id));
-      }
+      res.json(updatedProposal);
 
     } else if (proposal.actionType === 'DELETE') {
       if (!proposal.targetNodeId) {
         return res.status(400).json({ error: 'Delete proposal is missing targetNodeId' });
       }
 
-      await db.delete(knowledgeNodes).where(eq(knowledgeNodes.id, proposal.targetNodeId));
+      const updatedProposal = await txWithUser(payload.id as string, async (tx) => {
+        await tx.delete(knowledgeNodes).where(eq(knowledgeNodes.id, proposal.targetNodeId));
 
-      await db.update(knowledgeProposals).set({
-        status: 'APPROVED'
-      }).where(eq(knowledgeProposals.id, req.params.id));
+        await tx.update(knowledgeProposals).set({
+          status: 'APPROVED'
+        }).where(eq(knowledgeProposals.id, req.params.id));
+
+        const [finalProposal] = await tx.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+        return finalProposal;
+      });
+
+      res.json(updatedProposal);
     }
-
-    const [updatedProposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
-    res.json(updatedProposal);
   } catch (e: any) {
     res.status(500).json({ error: e.message });
   }
@@ -753,14 +812,18 @@ apiRouter.post('/knowledge/proposals/:id/reject', async (req, res) => {
       return res.status(403).json({ error: 'Forbidden: Only administrators can reject proposals.' });
     }
 
-    const [proposal] = await db.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    const [proposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.select().from(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    });
     if (!proposal) {
       return res.status(404).json({ error: 'Proposal not found' });
     }
 
-    const [updatedProposal] = await db.update(knowledgeProposals).set({
-      status: 'REJECTED'
-    }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+    const [updatedProposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.update(knowledgeProposals).set({
+        status: 'REJECTED'
+      }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+    });
 
     res.json(updatedProposal);
   } catch (e: any) {
