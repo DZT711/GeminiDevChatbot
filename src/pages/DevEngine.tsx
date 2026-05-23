@@ -185,6 +185,17 @@ export default function DevEngine() {
   const [autoScroll, setAutoScroll] = useState(true);
   const [showSkillSuggestions, setShowSkillSuggestions] = useState(true);
   
+  // Slash Commands Keyboard & Overlay States
+  const [isCommandListDismissed, setIsCommandListDismissed] = useState(false);
+  const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
+
+  useEffect(() => {
+    if (!input.startsWith('/')) {
+      setIsCommandListDismissed(false);
+      setSelectedCommandIndex(0);
+    }
+  }, [input]);
+  
   const toggleSkillSuggestions = () => {
     setShowSkillSuggestions(prev => !prev);
   };
@@ -214,6 +225,11 @@ export default function DevEngine() {
   const [editingNodeContent, setEditingNodeContent] = useState('');
   const [editingProposalId, setEditingProposalId] = useState<string | null>(null);
   const [editingProposalContent, setEditingProposalContent] = useState('');
+  
+  // Custom states for creating new memory proposals
+  const [newProposalContent, setNewProposalContent] = useState('');
+  const [newProposalReason, setNewProposalReason] = useState('');
+  const [isSubmittingProposal, setIsSubmittingProposal] = useState(false);
   
   // Floating Toast Notifications States
   const [notifications, setNotifications] = useState<{ id: string; message: string; type: 'info' | 'success' | 'warning' | 'error'; timestamp: Date }[]>([]);
@@ -271,8 +287,14 @@ export default function DevEngine() {
         fetchKnowledgeData();
       }
     };
+    const handleKnowledgeUpdate = () => fetchKnowledgeData();
+    
     window.addEventListener('knowledge-interaction', handleInteraction);
-    return () => window.removeEventListener('knowledge-interaction', handleInteraction);
+    window.addEventListener('knowledge_update_needed', handleKnowledgeUpdate);
+    return () => {
+      window.removeEventListener('knowledge-interaction', handleInteraction);
+      window.removeEventListener('knowledge_update_needed', handleKnowledgeUpdate);
+    };
   }, []);
 
   const handleApproveProposal = async (proposalId: string) => {
@@ -483,6 +505,46 @@ export default function DevEngine() {
       setKSearchError(err.message);
     } finally {
       setIsKSearching(false);
+    }
+  };
+
+  const handleCreateNewProposal = async () => {
+    if (!newProposalContent.trim()) {
+      addNotification('Please enter the content for your new knowledge record', 'warning');
+      return;
+    }
+    const token = localStorage.getItem('session');
+    if (!token) {
+      addNotification('Authentication session expired', 'error');
+      return;
+    }
+    setIsSubmittingProposal(true);
+    try {
+      const res = await fetch('/api/knowledge/proposals', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          actionType: 'INSERT',
+          proposedContent: newProposalContent,
+          reason: newProposalReason.trim() || 'Custom knowledge memory added from dashboard.'
+        })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        addNotification(errData.error || 'Failed to submit proposal', 'error');
+      } else {
+        addNotification('Proposed new model memory node successfully! Please find it in the list below to approve and commit it to index.', 'success');
+        setNewProposalContent('');
+        setNewProposalReason('');
+        fetchKnowledgeData();
+      }
+    } catch (err: any) {
+      addNotification('Error submitting proposal: ' + err.message, 'error');
+    } finally {
+      setIsSubmittingProposal(false);
     }
   };
   
@@ -1621,6 +1683,100 @@ export default function DevEngine() {
     setActiveSkillIds(prev => prev.filter(s => s !== id));
   };
 
+  interface CommandItem {
+    cmd: string;
+    syntax: string;
+    description: string;
+    icon: React.ReactNode;
+  }
+
+  const commandListItems: CommandItem[] = useMemo(() => [
+    {
+      cmd: '/rag',
+      syntax: '/rag <query>',
+      description: 'Trigger semantic vector retrieval of codebase memories.',
+      icon: <Database size={14} className="text-cyan-400" />
+    },
+    {
+      cmd: '/image',
+      syntax: '/image <prompt>',
+      description: 'Generate high-fidelity UI visual mockups or custom graphics.',
+      icon: <ImageIcon size={14} className="text-purple-400" />
+    },
+    {
+      cmd: '/video',
+      syntax: '/video <prompt>',
+      description: 'Generate standard high-performance video motion simulations.',
+      icon: <VideoIcon size={14} className="text-indigo-400" />
+    },
+    {
+      cmd: '/refine',
+      syntax: '/refine',
+      description: 'Polishes and optimizes current prompt using LLM logic.',
+      icon: <Sparkles size={14} className="text-amber-400" />
+    },
+    {
+      cmd: '/clear',
+      syntax: '/clear',
+      description: 'Clear active model state and start a fresh session context.',
+      icon: <RotateCcw size={14} className="text-rose-400" />
+    },
+    {
+      cmd: '/help',
+      syntax: '/help',
+      description: 'Display quick reference specifications and command listings.',
+      icon: <Info size={14} className="text-emerald-400" />
+    }
+  ], []);
+
+  const executeCommand = (cmd: string): void => {
+    if (cmd === '/rag') {
+      setInput('/rag ');
+    } else if (cmd === '/image') {
+      setInput('/image ');
+    } else if (cmd === '/video') {
+      setInput('/video ');
+    } else if (cmd === '/refine') {
+      handleEnhancePrompt();
+    } else if (cmd === '/clear') {
+      createNewSession();
+      setInput('');
+    } else if (cmd === '/help') {
+      setMessages(prev => [
+        ...prev, 
+        { 
+          id: `help-${Date.now()}`, 
+          role: 'model', 
+          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/image <prompt>\` — Invokes stable generation of developer-focused vector images.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`
+        }
+      ]);
+      setInput('');
+    }
+  };
+
+  const filteredCommands: CommandItem[] = useMemo(() => {
+    if (!input.startsWith('/')) return [];
+    const filterText = input.slice(1).trim().toLowerCase();
+    return commandListItems.filter(c => 
+      c.cmd.toLowerCase().includes('/' + filterText) || 
+      c.cmd.toLowerCase().includes(filterText) ||
+      c.description.toLowerCase().includes(filterText)
+    );
+  }, [input, commandListItems]);
+
+  const showCommands: boolean = useMemo(() => {
+    return input.startsWith('/') && !input.includes(' ') && filteredCommands.length > 0 && !isCommandListDismissed;
+  }, [input, filteredCommands, isCommandListDismissed]);
+
+  useEffect(() => {
+    if (showCommands) {
+      setSelectedCommandIndex(prev => {
+        if (prev >= filteredCommands.length) return 0;
+        return prev;
+      });
+    }
+  }, [showCommands, filteredCommands.length]);
+
   return (
     <div {...getRootProps()} className={cn(
       "flex h-screen text-[#e0e0e0] font-sans overflow-hidden transition-all duration-500",
@@ -2530,10 +2686,37 @@ export default function DevEngine() {
                           placeholder="Inject system commands..."
                           className={cn(
                             "bg-transparent w-full resize-none font-mono text-sm leading-relaxed outline-none custom-scrollbar px-2 py-1 relative z-10 transition-all",
-                            theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-800 text-zinc-200",
+                            theme === 'light' ? "placeholder:text-slate-300 text-slate-800" : "placeholder:text-zinc-850 text-zinc-200",
                             isInputMaximized ? "min-h-[50vh] max-h-[80vh]" : "min-h-[96px] max-h-64"
                           )}
                           onKeyDown={(e) => {
+                            if (showCommands) {
+                              if (e.key === 'ArrowDown') {
+                                e.preventDefault();
+                                setSelectedCommandIndex((prev) => (prev + 1) % filteredCommands.length);
+                                return;
+                              }
+                              if (e.key === 'ArrowUp') {
+                                e.preventDefault();
+                                setSelectedCommandIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+                                return;
+                              }
+                              if (e.key === 'Enter' || e.key === 'Tab') {
+                                e.preventDefault();
+                                const cmdItem = filteredCommands[selectedCommandIndex];
+                                if (cmdItem) {
+                                  executeCommand(cmdItem.cmd);
+                                  setIsCommandListDismissed(true);
+                                }
+                                return;
+                              }
+                              if (e.key === 'Escape') {
+                                e.preventDefault();
+                                setIsCommandListDismissed(true);
+                                return;
+                              }
+                            }
+
                             if (e.key === 'Tab' && autocompleteSuggestion) {
                               e.preventDefault();
                               setInput(input + autocompleteSuggestion);
@@ -2554,6 +2737,99 @@ export default function DevEngine() {
                               "text-[9px] font-sans px-1.5 py-0.5 rounded ml-1 border shrink-0",
                               theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-zinc-800 border-zinc-700 text-zinc-400"
                             )}>Tab</kbd>
+                          </div>
+                        )}
+
+                        {/* Beautiful Absolute Slash Command list picker portal overlay */}
+                        {showCommands && (
+                          <div 
+                            className={cn(
+                              "absolute bottom-full left-0 mb-3 w-full rounded-2xl border p-2.5 shadow-2xl z-50 animate-in fade-in slide-in-from-bottom-2 duration-150 backdrop-blur-xl",
+                              theme === 'light' 
+                                ? "bg-white/95 border-slate-200/90 text-slate-800 shadow-slate-200/65" 
+                                : "bg-[#0c0c0f]/95 border-zinc-800/90 text-zinc-250 shadow-black/95 animate-pulse-subtle"
+                            )}
+                          >
+                            <div className={cn(
+                              "flex items-center justify-between px-2 py-1.5 border-b mb-2",
+                              theme === 'light' ? "border-slate-100" : "border-zinc-800/40"
+                            )}>
+                              <div className="flex items-center gap-2">
+                                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.5)] animate-pulse" />
+                                <span className={cn(
+                                  "text-[10px] font-mono font-bold uppercase tracking-wider",
+                                  theme === 'light' ? "text-cyan-600" : "text-cyan-450"
+                                )}>
+                                  Neural Terminal Commands
+                                </span>
+                              </div>
+                              <span className="text-[9px] font-mono opacity-40">
+                                Press ↑ ↓ to navigate • Tab/Enter to inject
+                              </span>
+                            </div>
+                            <div className="space-y-0.5 max-h-56 overflow-y-auto custom-scrollbar">
+                              {filteredCommands.map((cmdItem, idx) => {
+                                const isSelected = idx === selectedCommandIndex;
+                                return (
+                                  <div
+                                    key={cmdItem.cmd}
+                                    onMouseDown={(e) => {
+                                      e.preventDefault(); // Prevents input blur during activation
+                                      executeCommand(cmdItem.cmd);
+                                      setIsCommandListDismissed(true);
+                                    }}
+                                    onMouseEnter={() => setSelectedCommandIndex(idx)}
+                                    className={cn(
+                                      "flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-100 border",
+                                      isSelected
+                                        ? (theme === 'light' 
+                                            ? "bg-slate-100/90 border-slate-200/50 text-slate-950 translate-x-1 shadow-sm" 
+                                            : "bg-[#22d3ee]/10 border-cyan-500/25 text-cyan-200 translate-x-1 shadow-[inset_0_1px_1px_rgba(255,255,255,0.05)]")
+                                        : (theme === 'light' 
+                                            ? "hover:bg-slate-50 border-transparent text-slate-600" 
+                                            : "hover:bg-white/5 border-transparent text-zinc-400")
+                                    )}
+                                  >
+                                    <div className="flex items-center gap-3 min-w-0">
+                                      <div className={cn(
+                                        "p-2 rounded-lg transition-colors flex items-center justify-center shrink-0",
+                                        isSelected 
+                                          ? "bg-cyan-500/20 text-cyan-400" 
+                                          : (theme === 'light' ? "bg-slate-100 text-slate-500" : "bg-zinc-900 border border-zinc-800/30 text-zinc-400")
+                                      )}>
+                                        {cmdItem.icon}
+                                      </div>
+                                      <div className="flex flex-col min-w-0 align-start text-left">
+                                        <span className={cn(
+                                          "text-xs font-mono font-bold tracking-tight",
+                                          isSelected ? "text-cyan-450" : (theme === 'light' ? "text-slate-900" : "text-zinc-200")
+                                        )}>
+                                          {cmdItem.syntax}
+                                        </span>
+                                        <span className={cn(
+                                          "text-[10px] mt-0.5 truncate transition-opacity",
+                                          isSelected ? "opacity-100 text-cyan-300" : "opacity-60 text-current"
+                                        )}>
+                                          {cmdItem.description}
+                                        </span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center shrink-0 ml-2">
+                                      {isSelected && (
+                                        <span className={cn(
+                                          "text-[9px] font-mono px-2 py-0.5 rounded border uppercase font-bold tracking-wider",
+                                          theme === 'light' 
+                                            ? "bg-white border-slate-300 text-slate-600" 
+                                            : "bg-zinc-850 border-zinc-700/50 text-zinc-400 shadow-inner"
+                                        )}>
+                                          Inject
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -3170,6 +3446,46 @@ export default function DevEngine() {
                         ))}
                       </div>
                     )}
+                  </div>
+
+                  {/* Propose New Memory Node block */}
+                  <div className={cn("p-6 rounded-2xl border space-y-4 shadow-sm", theme === 'light' ? "bg-slate-50 border-slate-200" : "bg-zinc-950/40 border-zinc-900")}>
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="text-emerald-500 animate-pulse" size={18} />
+                      <span className="text-xs font-bold uppercase tracking-wider text-emerald-400">Add / Propose New Memory Record</span>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-[10px] font-mono text-zinc-500 uppercase block mb-1 font-semibold">Knowledge Content</label>
+                        <textarea
+                          rows={4}
+                          value={newProposalContent}
+                          onChange={(e) => setNewProposalContent(e.target.value)}
+                          placeholder="Paste or type knowledge definition here. E.g., 'Free Model Provider Hugging Face Hub: Has a generous free tier for low-volume inference API. Run locally with transformers.js...'"
+                          className="w-full bg-black/40 border border-zinc-800 rounded-xl p-3 text-xs font-mono text-white outline-none focus:border-emerald-500 transition-colors placeholder:text-zinc-600"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="text-[10px] font-mono text-zinc-500 uppercase block mb-1 font-semibold">Proposal Reason / Justification (optional)</label>
+                        <input
+                          type="text"
+                          value={newProposalReason}
+                          onChange={(e) => setNewProposalReason(e.target.value)}
+                          placeholder="Why are you adding this? (e.g. Reference on free models)"
+                          className="w-full bg-black/40 border border-zinc-800 rounded-xl px-3 py-2 text-xs font-mono text-white outline-none focus:border-emerald-500 transition-colors"
+                        />
+                      </div>
+
+                      <button
+                        onClick={handleCreateNewProposal}
+                        disabled={isSubmittingProposal}
+                        className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition-all shadow-md uppercase tracking-wider"
+                      >
+                        {isSubmittingProposal ? 'Proposing...' : 'Submit New Memory Proposal'}
+                      </button>
+                    </div>
                   </div>
 
                   {/* Proposals Section */}
@@ -4100,6 +4416,41 @@ export default function DevEngine() {
                           ))}
                         </div>
                       )}
+                    </div>
+
+                    {/* Propose New Memory Node block (Settings Drawer version) */}
+                    <div className={cn("p-4 rounded-xl border space-y-3", theme === 'light' ? "bg-slate-50 border-slate-200" : "bg-black/30 border-zinc-800")}>
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Add / Propose New Memory Record</span>
+                      
+                      <div className="space-y-2">
+                        <div>
+                          <textarea
+                            rows={3}
+                            value={newProposalContent}
+                            onChange={(e) => setNewProposalContent(e.target.value)}
+                            placeholder="Type or paste knowledge description here..."
+                            className="w-full bg-black/40 border border-zinc-850 rounded-lg p-2.5 text-xs font-mono text-white outline-none focus:border-emerald-500 placeholder:text-zinc-650"
+                          />
+                        </div>
+
+                        <div>
+                          <input
+                            type="text"
+                            value={newProposalReason}
+                            onChange={(e) => setNewProposalReason(e.target.value)}
+                            placeholder="Justification reason (optional)..."
+                            className="w-full bg-black/40 border border-zinc-850 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-500"
+                          />
+                        </div>
+
+                        <button
+                          onClick={handleCreateNewProposal}
+                          disabled={isSubmittingProposal}
+                          className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-lg transition-all uppercase tracking-wide"
+                        >
+                          {isSubmittingProposal ? 'Proposing...' : 'Submit Memory Proposal'}
+                        </button>
+                      </div>
                     </div>
 
                     {/* Proposals Section */}

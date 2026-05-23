@@ -8,6 +8,7 @@ import path from 'path';
 import { db } from './db/index.js';
 import { users, accounts, userPreferences, apiKeys, customSkills, sessions, messages, modelInformation } from './db/schema.js';
 import { encryptKey, decryptKey } from './lib/encryption.js';
+import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from './agent/agent.config.js';
 
 export const apiRouter = express.Router();
 
@@ -362,6 +363,296 @@ apiRouter.post('/knowledge/search', async (req, res) => {
     res.json({ results });
   } catch (e: any) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Standalone classifier helper for routing logic
+async function determineRoutingStrategy(userQuery: string, apiKey: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {
+  try {
+    const { GoogleGenAI } = await import('@google/genai');
+    const aiInstance = new GoogleGenAI({ apiKey });
+    const systemPrompt = `You are an elite AI Router designed to analyze developer queries and routing them accurately to either RAG or DIRECT chat paths.
+Determine whether the user query is specific to this codebase/repository context, or if it is a general coding question/normal conversation.
+
+- Classify as 'USE_RAG' if the query explicitly or implicitly mentions project source code, file paths, structural logic, database schemas, or verified solutions previously stored in the database. E.g., queries asking about "how is the login structured", "where are user accounts stored", "show me schema.ts implementation", "how to build/start the app", "db connections", "RAG function logic".
+- Classify as 'DIRECT_CHAT' if it's a generic coding question (e.g., "how to write a for-loop in typescript", "explain closure in javascript"), general greeting, conversational filler, or a generic logical puzzle.
+
+You MUST follow these rules strictly:
+1. Return ONLY the string literal 'USE_RAG' or 'DIRECT_CHAT' in plain text.
+2. Absolutely NO markdown block (such as \`\`\`), no punctuation, and no conversational padding.
+3. Be highly decisive and favor 'USE_RAG' if there is any doubt or context clues pointing to the local repository files/structure.`;
+
+    const response = await aiInstance.models.generateContent({
+      model: CLASSIFICATION_MODEL,
+      contents: userQuery,
+      config: {
+        systemInstruction: systemPrompt,
+        temperature: 0.0,
+      }
+    });
+
+    const result = response.text?.trim() || 'DIRECT_CHAT';
+    console.log(`[AI Query Router] Query classified as: "${result}" for query: "${userQuery}"`);
+    if (result.includes('USE_RAG')) {
+      return 'USE_RAG';
+    }
+    return 'DIRECT_CHAT';
+  } catch (e) {
+    console.error('[AI Query Router] Failure executing classifier, fallback to DIRECT_CHAT', e);
+    return 'DIRECT_CHAT';
+  }
+}
+
+// POST /chat - Fully secure and automated AI router & chat pipeline
+apiRouter.post('/chat', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { prompt, history, model, activeSkillIds, useSearch, thinkingLevel, customKey, customInstructions } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    const userId = payload.id as string;
+    const apiKey = await resolveGoogleApiKey(userId, customKey);
+    if (!apiKey) {
+      return res.status(400).json({ error: 'API key not configured. Please add an API key in active settings.' });
+    }
+
+    // Set Server-Sent Events headers for high performance streaming
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    const sendEvent = (type: string, data: any) => {
+      res.write(`data: ${JSON.stringify({ type, data })}\n\n`);
+    };
+
+    // 1. Determine routing strategy
+    // Check if the prompt begins with "/RAG" command (case-insensitive) to force RAG
+    let routingStrategy: 'USE_RAG' | 'DIRECT_CHAT' = 'DIRECT_CHAT';
+    let cleanPrompt = prompt;
+    let isForcedRAG = false;
+
+    if (/^\/rag\s+/i.test(prompt)) {
+      routingStrategy = 'USE_RAG';
+      cleanPrompt = prompt.replace(/^\/rag\s+/i, '').trim();
+      isForcedRAG = true;
+      sendEvent('routing', { strategy: 'USE_RAG', forced: true, message: 'Forced memory indexing mode activated via /RAG command.' });
+    } else {
+      routingStrategy = await determineRoutingStrategy(cleanPrompt, apiKey);
+      sendEvent('routing', { strategy: routingStrategy, forced: false });
+    }
+
+    // 2. Conditional Branching Context Injection
+    let finalSystemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository.
+
+### CORE OPERATING RULES
+1. Strict Grounding: Analyze and formulate responses using the codebase context if provided.
+2. File Path References: State full file paths wherever pertinent.
+3. TypeScript Excellence: Ensure any code provided is valid, strictly typed TypeScript.
+
+Always provide runnable code blocks/examples with Markdown syntax.`;
+
+    if (customInstructions) {
+      finalSystemPrompt += `\n\nUser Custom Personalization:\n${customInstructions}`;
+    }
+
+    if (routingStrategy === 'USE_RAG') {
+      sendEvent('status', { message: 'Performing vector similarity search in repository context...' });
+      
+      const { GoogleGenAI } = await import('@google/genai');
+      const aiInstance = new GoogleGenAI({ apiKey });
+      
+      // Generate embedding using modern EMBEDDING_MODEL
+      const embedResponse = await aiInstance.models.embedContent({
+        model: EMBEDDING_MODEL,
+        contents: cleanPrompt,
+        config: {
+          outputDimensionality: 768
+        }
+      });
+      
+      const embeddingVector = embedResponse.embeddings?.[0]?.values;
+      if (embeddingVector) {
+        const { knowledgeNodes } = await import('./db/schema.js');
+        const { cosineDistance } = await import('drizzle-orm');
+        
+        const retrievedContexts = await txWithUser(userId, async (tx) => {
+          return await tx.select({
+            content: knowledgeNodes.content,
+            nodeType: knowledgeNodes.nodeType,
+            metadata: knowledgeNodes.metadata,
+            similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
+          })
+          .from(knowledgeNodes)
+          .orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector))
+          .limit(5);
+        });
+
+        if (retrievedContexts.length > 0) {
+          const formattedContext = retrievedContexts.map((node, i) => {
+            const pathInfo = (node.metadata as any)?.path || 'Unknown File';
+            return `[Node ${i + 1}] (${node.nodeType}) File: ${pathInfo}\nSimilarity: ${(1 - node.similarity).toFixed(4)}\nContent:\n${node.content}`;
+          }).join('\n\n---\n\n');
+
+          finalSystemPrompt += `\n\n### RETRIEVED REPOSITORY CONTEXT\nUse the following active codebase memory contexts to formulate your answer:\n\n${formattedContext}`;
+          sendEvent('status', { message: `Context retrieval completed. Loaded ${retrievedContexts.length} repository memory blocks.` });
+        } else {
+          sendEvent('status', { message: 'No codebase memory matched query context. Proceeding with standard instructions.' });
+        }
+      } else {
+        sendEvent('status', { message: 'Failed to generate search embeddings. Standard mode enabled.' });
+      }
+    }
+
+    // Convert history parts into the model input parts
+    const formattedContents = history.map((h: any, idx: number) => {
+      if (idx === history.length - 1 && h.role === 'user') {
+        const parts = h.parts.map((p: any) => {
+          if (p.text) return { text: cleanPrompt };
+          return p;
+        });
+        return { role: h.role, parts };
+      }
+      return h;
+    });
+
+    const { GoogleGenAI, Type } = await import('@google/genai');
+    const aiInstance = new GoogleGenAI({ apiKey });
+    
+    const proposeKnowledgeTool = {
+      functionDeclarations: [
+        {
+          name: 'proposeKnowledge',
+          description: 'Propose a new knowledge memory node to be indexed if the user shares important information that needs to be permanently stored and recalled in future conversions.',
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              content: {
+                type: Type.STRING,
+                description: 'The core knowledge content to store.'
+              },
+              reason: {
+                type: Type.STRING,
+                description: 'Why this knowledge should be remembered.'
+              }
+            },
+            required: ['content', 'reason']
+          }
+        }
+      ]
+    };
+
+    const chatModel = model || 'gemini-3.5-flash';
+    let responseStream;
+    let finalModelUsed = chatModel;
+
+    try {
+      responseStream = await aiInstance.models.generateContentStream({
+        model: finalModelUsed,
+        contents: formattedContents,
+        config: {
+          systemInstruction: finalSystemPrompt,
+          tools: [proposeKnowledgeTool],
+          thinkingConfig: (finalModelUsed.includes('thinking') || finalModelUsed === 'gemini-3.1-pro-preview') ? { 
+            thinkingLevel: thinkingLevel || 'LOW',
+            includeThoughts: true 
+          } : undefined,
+        }
+      });
+    } catch (streamError: any) {
+      const errorMsg = streamError.message || streamError.toString() || '';
+      const isQuotaExceeded = errorMsg.includes('429') || 
+                             errorMsg.includes('RESOURCE_EXHAUSTED') || 
+                             errorMsg.includes('Quota exceeded') ||
+                             errorMsg.includes('limit: 0');
+      
+      const isModelNotFound = errorMsg.includes('404') || 
+                             errorMsg.includes('not found') || 
+                             errorMsg.includes('not supported') ||
+                             errorMsg.includes('not be found');
+
+      if ((isQuotaExceeded || isModelNotFound) && finalModelUsed !== 'gemini-3.5-flash') {
+        console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error (${isQuotaExceeded ? 'Quota' : 'Not Found'}). Dynamic fallback to gemini-3.5-flash.`);
+        sendEvent('status', { 
+          message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance 'gemini-3.5-flash' to prevent interruption.` 
+        });
+        
+        finalModelUsed = 'gemini-3.5-flash';
+        responseStream = await aiInstance.models.generateContentStream({
+          model: finalModelUsed,
+          contents: formattedContents,
+          config: {
+            systemInstruction: finalSystemPrompt,
+            tools: [proposeKnowledgeTool],
+          }
+        });
+      } else {
+        throw streamError;
+      }
+    }
+
+    let lastUsageMetadata: any = null;
+
+    for await (const chunk of responseStream) {
+      if (chunk.usageMetadata) {
+        lastUsageMetadata = chunk.usageMetadata;
+      }
+      
+      if (chunk.functionCalls) {
+        for (const fc of chunk.functionCalls) {
+          if (fc.name === 'proposeKnowledge') {
+            const { content, reason } = fc.args as any;
+            try {
+              const { knowledgeProposals } = await import('./db/schema.js');
+              await txWithUser(payload.id as string, async (tx: any) => {
+                await tx.insert(knowledgeProposals).values({
+                  userId: payload.id as string,
+                  actionType: 'INSERT',
+                  proposedContent: content,
+                  reason: reason || 'AI Auto-Proposed',
+                  status: 'PENDING'
+                });
+              });
+              sendEvent('status', { 
+                message: `💡 AI auto-proposed a new knowledge memory! (Content length: ${content?.length || 0})` 
+              });
+              sendEvent('system_event', { type: 'knowledge_proposal_created' });
+            } catch (err) {
+              console.error('Failed to create AI knowledge proposal:', err);
+              sendEvent('status', { message: `⚠️ Output failed to propose knowledge memory.` });
+            }
+          }
+        }
+      }
+
+      if (chunk.text) {
+        sendEvent('text', chunk.text);
+      }
+    }
+
+    if (lastUsageMetadata) {
+      console.log('[AI Query Router] Response Metrics (usageMetadata):', lastUsageMetadata);
+      sendEvent('metadata', lastUsageMetadata);
+    }
+
+    res.write('event: end\ndata: {}\n\n');
+    res.end();
+  } catch (e: any) {
+    console.error('[AI Query Router ERROR]:', e);
+    res.write(`data: ${JSON.stringify({ type: 'error', data: e.message || 'An unexpected error occurred in backend chat pipeline.' })}\n\n`);
+    res.write('event: end\ndata: {}\n\n');
+    res.end();
   }
 });
 

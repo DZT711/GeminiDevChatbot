@@ -412,6 +412,103 @@ class GeminiService {
     const isGoogle = provider === Provider.GOOGLE;
 
     if (isGoogle) {
+      try {
+        const token = localStorage.getItem('session');
+        if (!token) {
+          throw new Error('Unauthenticated chat request. Please sign in to establish a session.');
+        }
+
+        const bodyPayload = {
+          prompt,
+          activeSkillIds,
+          history,
+          model: config.model || this.getCurrentModel(),
+          useSearch: config.useSearch,
+          thinkingLevel: config.thinkingLevel,
+          customKey: config.customKey,
+          customInstructions: config.customInstructions
+        };
+
+        const response = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify(bodyPayload)
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({ error: 'Failed to communicate with the secure AI chat routing server.' }));
+          throw new Error(errData.error || `HTTP error ${response.status}`);
+        }
+
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder();
+        let accumulatedText = "";
+
+        if (!reader) throw new Error("Response body is not readable");
+
+        while (true) {
+          if (config.signal?.aborted) {
+            reader.cancel();
+            throw new Error("Operation aborted");
+          }
+
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            if (trimmed.startsWith('data: ')) {
+              try {
+                const parsed = JSON.parse(trimmed.slice(6));
+                
+                if (parsed.type === 'routing') {
+                  const strat = parsed.data.strategy;
+                  const isForced = parsed.data.forced;
+                  console.log(`[AI Query Router] Response Routed: ${strat} (Forced: ${isForced})`);
+                  if (parsed.data.message) {
+                    onChunk?.(`*(System: ${parsed.data.message})*\n\n`);
+                  }
+                } else if (parsed.type === 'status') {
+                  onChunk?.(`*[System: ${parsed.data.message}]*\n\n`);
+                } else if (parsed.type === 'text') {
+                  accumulatedText += parsed.data;
+                  onChunk?.(accumulatedText);
+                } else if (parsed.type === 'metadata') {
+                  if (config.onTokenUpdate && parsed.data?.totalTokenCount) {
+                    config.onTokenUpdate(parsed.data.totalTokenCount);
+                  }
+                } else if (parsed.type === 'system_event') {
+                  if (parsed.data && parsed.data.type === 'knowledge_proposal_created') {
+                    window.dispatchEvent(new CustomEvent('knowledge_update_needed'));
+                  }
+                } else if (parsed.type === 'error') {
+                  throw new Error(parsed.data);
+                }
+              } catch (e: any) {
+                if (e.message && (e.message.includes('Unmatched') || e.message.includes('Unexpected check') || e.message.includes('Unexpected end of JSON'))) {
+                  console.warn("SSE JSON chunk parsing incomplete", e);
+                } else {
+                  throw e;
+                }
+              }
+            }
+          }
+        }
+
+        return accumulatedText;
+      } catch (error: any) {
+        if (error.message === "Operation aborted") throw error;
+        throw error;
+      }
+
       const ai = this.getAI(config.customKey);
       const allSkills = [...DEFAULT_SKILLS, ...customSkills];
       const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
