@@ -57,6 +57,7 @@ export interface ChatSession {
   title: string;
   messages: Message[];
   updatedAt: number;
+  pinned?: boolean;
 }
 
 export interface Attachment {
@@ -531,6 +532,7 @@ class GeminiService {
 - Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
 - Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
 - Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+- Always provide full, runnable code blocks where applicable. Use Markdown for formatting. If you provide a full, runnable code block (like a complete React app or HTML file) that is meant to be rendered and previewed visually, append \`preview\` to the markdown language tag (e.g., \\\`\\\`\\\`tsx preview). Do NOT use the \`preview\` tag for partial snippets or utility files.
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
 - If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
@@ -1185,6 +1187,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 - Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
 - Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
 - Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+- Always provide full, runnable code blocks where applicable. Use Markdown for formatting. If you provide a full, runnable code block (like a complete React app or HTML file) that is meant to be rendered and previewed visually, append \`preview\` to the markdown language tag (e.g., \\\`\\\`\\\`tsx preview). Do NOT use the \`preview\` tag for partial snippets or utility files.
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
 - If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.

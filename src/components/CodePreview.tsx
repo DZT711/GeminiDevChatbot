@@ -15,9 +15,10 @@ interface CodePreviewProps {
   code: string;
   language: string;
   isLatest?: boolean;
+  defaultShowPreview?: boolean;
 }
 
-export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLatest = false }) => {
+export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLatest = false, defaultShowPreview = false }) => {
   const normalizedLang = language.toLowerCase();
 
   const isWeb = ['html', 'css', 'javascript', 'js'].includes(normalizedLang);
@@ -27,7 +28,7 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   
   const isPreviewable = isWeb || isReact || isMermaid || isSVG;
   
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && isLatest ? 'preview' : 'code');
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG) ? 'preview' : 'code');
   const [copied, setCopied] = useState(false);
   const mermaidRef = useRef<HTMLDivElement>(null);
 

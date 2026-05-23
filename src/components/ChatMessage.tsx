@@ -207,6 +207,7 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
     pre: ({ children }: any) => {
       let codeString = '';
       let language = 'text';
+      let meta = '';
 
       if (React.isValidElement(children)) {
         const props = children.props as any;
@@ -221,13 +222,16 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
         if (match) {
           language = match[1];
         }
+
+        meta = props.node?.data?.meta || typeof props.meta === 'string' ? props.meta : '';
       }
 
       codeString = codeString.replace(/\n$/, '');
 
       // Use CodePreview for actual code languages, or multi-line text, or long text
       if (codeString && (language !== 'text' || codeString.includes('\n') || codeString.length > 60)) {
-        return <CodePreview code={codeString} language={language} isLatest={isLatest} />;
+        const defaultShowPreview = typeof meta === 'string' && meta.includes('preview');
+        return <CodePreview code={codeString} language={language} isLatest={isLatest} defaultShowPreview={defaultShowPreview} />;
       }
       
       // Fallback for short, single-line text blocks that the model mistakenly outputted with triple backticks

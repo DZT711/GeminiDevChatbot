@@ -50,7 +50,10 @@ import {
   Minimize2,
   Coffee,
   Braces,
-  Binary
+  Binary,
+  Pin,
+  Edit2,
+  Check
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
@@ -135,6 +138,10 @@ export default function DevEngine() {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
   const [activeKeyId, setActiveKeyId] = useState<string>('');
   
+  // Session Edit States
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingSessionTitle, setEditingSessionTitle] = useState('');
+  
   // Model Queue Sync
   useEffect(() => {
     const activeKey = apiKeys.find(k => k.id === activeKeyId);
@@ -212,9 +219,10 @@ export default function DevEngine() {
   const [newKeyProvider, setNewKeyProvider] = useState<Provider>(Provider.GOOGLE);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [showSettings, setShowSettings] = useState(false);
-  const [settingsTab, setSettingsTab] = useState<'profile' | 'keys' | 'context' | 'theme' | 'performance' | 'knowledge'>('keys');
+  const [settingsTab, setSettingsTab] = useState<'general' | 'profile' | 'keys' | 'context' | 'theme' | 'performance' | 'knowledge'>('keys');
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
   const [repoUrl, setRepoUrl] = useState('');
+  const [showInputBox, setShowInputBox] = useState(true);
 
   // Knowledge Base States
   const [knowledgeNodes, setKnowledgeNodes] = useState<{ id: string; content: string; nodeType: string; metadata: any; createdAt: string }[]>([]);
@@ -990,19 +998,26 @@ export default function DevEngine() {
     setView('chat');
   };
 
-  const saveCurrentSession = (updatedMessages: Message[], sessionId?: string) => {
+  const saveCurrentSession = (updatedMessages: Message[], sessionId?: string, forcedTitle?: string) => {
     if (updatedMessages.length === 0 || !updatedMessages[0]) return;
 
     const finalId = sessionId || currentSessionId || `session-${Date.now()}`;
-    const session: ChatSession = {
-      id: finalId,
-      title: updatedMessages[0].content?.slice(0, 30) + (updatedMessages[0].content?.length > 30 ? '...' : ''),
-      messages: updatedMessages,
-      updatedAt: Date.now()
-    };
+    const defaultTitle = updatedMessages[0].content?.slice(0, 30) + (updatedMessages[0].content?.length > 30 ? '...' : '');
 
     setSessions(prev => {
-      const idx = prev.findIndex(s => s.id === session.id);
+      const idx = prev.findIndex(s => s.id === finalId);
+      const existingSession = idx > -1 ? prev[idx] : null;
+      
+      const newTitle = forcedTitle || (existingSession ? existingSession.title : defaultTitle);
+
+      const session: ChatSession = {
+        id: finalId,
+        title: newTitle,
+        messages: updatedMessages,
+        updatedAt: Date.now(),
+        pinned: existingSession ? existingSession.pinned : false
+      };
+
       if (idx > -1) {
         const next = [...prev];
         next[idx] = session;
@@ -1018,6 +1033,26 @@ export default function DevEngine() {
     e.stopPropagation();
     setSessions(prev => prev.filter(s => s.id !== id));
     if (currentSessionId === id) createNewSession();
+  };
+
+  const handleTogglePinSession = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, pinned: !s.pinned } : s));
+  };
+
+  const handleStartEditingSession = (e: React.MouseEvent, id: string, currentTitle: string) => {
+    e.stopPropagation();
+    setEditingSessionId(id);
+    setEditingSessionTitle(currentTitle);
+  };
+
+  const handleSaveSessionTitle = (e: React.FormEvent | React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (editingSessionTitle.trim()) {
+      setSessions(prev => prev.map(s => s.id === id ? { ...s, title: editingSessionTitle.trim() } : s));
+    }
+    setEditingSessionId(null);
   };
 
   const handleCopyFullChat = async () => {
@@ -1291,6 +1326,95 @@ export default function DevEngine() {
       console.error("Failed to enhance prompt:", err);
     } finally {
       setIsEnhancingPrompt(false);
+    }
+  };
+
+  const handleSummarizeChat = async () => {
+    if (isLoading || messages.length === 0) return;
+    setIsLoading(true);
+
+    const sessionId = currentSessionId || `session-${Date.now()}`;
+    const userMessage: Message = { 
+      id: `msg-${Date.now()}`,
+      role: 'user', 
+      content: 'Summarize the interaction so far and assign a title to the session.',
+    };
+
+    const newMessages = [...messages, userMessage];
+    setMessages(newMessages);
+
+    try {
+      const assistantMessage: Message = { 
+        id: `msg-${Date.now() + 1}`,
+        role: 'model', 
+        content: '', 
+        modelName: `summarizer`
+      };
+      setMessages(prev => [...prev, assistantMessage]);
+
+      const history = newMessages
+        .filter(m => m && m.role && m.content)
+        .map(m => ({
+          role: m.role,
+          parts: [{ text: m.content }]
+        }));
+
+      // A simple specialized summarizing skill/prompt
+      const summarizeSkill = {
+        name: 'Chat Summarizer',
+        systemPrompt: 'You are a session summarizer. Give a very brief 3-sentence summary of the user interaction. Prefix the summary with "Session Summary: ". On a new line at the very end, output "TITLE: <a short 3-5 word title for the session>". Do not output anything else.'
+      };
+
+      await geminiService.generateResponse(
+        userMessage.content,
+        // Active skill ids
+        ['sys-summarizer'],
+        // Custom skills list (just inject our temporary one)
+        [...customSkills, { id: 'sys-summarizer', name: summarizeSkill.name, description: 'Summarizer', systemPrompt: summarizeSkill.systemPrompt, icon: 'FileText' }],
+        history,
+        {
+          model: currentModel,
+          customKey: activeKey?.key,
+          provider: activeKey?.provider,
+          thinkingLevel: currentModel === ModelId.PRO ? undefined : (thinkingMode !== 'none' ? thinkingMode as any : undefined)
+        },
+        (content) => {
+          setMessages(prev => {
+            const next = [...prev];
+            const msgIdx = next.findIndex(m => m.id === assistantMessage.id);
+            if (msgIdx > -1) {
+               next[msgIdx] = { ...next[msgIdx], content };
+            }
+            return next;
+          });
+        }
+      );
+
+      // Now extract the title and save the session
+      setMessages(prev => {
+         const nextMessages = [...prev];
+         const lastMsg = { ...nextMessages[nextMessages.length - 1] };
+         
+         let finalTitle = undefined;
+         if (lastMsg && lastMsg.role === 'model' && lastMsg.content.includes('TITLE:')) {
+             const parts = lastMsg.content.split('TITLE:');
+             finalTitle = parts[1].trim();
+             lastMsg.content = parts[0].trim();
+             nextMessages[nextMessages.length - 1] = lastMsg;
+         }
+         
+         setTimeout(() => saveCurrentSession(nextMessages, sessionId, finalTitle), 50);
+         return nextMessages;
+      });
+
+    } catch (err: any) {
+      setMessages(prev => [...prev, {
+        id: `msg-${Date.now() + 2}`,
+        role: 'model',
+        content: `**Summarizer Skill Failure:** ${err.message}`
+      }]);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -1777,6 +1901,73 @@ export default function DevEngine() {
     }
   }, [showCommands, filteredCommands.length]);
 
+  const renderSessionItem = (s: ChatSession) => {
+    const isEditing = editingSessionId === s.id;
+    return (
+      <div 
+        key={s.id}
+        onClick={() => {
+          if (!isEditing) loadSession(s);
+        }}
+        className={cn(
+          "group flex items-center justify-between p-2 rounded text-[10px] font-mono cursor-pointer transition-all border",
+          currentSessionId === s.id 
+            ? (theme === 'light' ? "bg-cyan-50 border-cyan-200 text-cyan-700 shadow-sm" : "bg-[#121216] border-[#222] text-zinc-200") 
+            : (theme === 'light' ? "text-slate-500 border-transparent hover:bg-slate-50 hover:border-slate-100" : "text-zinc-500 border-transparent hover:bg-zinc-900/50")
+        )}
+      >
+        {isEditing ? (
+          <form 
+            onSubmit={(e) => handleSaveSessionTitle(e, s.id)}
+            className="flex-1 flex items-center pr-2"
+          >
+            <input
+              type="text"
+              autoFocus
+              value={editingSessionTitle}
+              onChange={e => setEditingSessionTitle(e.target.value)}
+              onClick={e => e.stopPropagation()}
+              onBlur={(e) => handleSaveSessionTitle(e, s.id)}
+              className="flex-1 bg-transparent border-b border-cyan-500/50 outline-none text-zinc-200 px-1 placeholder-zinc-600"
+              placeholder="Title..."
+            />
+            <button
+              type="submit"
+              className="text-emerald-500 hover:text-emerald-400 p-1"
+            >
+              <Check size={10} />
+            </button>
+          </form>
+        ) : (
+          <span className="truncate flex-1" onDoubleClick={(e) => handleStartEditingSession(e, s.id, s.title)}>{s.title}</span>
+        )}
+
+        {!isEditing && (
+          <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all">
+            <button 
+              onClick={(e) => handleTogglePinSession(e, s.id)}
+              className={cn("hover:text-emerald-500 transition-all p-1", s.pinned ? "text-emerald-500 opacity-100" : "text-zinc-700")}
+            >
+              <Pin size={10} />
+            </button>
+            <button 
+              onClick={(e) => handleStartEditingSession(e, s.id, s.title)}
+              className="text-zinc-700 hover:text-cyan-500 transition-all p-1"
+            >
+              <Edit2 size={10} />
+            </button>
+            <button 
+              onClick={(e) => deleteSession(e, s.id)}
+              className="text-zinc-700 hover:text-red-500 transition-all p-1"
+            >
+              <Trash2 size={10} />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <div {...getRootProps()} className={cn(
       "flex h-screen text-[#e0e0e0] font-sans overflow-hidden transition-all duration-500",
@@ -1908,29 +2099,40 @@ export default function DevEngine() {
                   <h2 className="text-[10px] uppercase tracking-wider text-zinc-600 font-bold">Recent Pulses</h2>
                 </div>
                 <div className="space-y-1 max-h-[30vh] overflow-y-auto custom-scrollbar pr-2">
-                  {sessions.length === 0 && (
-                    <div className="text-[10px] text-zinc-700 italic px-2">No archived streams...</div>
-                  )}
-                  {sessions.map(s => (
-                      <div 
-                        key={s.id}
-                        onClick={() => loadSession(s)}
-                        className={cn(
-                          "group flex items-center justify-between p-2 rounded text-[10px] font-mono cursor-pointer transition-all border",
-                          currentSessionId === s.id 
-                            ? (theme === 'light' ? "bg-cyan-50 border-cyan-200 text-cyan-700 shadow-sm" : "bg-[#121216] border-[#222] text-zinc-200") 
-                            : (theme === 'light' ? "text-slate-500 border-transparent hover:bg-slate-50 hover:border-slate-100" : "text-zinc-500 border-transparent hover:bg-zinc-900/50")
+                  {(() => {
+                    const pinnedSessions = sessions.filter(s => s.pinned);
+                    const unpinnedSessions = sessions.filter(s => !s.pinned);
+
+                    return (
+                      <>
+                        {sessions.length === 0 && (
+                          <div className="text-[10px] text-zinc-700 italic px-2">No archived streams...</div>
                         )}
-                      >
-                      <span className="truncate flex-1">{s.title}</span>
-                      <button 
-                        onClick={(e) => deleteSession(e, s.id)}
-                        className="opacity-0 group-hover:opacity-100 text-zinc-700 hover:text-red-500 transition-all p-1"
-                      >
-                        <Trash2 size={10} />
-                      </button>
-                    </div>
-                  ))}
+                        
+                        {pinnedSessions.length > 0 && (
+                          <div className="mb-4">
+                            <h3 className="text-[9px] uppercase tracking-wider text-emerald-600/70 font-bold px-2 flex items-center gap-1 mb-1">
+                              <Pin size={8} /> Pinned
+                            </h3>
+                            <div className="space-y-1">
+                              {pinnedSessions.map(s => renderSessionItem(s))}
+                            </div>
+                          </div>
+                        )}
+                        
+                        {unpinnedSessions.length > 0 && (
+                          <div>
+                            {pinnedSessions.length > 0 && (
+                              <h3 className="text-[9px] uppercase tracking-wider text-zinc-600 font-bold px-2 mb-1">Recent</h3>
+                            )}
+                            <div className="space-y-1">
+                              {unpinnedSessions.map(s => renderSessionItem(s))}
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               </motion.div>
             )}
@@ -2131,60 +2333,11 @@ export default function DevEngine() {
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
                 
                 <button 
-                  onClick={() => setShowSettings(true)}
+                  onClick={() => { setSettingsTab('general'); setShowSettings(true); }}
                   className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-500 hover:text-white transition-all border border-transparent hover:border-zinc-800 active:scale-90"
                   title="System Settings"
                 >
                   <SettingsIcon size={16} />
-                </button>
-
-                <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
-
-                <button 
-                  onClick={() => setShowTransparency(true)}
-                  className="p-2 hover:bg-green-500/20 rounded-xl text-green-500 hover:text-green-400 transition-all border border-transparent hover:border-green-500/30 active:scale-90"
-                  title="Model Transparency Dashboard"
-                >
-                  <Shield size={16} />
-                </button>
-
-                <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
-                
-                <button 
-                  onClick={toggleSkillSuggestions}
-                  className={cn(
-                    "p-2 rounded-xl transition-all border outline-none active:scale-90 flex items-center gap-1.5",
-                    showSkillSuggestions 
-                      ? "bg-purple-500/10 text-purple-400 border-purple-500/20 shadow-[0_0_10px_rgba(168,85,247,0.1)]" 
-                      : "hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 border-transparent hover:border-zinc-800"
-                  )}
-                  title={showSkillSuggestions ? "Skill Suggestions ON" : "Skill Suggestions OFF"}
-                >
-                  <Sparkles size={14} className={cn("transition-transform", showSkillSuggestions ? "animate-pulse" : "")} />
-                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline-block">Skills Suggest</span>
-                </button>
-
-                <button 
-                  onClick={() => setAutoScroll(!autoScroll)}
-                  className={cn(
-                    "p-2 rounded-xl transition-all border outline-none active:scale-90 flex items-center gap-1.5",
-                    autoScroll 
-                      ? "bg-cyan-500/10 text-cyan-400 border-cyan-500/20 shadow-[0_0_10px_rgba(6,182,212,0.1)]" 
-                      : "hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 border-transparent hover:border-zinc-800"
-                  )}
-                  title={autoScroll ? "Auto-scroll ON" : "Auto-scroll OFF"}
-                >
-                  <ArrowDown size={14} className={cn("transition-transform", autoScroll ? "animate-bounce" : "")} />
-                  <span className="text-[10px] font-bold uppercase tracking-widest hidden sm:inline-block">Auto Scroll</span>
-                </button>
-
-                <button 
-                  onClick={handleCopyFullChat}
-                  disabled={messages.length === 0}
-                  className="p-2 hover:bg-zinc-800 rounded-xl text-zinc-500 hover:text-white transition-all border border-transparent hover:border-zinc-800 active:scale-90 disabled:opacity-30 disabled:cursor-not-allowed"
-                  title="Copy Full Transcript"
-                >
-                  <Copy size={16} />
                 </button>
 
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
@@ -2625,13 +2778,18 @@ export default function DevEngine() {
                       </div>
                     )}
 
-                    <form 
-                      onSubmit={handleSubmit} 
-                      className={cn(
-                        "flex items-end gap-3 p-1 rounded-2xl transition-all",
-                        theme === 'light' ? "bg-slate-50/50" : "bg-black/20"
-                      )}
-                    >
+                    <AnimatePresence>
+                      {showInputBox && (
+                        <motion.form 
+                          initial={{ opacity: 0, y: 20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 20 }}
+                          onSubmit={handleSubmit} 
+                          className={cn(
+                            "flex items-end gap-3 p-1 rounded-2xl transition-all",
+                            theme === 'light' ? "bg-slate-50/50" : "bg-black/20"
+                          )}
+                        >
                         <div className={cn(
                           "flex-1 rounded-2xl border transition-all p-2 relative shadow-inner",
                           theme === 'light' 
@@ -2841,7 +2999,9 @@ export default function DevEngine() {
                       >
                         <Terminal size={24} strokeWidth={2.5} className="group-hover/send:rotate-12 transition-transform" />
                       </button>
-                    </form>
+                        </motion.form>
+                      )}
+                    </AnimatePresence>
                   </div>
 
                   <AnimatePresence>
@@ -3916,7 +4076,7 @@ export default function DevEngine() {
                 "flex gap-8 border-b mb-8 overflow-x-auto",
                 theme === 'light' ? "border-slate-100" : "border-border-dim"
               )}>
-                {['profile', 'keys', 'context', 'theme'].map((tab) => (
+                {['general', 'profile', 'keys', 'context', 'theme'].map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setSettingsTab(tab as any)}
@@ -3933,6 +4093,120 @@ export default function DevEngine() {
               </div>
 
               <div className="space-y-6">
+                {settingsTab === 'general' && (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">General Configuration</label>
+                    </div>
+                    
+                    <div className="space-y-4">
+                      {/* Input Box Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">Show Chat Input Box</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">Toggle the visibility of the primary chat input area at the bottom.</p>
+                        </div>
+                        <button 
+                          onClick={() => setShowInputBox(prev => !prev)}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            showInputBox ? "bg-cyan-500" : "bg-zinc-700"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                            showInputBox ? "left-6" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      {/* Skills Suggest Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">Skill Suggestions</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">Automatically suggest relevant skills based on your chat context.</p>
+                        </div>
+                        <button 
+                          onClick={toggleSkillSuggestions}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            showSkillSuggestions ? "bg-purple-500" : "bg-zinc-700"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                            showSkillSuggestions ? "left-6" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      {/* Auto Scroll Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">Auto Scroll</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">Automatically scroll to the newest messages as they stream in.</p>
+                        </div>
+                        <button 
+                          onClick={() => setAutoScroll(prev => !prev)}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            autoScroll ? "bg-cyan-500" : "bg-zinc-700"
+                          )}
+                        >
+                          <div className={cn(
+                            "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                            autoScroll ? "left-6" : "left-1"
+                          )} />
+                        </button>
+                      </div>
+
+                      {/* Summarize Session */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2"><FileText size={14} /> Summarize Session</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">Generate a summary of the current chat and auto-title the session.</p>
+                        </div>
+                        <button 
+                          onClick={() => { setShowSettings(false); handleSummarizeChat(); }}
+                          disabled={messages.length === 0 || isLoading}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Summarize
+                        </button>
+                      </div>
+
+                      {/* Copy Full Transcript */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-cyan-400 flex items-center gap-2"><Copy size={14} /> Copy Transcript</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">Copy the full history of this chat session to your clipboard.</p>
+                        </div>
+                        <button 
+                          onClick={() => { handleCopyFullChat(); setShowSettings(false); }}
+                          disabled={messages.length === 0}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Copy
+                        </button>
+                      </div>
+
+                      {/* Transparency Dashboard */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2"><Shield size={14} /> Transparency Dashboard</p>
+                          <p className="text-[10px] text-zinc-500 mt-1">View system metrics, knowledge ingestion logs, and privacy boundaries.</p>
+                        </div>
+                        <button 
+                          onClick={() => { setShowSettings(false); setShowTransparency(true); }}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {settingsTab === 'profile' && (
                   <div className="space-y-6">
                     <div className="flex items-center justify-between">

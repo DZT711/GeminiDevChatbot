@@ -1299,6 +1299,7 @@ apiRouter.put('/user/state', async (req, res) => {
             id: s.id,
             userId,
             title: s.title || 'Chat Session',
+            pinned: s.pinned || false,
           });
           if (s.messages && Array.isArray(s.messages) && s.messages.length > 0) {
             const msgsToInsert = s.messages.map((m: any) => ({

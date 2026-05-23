@@ -1,0 +1,114 @@
+298-    
+299-    window.addEventListener('knowledge-interaction', handleInteraction);
+300-    window.addEventListener('knowledge_update_needed', handleKnowledgeUpdate);
+301:    return () => {
+--
+676-    window.addEventListener('error', handleGlobalError);
+677-    window.addEventListener('unhandledrejection', handleUnhandledRejection);
+678-
+679:    return () => {
+--
+756-        console.error("Failed to sync state", e);
+757-      }
+758-    }, 300); // Debounce
+759:    return () => clearTimeout(timer);
+--
+862-    const interval = setInterval(() => {
+863-      setMetrics(geminiService.getAllMetrics());
+864-    }, 2000);
+865:    return () => clearInterval(interval);
+--
+876-        setSuggestedSkills([]);
+877-      }
+878-    }, 100);
+879:    return () => clearTimeout(timer);
+--
+893-        if (isMounted) setAutocompleteSuggestion('');
+894-      }
+895-    }, 800);
+896:    return () => {
+--
+1804-    }
+1805-  }, [showCommands, filteredCommands.length]);
+1806-
+1807:  return (
+--
+1977-            </div>
+1978-            
+1979-            {geminiService.getCurrentQueue().map(model => {
+1980:              return (
+--
+2470-                          {[...DEFAULT_SKILLS, ...customSkills].map(skill => {
+2471-                            const Icon = ICON_MAP[skill.icon] || Code2;
+2472-                            const isActive = activeSkillIds.includes(skill.id);
+2473:                            return (
+--
+2613-                            .filter((s): s is Skill => !!s && !!s.model && s.model !== currentModel)
+2614-                            .map(skill => {
+2615-                              const targetModelName = modelCatalog.find(m => m.id === skill.model)?.name || skill.model?.split('/').pop();
+2616:                              return (
+--
+2673-                            {activeSkillIds.length > 0 ? (
+2674-                              activeSkillIds.slice(0, 3).map(id => {
+2675-                                const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
+2676:                                return (
+--
+2797-                            <div className="space-y-0.5 max-h-56 overflow-y-auto custom-scrollbar">
+2798-                              {filteredCommands.map((cmdItem, idx) => {
+2799-                                const isSelected = idx === selectedCommandIndex;
+2800:                                return (
+--
+3115-                {[...DEFAULT_SKILLS, ...customSkills].map((skill) => {
+3116-                  const Icon = ICON_MAP[skill.icon] || Code2;
+3117-                  const isActive = activeSkillIds.includes(skill.id);
+3118:                  return (
+--
+3247-                  }).map((model) => {
+3248-                    const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
+3249-                    const isActiveModel = activeModels.includes(model.id);
+3250:                    return (
+--
+3352-                  ) : (
+3353-                    Object.entries(metrics).map(([modelId, data]) => {
+3354-                      const isHealthy = data.errorRate < 10;
+3355:                      return (
+--
+3687-                              {(() => {
+3688-                                const pendingProp = knowledgeProposals.find(p => p.targetNodeId === node.id && p.status === 'PENDING');
+3689-                                if (pendingProp?.actionType === 'UPDATE') {
+3690:                                  return (
+--
+3693-                                    </span>
+3694-                                  );
+3695-                                } else if (pendingProp?.actionType === 'DELETE') {
+3696:                                  return (
+--
+3699-                                    </span>
+3700-                                  );
+3701-                                } else {
+3702:                                  return (
+--
+3803-                    } else if (log.includes("DIAGNOSTIC EVENT")) {
+3804-                      colorClass = "text-pink-400 font-extrabold bg-pink-500/5 px-2.5 py-1 rounded border border-pink-500/10";
+3805-                    }
+3806:                    return (
+--
+4272-                          </div>
+4273-                          <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
+4274-                            {(apiKeys.find(k => k.id === activeKeyId)?.models || []).map((modelId, idx) => {
+4275:                              return (
+--
+4651-                                  {(() => {
+4652-                                    const pendingProp = knowledgeProposals.find(p => p.targetNodeId === node.id && p.status === 'PENDING');
+4653-                                    if (pendingProp?.actionType === 'UPDATE') {
+4654:                                      return (
+--
+4657-                                        </span>
+4658-                                      );
+4659-                                    } else if (pendingProp?.actionType === 'DELETE') {
+4660:                                      return (
+--
+4663-                                        </span>
+4664-                                      );
+4665-                                    } else {
+4666:                                      return (
