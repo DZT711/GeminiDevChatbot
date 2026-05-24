@@ -291,8 +291,11 @@ class GeminiService {
         }
         try {
           console.log(`Connecting to Ollama via api/tags on ${url}...`);
-          const response = await fetch(`${url}/api/tags`, {
-            headers: { "Content-Type": "application/json" }
+          const token = localStorage.getItem('session');
+          const response = await fetch('/api/proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ url: `${url}/api/tags`, method: 'GET' })
           });
           if (!response.ok) {
             throw new Error(`Ollama returned status ${response.status}`);
@@ -307,8 +310,11 @@ class GeminiService {
           return { valid: true, models: models.length > 0 ? models : [{ id: 'llama3', displayName: 'llama3', description: 'Ollama model placeholder' }] };
         } catch (err: any) {
           console.warn(`Ollama api/tags failed, attempting v1/models fallback on ${url}:`, err);
-          const response = await fetch(`${url}/v1/models`, {
-            headers: { "Content-Type": "application/json" }
+          const token = localStorage.getItem('session');
+          const response = await fetch('/api/proxy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+            body: JSON.stringify({ url: `${url}/v1/models`, method: 'GET' })
           });
           if (!response.ok) {
             throw new Error(`Ollama fallback returned status ${response.status}`);
@@ -326,11 +332,18 @@ class GeminiService {
         const config = PROVIDER_CONFIGS[provider];
         if (!config?.baseUrl) throw new Error("Provider base URL not configured");
         
-        const response = await fetch(`${config.baseUrl}/models`, {
-          headers: {
-            "Authorization": `Bearer ${key}`,
-            "Content-Type": "application/json"
-          }
+        const token = localStorage.getItem('session');
+        const response = await fetch('/api/proxy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+          body: JSON.stringify({
+            url: `${config.baseUrl}/models`,
+            method: 'GET',
+            headers: {
+              "Authorization": `Bearer ${key}`,
+              "Content-Type": "application/json"
+            }
+          })
         });
 
         if (!response.ok) {
@@ -1203,7 +1216,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       
       messages.unshift({ role: 'system', content: systemPrompt });
 
-      let attempts = 0;
+          let attempts = 0;
       let startIndex = this.modelQueue.indexOf(config.model || this.getCurrentModel());
       if (startIndex === -1) startIndex = 0;
 
@@ -1232,13 +1245,20 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
             headers['Authorization'] = `Bearer ${apiKey}`;
           }
 
-          const response = await fetch(`${baseUrl}/chat/completions`, {
+          const token = localStorage.getItem('session');
+          const response = await fetch(`/api/proxy`, {
             method: 'POST',
-            headers,
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
             body: JSON.stringify({
-              model: model,
-              messages,
-              stream: true
+              url: `${baseUrl}/chat/completions`,
+              method: 'POST',
+              headers,
+              stream: true,
+              body: {
+                model: model,
+                messages,
+                stream: true
+              }
             }),
             signal: config.signal
           });

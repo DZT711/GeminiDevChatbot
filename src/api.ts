@@ -1142,6 +1142,66 @@ apiRouter.post('/auth/guest', async (req, res) => {
   }
 });
 
+// POST /proxy - General proxy to bypass CORS
+apiRouter.post('/proxy', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    // Quick verification
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET).catch(() => ({ payload: null }));
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { url, method = 'GET', headers = {}, body, stream } = req.body;
+    if (!url) {
+       return res.status(400).json({ error: 'Proxy URL is required' });
+    }
+
+    const fetchHeaders: any = { ...headers, 'ngrok-skip-browser-warning': 'true' };
+    const response = await fetch(url, {
+      method,
+      headers: fetchHeaders,
+      body: body ? JSON.stringify(body) : undefined
+    });
+
+    if (stream) {
+       res.setHeader('Content-Type', 'text/event-stream');
+       res.setHeader('Cache-Control', 'no-cache');
+       res.setHeader('Connection', 'keep-alive');
+       if (response.body) {
+         try {
+           for await (const chunk of response.body as any) {
+             res.write(Buffer.from(chunk));
+           }
+         } catch(e) {
+           console.error("Proxy streaming error:", e);
+         }
+       }
+       return res.end();
+    }
+
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch(e) {
+      data = text;
+    }
+
+    if (!response.ok) {
+      return res.status(response.status).json({ error: `Proxy returned ${response.status}`, data });
+    }
+    return res.json(data);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 apiRouter.get('/auth/me', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
