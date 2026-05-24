@@ -238,7 +238,7 @@ class GeminiService {
 
   setCustomQueue(models: string[]) {
     if (models.length > 0) {
-      this.modelQueue = models;
+      this.modelQueue = [...new Set(models)];
       this.currentModelIndex = 0;
     }
   }
@@ -284,82 +284,10 @@ class GeminiService {
           });
         }
         return { valid: true, models };
-      } else if (provider === Provider.OLLAMA) {
-        let url = key.trim();
-        if (url.endsWith('/')) {
-          url = url.slice(0, -1);
-        }
-        try {
-          console.log(`Connecting to Ollama via api/tags on ${url}...`);
-          const token = localStorage.getItem('session');
-          const response = await fetch('/api/proxy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ url: `${url}/api/tags`, method: 'GET' })
-          });
-          if (!response.ok) {
-            throw new Error(`Ollama returned status ${response.status}`);
-          }
-          const data = await response.json();
-          const models = (data.models || []).map((m: any) => ({
-            id: m.name,
-            displayName: m.name,
-            description: "Ollama Local Model",
-            supportedGenerationMethods: ["generateContent"]
-          }));
-          return { valid: true, models: models.length > 0 ? models : [{ id: 'llama3', displayName: 'llama3', description: 'Ollama model placeholder' }] };
-        } catch (err: any) {
-          console.warn(`Ollama api/tags failed, attempting v1/models fallback on ${url}:`, err);
-          const token = localStorage.getItem('session');
-          const response = await fetch('/api/proxy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({ url: `${url}/v1/models`, method: 'GET' })
-          });
-          if (!response.ok) {
-            throw new Error(`Ollama fallback returned status ${response.status}`);
-          }
-          const data = await response.json();
-          const models = (data.data || []).map((m: any) => ({
-            id: m.id,
-            displayName: m.id,
-            description: "Ollama Local Model",
-            supportedGenerationMethods: ["generateContent"]
-          }));
-          return { valid: true, models };
-        }
       } else {
-        const config = PROVIDER_CONFIGS[provider];
-        if (!config?.baseUrl) throw new Error("Provider base URL not configured");
-        
-        const token = localStorage.getItem('session');
-        const response = await fetch('/api/proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-          body: JSON.stringify({
-            url: `${config.baseUrl}/models`,
-            method: 'GET',
-            headers: {
-              "Authorization": `Bearer ${key}`,
-              "Content-Type": "application/json"
-            }
-          })
-        });
-
-        if (!response.ok) {
-          const err = await response.json().catch(() => ({ error: { message: "Failed to fetch models" } }));
-          throw new Error(err.error?.message || err.message || "Invalid API Key");
-        }
-
-        const data = await response.json();
-        const models = (data.data || []).map((m: any) => ({
-          id: m.id,
-          displayName: m.id,
-          description: `Node from ${config.name}`,
-          supportedGenerationMethods: ["generateContent"]
-        }));
-
-        return { valid: true, models };
+        const { getProvider } = await import('./providers');
+        const providerInstance = getProvider(provider);
+        return await providerInstance.checkKey(key);
       }
     } catch (error: any) {
       console.error(`${provider} Key Validation Error:`, error);
@@ -1160,28 +1088,14 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
       }
       throw new Error("All models limits reached.");
     } else {
-      // Non-Google Providers (OpenAI-compatible)
+      // Non-Google Providers via Registry
       const providerConfig = PROVIDER_CONFIGS[provider];
       const apiKey = config.customKey;
       
       if (!apiKey) {
         throw new Error(provider === Provider.OLLAMA ? "Ollama Service URL is required" : `API Key required for ${providerConfig.name}`);
       }
-
-      const messages = history.map(h => {
-        const content = h.parts.map(p => {
-          if (p.text) return p.text;
-          if (p.inlineData) return `[Binary Attachment: ${p.inlineData.mimeType}]`;
-          return "";
-        }).join('\n');
-        
-        return {
-          role: h.role === 'model' ? 'assistant' : 'user',
-          content: content
-        };
-      });
-
-      // Add system prompt for non-Google providers
+      
       let systemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository. You communicate directly with the project owner to review architecture, debug code, and implement features.
 
 ### TECH STACK PROFILE
@@ -1206,17 +1120,15 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 - If the user modifies code or if the retrieved vector nodes contradict the active conversation state, you MUST invoke \`proposeKnowledgeUpdate\`.
 - For additions (INSERT), the system immediately embeds and auto-commits the node directly into the active index without requiring approval. Inform the developer that the knowledge is active and live instantly!
 - For updates (UPDATE) or deletions (DELETE), the change is queued as a PENDING proposal needing administrator approval before taking effect. Inform the developer that a pending admin review proposal has been queued.`;
+      
       if (customSkills) {
          systemPrompt += ` ${[...DEFAULT_SKILLS, ...customSkills].filter(s => activeSkillIds.includes(s.id)).map(s => s.systemPrompt).join(' ')}`;
       }
-      
       if (config.customInstructions) {
         systemPrompt += `\n\nUser Custom Personalization/Instructions:\n${config.customInstructions}`;
       }
-      
-      messages.unshift({ role: 'system', content: systemPrompt });
 
-          let attempts = 0;
+      let attempts = 0;
       let startIndex = this.modelQueue.indexOf(config.model || this.getCurrentModel());
       if (startIndex === -1) startIndex = 0;
 
@@ -1227,75 +1139,16 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
         try {
           if (attempts > 0) config.onModelSwitch?.(model);
 
-          let baseUrl = providerConfig.baseUrl;
-          const headers: Record<string, string> = {
-            'Content-Type': 'application/json'
-          };
+          const { getProvider } = await import('./providers');
+          const providerInstance = getProvider(provider);
           
-          if (provider === Provider.OLLAMA) {
-            let cleanUrl = (apiKey || "http://localhost:11434").trim();
-            if (cleanUrl.endsWith('/')) {
-              cleanUrl = cleanUrl.slice(0, -1);
-            }
-            if (!cleanUrl.endsWith('/v1')) {
-              cleanUrl = `${cleanUrl}/v1`;
-            }
-            baseUrl = cleanUrl;
-          } else {
-            headers['Authorization'] = `Bearer ${apiKey}`;
-          }
-
-          const token = localStorage.getItem('session');
-          const response = await fetch(`/api/proxy`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-            body: JSON.stringify({
-              url: `${baseUrl}/chat/completions`,
-              method: 'POST',
-              headers,
-              stream: true,
-              body: {
-                model: model,
-                messages,
-                stream: true
-              }
-            }),
-            signal: config.signal
-          });
-
-          if (!response.ok) {
-            const err = await response.json().catch(() => ({ error: { message: "Request failed" } }));
-            throw new Error(err.error?.message || `HTTP error ${response.status}`);
-          }
-
-          const reader = response.body?.getReader();
-          const decoder = new TextDecoder();
-          let accumulatedText = "";
-
-          if (!reader) throw new Error("Response body is not readable");
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-
-            const chunk = decoder.decode(value, { stream: true });
-            const lines = chunk.split('\n').filter(line => line.trim() !== '');
-
-            for (const line of lines) {
-              if (line.includes('[DONE]')) break;
-              if (line.startsWith('data: ')) {
-                try {
-                  const data = JSON.parse(line.slice(6));
-                  const content = data.choices?.[0]?.delta?.content || "";
-                  accumulatedText += content;
-                  onChunk?.(accumulatedText);
-                } catch (e) {
-                  console.warn("Error parsing chunk", e);
-                }
-              }
-            }
-          }
-          return accumulatedText;
+          return await providerInstance.generateResponse(
+            prompt,
+            history,
+            systemPrompt,
+            { ...config, model },
+            onChunk as any
+          );
         } catch (error: any) {
           if (error.message === "Operation aborted") throw error;
               

@@ -1163,20 +1163,25 @@ apiRouter.post('/proxy', async (req, res) => {
     }
 
     const fetchHeaders: any = { ...headers, 'ngrok-skip-browser-warning': 'true' };
+    console.log(`[PROXY REQUEST] ${method} ${url}`, { hasBody: !!body, stream });
     const response = await fetch(url, {
       method,
       headers: fetchHeaders,
       body: body ? JSON.stringify(body) : undefined
     });
 
-    if (stream) {
+    if (stream && response.ok) {
+       res.status(response.status);
        res.setHeader('Content-Type', 'text/event-stream');
        res.setHeader('Cache-Control', 'no-cache');
        res.setHeader('Connection', 'keep-alive');
        if (response.body) {
          try {
-           for await (const chunk of response.body as any) {
-             res.write(Buffer.from(chunk));
+           const reader = response.body.getReader();
+           while (true) {
+             const { done, value } = await reader.read();
+             if (done) break;
+             res.write(value);
            }
          } catch(e) {
            console.error("Proxy streaming error:", e);
@@ -1194,10 +1199,13 @@ apiRouter.post('/proxy', async (req, res) => {
     }
 
     if (!response.ok) {
+      console.error(`[PROXY ERROR] ${method} ${url} returned ${response.status}`, data);
       return res.status(response.status).json({ error: `Proxy returned ${response.status}`, data });
     }
+    console.log(`[PROXY SUCCESS] ${method} ${url} -> ${response.status}`);
     return res.json(data);
   } catch (e: any) {
+    console.error(`[PROXY CATCH ERROR]`, e);
     res.status(500).json({ error: e.message });
   }
 });

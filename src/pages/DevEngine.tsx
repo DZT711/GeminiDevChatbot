@@ -181,6 +181,7 @@ export default function DevEngine() {
   const [modelSearch, setModelSearch] = useState('');
   const [catalogSearch, setCatalogSearch] = useState('');
   const [catalogFilter, setCatalogFilter] = useState('');
+  const [catalogPage, setCatalogPage] = useState(1);
   const [currentModel, setCurrentModel] = useState<string>(geminiService.getCurrentModel());
   const [modelCatalog, setModelCatalog] = useState<ModelInformation[]>([]);
   
@@ -2710,6 +2711,16 @@ export default function DevEngine() {
                         >
                           Configure Keys
                         </button>
+                        <button
+                          onClick={() => setApiKeyWarning(null)}
+                          className={cn(
+                            "p-1 rounded-lg transition-colors cursor-pointer",
+                            theme === 'light' ? "hover:bg-amber-200 text-amber-700" : "hover:bg-amber-500/20 text-amber-400"
+                          )}
+                          title="Dismiss warning"
+                        >
+                          <X size={14} />
+                        </button>
                       </div>
                     )}
 
@@ -3342,13 +3353,19 @@ export default function DevEngine() {
                       type="text" 
                       placeholder="Search models..." 
                       value={catalogSearch}
-                      onChange={e => setCatalogSearch(e.target.value)}
+                      onChange={e => {
+                        setCatalogSearch(e.target.value);
+                        setCatalogPage(1);
+                      }}
                       className="w-full bg-black/40 border border-zinc-800 rounded-xl pl-9 pr-4 py-2.5 text-xs text-white placeholder:text-zinc-600 focus:outline-none focus:border-cyan-500/50 font-mono transition-all"
                     />
                   </div>
                   <select 
                     value={catalogFilter} 
-                    onChange={e => setCatalogFilter(e.target.value)}
+                    onChange={e => {
+                      setCatalogFilter(e.target.value);
+                      setCatalogPage(1);
+                    }}
                     className="bg-black/40 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs text-zinc-300 focus:outline-none focus:border-cyan-500/50 font-mono appearance-none min-w-[120px] transition-all"
                     style={{ backgroundImage: `url('data:image/svg+xml;utf8,<svg fill="none" viewBox="0 0 24 24" stroke="gray"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>')`, backgroundRepeat: 'no-repeat', backgroundPositionX: 'calc(100% - 12px)', backgroundPositionY: 'center', backgroundSize: '12px' }}
                   >
@@ -3359,72 +3376,105 @@ export default function DevEngine() {
                   </select>
                 </div>
               </header>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-24">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pb-4">
                 {modelCatalog.length === 0 ? (
                   <div className="col-span-full text-zinc-500 text-xs text-center py-6 font-mono border border-dashed border-zinc-800 rounded-xl">Fetching latest models mapping... Please wait or refresh later.</div>
                 ) : (
-                  [...modelCatalog]
-                  .filter(m => {
-                    if (catalogFilter && m.provider !== catalogFilter) return false;
-                    if (catalogSearch && !m.name.toLowerCase().includes(catalogSearch.toLowerCase()) && !m.id.toLowerCase().includes(catalogSearch.toLowerCase())) return false;
-                    return true;
-                  })
-                  .sort((a, b) => {
-                    const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
-                    const aActive = activeModels.includes(a.id);
-                    const bActive = activeModels.includes(b.id);
-                    if (aActive && !bActive) return -1;
-                    if (!aActive && bActive) return 1;
-                    if (aActive && bActive) return activeModels.indexOf(a.id) - activeModels.indexOf(b.id);
-                    return 0;
-                  }).map((model) => {
-                    const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
-                    const isActiveModel = activeModels.includes(model.id);
+                  (() => {
+                    const filteredAndSorted = [...modelCatalog]
+                    .filter(m => {
+                      if (catalogFilter && m.provider !== catalogFilter) return false;
+                      if (catalogSearch && !m.name.toLowerCase().includes(catalogSearch.toLowerCase()) && !m.id.toLowerCase().includes(catalogSearch.toLowerCase())) return false;
+                      return true;
+                    })
+                    .sort((a, b) => {
+                      const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
+                      const aActive = activeModels.includes(a.id);
+                      const bActive = activeModels.includes(b.id);
+                      if (aActive && !bActive) return -1;
+                      if (!aActive && bActive) return 1;
+                      if (aActive && bActive) return activeModels.indexOf(a.id) - activeModels.indexOf(b.id);
+                      return 0;
+                    });
+                    
+                    const MODELS_PER_PAGE = 30;
+                    const totalPages = Math.ceil(filteredAndSorted.length / MODELS_PER_PAGE) || 1;
+                    const paginatedModels = filteredAndSorted.slice((catalogPage - 1) * MODELS_PER_PAGE, catalogPage * MODELS_PER_PAGE);
+
                     return (
-                      <div key={model.id} className={cn("p-5 bg-black/40 border rounded-2xl relative overflow-hidden flex flex-col gap-3 group transition-colors", isActiveModel ? "border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]" : "border-zinc-900 hover:border-cyan-500/30")}>
-                        <div className={cn("absolute top-0 right-0 w-32 h-32 rounded-full blur-[40px] pointer-events-none transition-colors", isActiveModel ? "bg-cyan-500/10" : "bg-cyan-500/5 group-hover:bg-cyan-500/10")} />
-                        <div className="flex items-start justify-between relative z-10">
-                          <div>
-                            <div className="flex items-center gap-2 mb-2">
-                              {isActiveModel && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse" />}
-                              <h3 className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors">{model.name}</h3>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded-md text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest hover:text-cyan-400 cursor-default">
-                                {model.provider}
-                              </span>
-                              {model.architecture && (
-                                <span className="text-[10px] text-zinc-500 font-mono tracking-tighter truncate max-w-[150px]">{model.architecture}</span>
+                      <>
+                        {paginatedModels.map((model) => {
+                          const activeModels = activeKeyId ? (apiKeys.find(k => k.id === activeKeyId)?.models || []) : geminiService.getCurrentQueue();
+                          const isActiveModel = activeModels.includes(model.id);
+                          return (
+                            <div key={`${model.provider}-${model.id}`} className={cn("p-5 bg-black/40 border rounded-2xl relative overflow-hidden flex flex-col gap-3 group transition-colors", isActiveModel ? "border-cyan-500/50 shadow-[0_0_15px_rgba(6,182,212,0.1)]" : "border-zinc-900 hover:border-cyan-500/30")}>
+                              <div className={cn("absolute top-0 right-0 w-32 h-32 rounded-full blur-[40px] pointer-events-none transition-colors", isActiveModel ? "bg-cyan-500/10" : "bg-cyan-500/5 group-hover:bg-cyan-500/10")} />
+                              <div className="flex items-start justify-between relative z-10">
+                                <div>
+                                  <div className="flex items-center gap-2 mb-2">
+                                    {isActiveModel && <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)] animate-pulse" />}
+                                    <h3 className="text-sm font-bold text-white group-hover:text-cyan-400 transition-colors">{model.name}</h3>
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-2 py-0.5 bg-zinc-900 border border-zinc-800 rounded-md text-[9px] font-mono font-bold text-zinc-400 uppercase tracking-widest hover:text-cyan-400 cursor-default">
+                                      {model.provider}
+                                    </span>
+                                    {model.architecture && (
+                                      <span className="text-[10px] text-zinc-500 font-mono tracking-tighter truncate max-w-[150px]">{model.architecture}</span>
+                                    )}
+                                  </div>
+                                </div>
+                                {model.contextLength && (
+                                  <div className="flex flex-col flex-end items-end text-right">
+                                    <span className="text-[14px] font-mono font-bold text-emerald-500">{Number(model.contextLength).toLocaleString()}</span>
+                                    <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">Max Context</span>
+                                  </div>
+                                )}
+                              </div>
+                              <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">{model.description}</p>
+                              {model.pricing && (
+                                <div className="flex gap-6 mt-2 pt-4 border-t border-white/5 relative z-10">
+                                  <div className="flex flex-col">
+                                    <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Prompt Cost</span>
+                                    <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                      ${Number(model.pricing.prompt || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-col">
+                                    <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Completion Cost</span>
+                                    <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
+                                      ${Number(model.pricing.completion || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
+                                    </span>
+                                  </div>
+                                </div>
                               )}
                             </div>
-                          </div>
-                          {model.contextLength && (
-                            <div className="flex flex-col flex-end items-end text-right">
-                              <span className="text-[14px] font-mono font-bold text-emerald-500">{Number(model.contextLength).toLocaleString()}</span>
-                              <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">Max Context</span>
-                            </div>
-                          )}
-                        </div>
-                        <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">{model.description}</p>
-                        {model.pricing && (
-                          <div className="flex gap-6 mt-2 pt-4 border-t border-white/5 relative z-10">
-                            <div className="flex flex-col">
-                              <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Prompt Cost</span>
-                              <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
-                                ${Number(model.pricing.prompt || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
-                              </span>
-                            </div>
-                            <div className="flex flex-col">
-                              <span className="text-[8px] uppercase tracking-widest font-mono text-zinc-600 text-left">Completion Cost</span>
-                              <span className="text-[11px] font-mono font-bold text-amber-500/90 text-left">
-                                ${Number(model.pricing.completion || 0) * 1000000} <span className="text-zinc-600 font-normal">/ 1M</span>
-                              </span>
-                            </div>
+                          );
+                        })}
+                        {totalPages > 1 && (
+                          <div className="col-span-full flex items-center justify-center gap-4 mt-8 pt-6 border-t border-zinc-900/50">
+                            <button
+                              onClick={() => setCatalogPage(Math.max(1, catalogPage - 1))}
+                              disabled={catalogPage === 1}
+                              className="px-4 py-2 border border-zinc-800 rounded-xl text-zinc-400 text-xs font-mono disabled:opacity-30 hover:border-cyan-500/50 hover:text-cyan-400 transition-all"
+                            >
+                              Previous
+                            </button>
+                            <span className="text-zinc-500 text-[10px] font-mono tracking-widest uppercase flex items-center gap-2">
+                              Page <span className="text-zinc-300 font-bold">{catalogPage}</span> of {totalPages}
+                            </span>
+                            <button
+                              onClick={() => setCatalogPage(Math.min(totalPages, catalogPage + 1))}
+                              disabled={catalogPage === totalPages}
+                              className="px-4 py-2 border border-zinc-800 rounded-xl text-zinc-400 text-xs font-mono disabled:opacity-30 hover:border-cyan-500/50 hover:text-cyan-400 transition-all"
+                            >
+                              Next
+                            </button>
                           </div>
                         )}
-                      </div>
+                      </>
                     );
-                  })
+                  })()
                 )}
               </div>
             </div>
