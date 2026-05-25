@@ -7,6 +7,10 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
+  app.get('/api/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
   app.use('/api', apiRouter);
 
   // Vite integration in development mode

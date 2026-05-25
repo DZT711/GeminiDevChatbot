@@ -12,7 +12,8 @@ import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from './agent/agent.config.js';
 
 export const apiRouter = express.Router();
 
-apiRouter.use(express.json());
+apiRouter.use(express.json({ limit: '50mb' }));
+apiRouter.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 apiRouter.get('/models/info', async (req, res) => {
   try {

@@ -24,7 +24,9 @@ export enum Provider {
   CEREBRAS = "cerebras",
   DEEPSEEK = "deepseek",
   MISTRAL = "mistral",
-  OLLAMA = "ollama"
+  OLLAMA = "ollama",
+  HUGGINGFACE = "huggingface",
+  GITHUB = "github"
 }
 
 export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, isGoogle?: boolean }> = {
@@ -40,6 +42,8 @@ export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, 
   [Provider.DEEPSEEK]: { name: "DeepSeek", baseUrl: "https://api.deepseek.com" },
   [Provider.MISTRAL]: { name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
   [Provider.OLLAMA]: { name: "Ollama (Local)" },
+  [Provider.HUGGINGFACE]: { name: "Hugging Face", baseUrl: "https://api-inference.huggingface.co/v1" },
+  [Provider.GITHUB]: { name: "GitHub Models", baseUrl: "https://models.inference.ai.azure.com" }
 };
 
 export interface Skill {
