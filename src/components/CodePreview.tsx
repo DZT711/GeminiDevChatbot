@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { SandpackProvider, SandpackPreview } from '@codesandbox/sandpack-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import mermaid from 'mermaid';
 import { cn } from '@/lib/utils';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -21,16 +23,53 @@ interface CodePreviewProps {
 export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLatest = false, defaultShowPreview = false }) => {
   const normalizedLang = language.toLowerCase();
 
-  const isWeb = ['html', 'css', 'javascript', 'js'].includes(normalizedLang);
-  const isReact = ['jsx', 'tsx', 'typescript', 'ts', 'react'].includes(normalizedLang);
+  const isHtmlCss = ['html', 'css'].includes(normalizedLang);
+  const isJs = ['javascript', 'js'].includes(normalizedLang);
+  const isTs = ['typescript', 'ts'].includes(normalizedLang);
+  const isReact = ['jsx', 'tsx', 'react'].includes(normalizedLang);
+  
+  // Try to smartly determine if JS/TS code is actually React
+  const codeImpliesReact = code.includes('import React') || code.includes('export default function App') || code.includes('from "react"') || code.includes('from \'react\'') || code.includes('useState') || code.includes('useEffect');
+  
+  const effectiveIsReact = isReact || ((isJs || isTs) && codeImpliesReact);
+  const effectiveIsJs = isJs && !effectiveIsReact;
+  const effectiveIsTs = isTs && !effectiveIsReact;
+
+  const isMarkdown = ['markdown', 'md'].includes(normalizedLang);
   const isMermaid = ['mermaid', 'uml', 'diagram'].includes(normalizedLang);
   const isSVG = normalizedLang === 'svg';
+  const isBackendE2B = ['python', 'py', 'c', 'cpp', 'c++', 'java', 'csharp', 'cs', 'bash', 'sh'].includes(normalizedLang);
   
-  const isPreviewable = isWeb || isReact || isMermaid || isSVG;
+  const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B;
   
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG) ? 'preview' : 'code');
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG || isMarkdown) ? 'preview' : 'code');
   const [copied, setCopied] = useState(false);
   const mermaidRef = useRef<HTMLDivElement>(null);
+
+  const [executionOutput, setExecutionOutput] = useState<string | null>(null);
+  const [isExecuting, setIsExecuting] = useState(false);
+
+  const runBackendCode = async () => {
+    setIsExecuting(true);
+    setExecutionOutput(">> Booting E2B VM...\n>> Running code securely...");
+    try {
+      const response = await fetch('/api/execute', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('session') || ''}`
+        },
+        body: JSON.stringify({ code, language: normalizedLang })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || 'Failed to execute');
+      setExecutionOutput(data.output);
+    } catch (e: any) {
+      setExecutionOutput(`Execution Error: ${e.message}`);
+    } finally {
+      setIsExecuting(false);
+    }
+  };
 
   const prevIsLatest = useRef(isLatest);
 
@@ -170,19 +209,52 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
           <div className="bg-[#121212] overflow-auto custom-scrollbar items-center justify-center min-h-[200px] w-full flex">
              {isMermaid && <div ref={mermaidRef} className="flex justify-center w-full bg-white/5 p-4" />}
              {isSVG && <div dangerouslySetInnerHTML={{ __html: debouncedCode }} className="flex justify-center w-full bg-white/5 p-4 rounded" />}
-             {(isWeb || isReact) && (
+             {isMarkdown && (
+               <div className="w-full relative z-0 p-6 bg-[#0d1117] text-[#c9d1d9] max-w-none overflow-y-auto">
+                 <div className="markdown-body font-sans prose prose-invert max-w-none">
+                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                     {debouncedCode}
+                   </ReactMarkdown>
+                 </div>
+               </div>
+             )}
+             {isBackendE2B && (
+               <div className="w-full flex flex-col p-4 bg-[#0d0d0d] min-h-[300px]">
+                 <div className="flex justify-between items-center mb-3">
+                   <div className="text-zinc-400 text-xs font-mono">Sandbox Execution Environment ({normalizedLang})</div>
+                   <button 
+                     onClick={runBackendCode} 
+                     disabled={isExecuting}
+                     className="px-4 py-1.5 bg-cyan-600/90 hover:bg-cyan-500 text-white text-xs font-bold rounded flex items-center gap-2 transition-colors disabled:opacity-50"
+                   >
+                     {isExecuting ? 'Running...' : 'Run Code'}
+                   </button>
+                 </div>
+                 <div className="flex-1 bg-black rounded p-4 font-mono text-xs overflow-auto custom-scrollbar border border-zinc-800 text-zinc-300 min-h-[250px] max-h-[500px] whitespace-pre-wrap">
+                   {executionOutput || "Click 'Run Code' to execute this snippet securely in a remote Sandbox VM."}
+                 </div>
+               </div>
+             )}
+             {(isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs) && (
                <div className="w-full relative z-0">
                  <SandpackProvider 
-                   template={isReact ? "react-ts" : normalizedLang === 'html' ? "static" : "vanilla"}
+                   template={
+                     effectiveIsReact ? (isTs || normalizedLang === 'tsx' ? "react-ts" : "react")
+                     : effectiveIsTs ? "vanilla-ts"
+                     : (effectiveIsJs || isHtmlCss) ? "vanilla"
+                     : "vanilla"
+                   }
                    theme="dark"
                    files={
-                     isReact 
-                       ? { "/App.tsx": debouncedCode }
-                       : normalizedLang === 'html' 
+                     effectiveIsReact 
+                       ? { [isTs || normalizedLang === 'tsx' ? "/App.tsx" : "/App.js"]: debouncedCode }
+                       : isHtmlCss && normalizedLang === 'html' 
                          ? { "/index.html": debouncedCode }
-                         : normalizedLang === 'css'
+                         : isHtmlCss && normalizedLang === 'css'
                            ? { "/styles.css": debouncedCode }
-                           : { "/index.js": debouncedCode }
+                           : effectiveIsTs
+                             ? { "/index.ts": debouncedCode }
+                             : { "/index.js": debouncedCode }
                    }
                  >
                    <SandpackPreview showNavigator={true} style={{ height: '500px' }} />

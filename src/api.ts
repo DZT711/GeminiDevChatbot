@@ -404,6 +404,74 @@ You MUST follow these rules strictly:
   }
 }
 
+// POST /execute - Runs arbitrary backend code via E2B sandbox
+apiRouter.post('/execute', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    // Quick verification
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET).catch(() => ({ payload: null }));
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { code, language } = req.body;
+    if (!code) {
+       return res.status(400).json({ error: 'Code is required' });
+    }
+
+    let e2bModule;
+    try {
+      e2bModule = await import('@e2b/code-interpreter');
+    } catch (e) {
+      return res.status(500).json({ error: `Error: Sandbox library missing. ${(e as Error).message}` });
+    }
+    
+    const apiKey = process.env.E2B_API_KEY;
+    if (!apiKey) return res.status(500).json({ error: "Error: E2B_API_KEY not configured." });
+
+    let sandbox;
+    let fullOutput = "";
+    
+    try {
+      sandbox = await e2bModule.Sandbox.create({ apiKey });
+      const execution = await sandbox.runCode(code, { 
+        language: language || 'javascript',
+        onStdout: (out: any) => {
+           const text = out.line || out.text || out.toString();
+           fullOutput += text;
+        },
+        onStderr: (out: any) => {
+           const text = out.line || out.text || out.toString();
+           fullOutput += text;
+        },
+        onResult: (resD: any) => {
+           const text = resD.text ? resD.text + "\n" : JSON.stringify(resD) + "\n";
+           fullOutput += text;
+        }
+      });
+      
+      if (execution.error) {
+         const errorText = `\nError: ${execution.error.name} - ${execution.error.value}\n${execution.error.traceback}\n`;
+         fullOutput += errorText;
+      }
+      
+      res.json({ output: fullOutput || "Code executed successfully with no console output." });
+    } catch (e: any) {
+      res.status(500).json({ error: `Sandbox execution error: ${e.message}` });
+    } finally {
+      if (sandbox) await sandbox.kill();
+    }
+
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /chat - Fully secure and automated AI router & chat pipeline
 apiRouter.post('/chat', async (req, res) => {
   try {
@@ -472,8 +540,8 @@ apiRouter.post('/chat', async (req, res) => {
 Always provide runnable code blocks/examples with Markdown syntax.`;
 
     if (isForcedSandbox) {
-      finalSystemPrompt += `\n\n### MANDATORY SANDBOX INSTRUCTION\nThe user has explicitly requested to run code in the sandbox for this query. You MUST use the \`execute_nodejs_code\` tool to write and execute the code to solve the user's prompt. After receiving the output, present the results clearly to the user.`;
-      cleanPrompt = `Please write and execute the code to solve this, using the execute_nodejs_code tool. Query: ${cleanPrompt}`;
+      finalSystemPrompt += `\n\n### MANDATORY SANDBOX INSTRUCTION\nThe user has explicitly requested to run code in the sandbox for this query. You MUST use the \`execute_code\` tool to write and execute the code to solve the user's prompt. After receiving the output, present the results clearly to the user.`;
+      cleanPrompt = `Please write and execute the code to solve this, using the execute_code tool. Query: ${cleanPrompt}`;
     }
 
     if (customInstructions) {
@@ -558,14 +626,15 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           }
         },
         {
-          name: "execute_nodejs_code",
-          description: "Execute Node.js code in a secure, ephemeral sandbox. Use this tool when you need to test code logic, execute data-processing algorithms, or verify math formulas before outputting the final response. Strip all markdown formatting like backticks from the 'code' parameter.",
+          name: "execute_code",
+          description: "Execute code in a secure, ephemeral sandbox. Use this tool when you need to test code logic, execute data-processing algorithms, or verify math formulas. Supports 'python', 'javascript', and 'bash' (shell). Strip all markdown formatting like backticks from the 'code' parameter.",
           parameters: {
             type: Type.OBJECT,
             properties: {
-              code: { type: Type.STRING, description: "Raw, executable JavaScript/Node.js syntax." }
+              code: { type: Type.STRING, description: "Raw, executable source code." },
+              language: { type: Type.STRING, description: "The language of the code ('javascript', 'python', or 'bash').", enum: ['javascript', 'python', 'bash'] }
             },
-            required: ["code"]
+            required: ["code", "language"]
           }
         }
       ]
@@ -655,12 +724,13 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
                 sendEvent('status', { message: `⚠️ Output failed to propose knowledge memory.` });
                 toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
               }
-            } else if (fc.name === 'execute_nodejs_code') {
-              const { code } = fc.args as any;
-              sendEvent('status', { message: `🚀 E2B Sandbox: Executing code block securely...` });
-              sendEvent('text', `\n\n> **Executing Code in Sandbox:**\n\`\`\`javascript\n${code}\n\`\`\`\n\n> **Sandbox Output:**\n\`\`\`ansi\n`);
+            } else if (fc.name === 'execute_code') {
+              const { code, language } = fc.args as any;
+              const langDisp = language || 'javascript';
+              sendEvent('status', { message: `🚀 E2B Sandbox: Executing \${langDisp} block securely...` });
+              sendEvent('text', `\n\n> **Executing \${langDisp.toUpperCase()} in Sandbox:**\n\`\`\`\${langDisp}\n\${code}\n\`\`\`\n\n> **Sandbox Output:**\n\`\`\`ansi\n`);
               
-              const runCodeInE2BSandbox = async (codeToRun: string): Promise<string> => {
+              const runCodeInE2BSandbox = async (codeToRun: string, lang: string): Promise<string> => {
                 let e2bModule;
                 try {
                   e2bModule = await import('@e2b/code-interpreter');
@@ -676,7 +746,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
                 try {
                   sandbox = await e2bModule.Sandbox.create({ apiKey });
                   const execution = await sandbox.runCode(codeToRun, { 
-                    language: 'javascript',
+                    language: lang,
                     onStdout: (out: any) => {
                        const text = out.line || out.text || out.toString();
                        fullOutput += text;
@@ -713,7 +783,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
               };
 
               try {
-                const executionOutput = await runCodeInE2BSandbox(code);
+                const executionOutput = await runCodeInE2BSandbox(code, langDisp);
                 toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success", output: executionOutput } } });
               } catch (err: any) {
                 toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
