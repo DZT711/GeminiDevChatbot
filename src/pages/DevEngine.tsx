@@ -795,14 +795,52 @@ export default function DevEngine() {
     const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
       setAdminLogs((prev) => [
         ...prev,
-        `[REJECTION_ERROR] Unresolved promise: ${event.reason?.message || event.reason}`,
+        `[REJECTION] Unresolved promise: ${event.reason?.message || event.reason}`,
       ]);
+    };
+    
+    // Intercept console logs to pipe to System CLI Console
+    const origLog = console.log;
+    const origInfo = console.info;
+    const origWarn = console.warn;
+    const origError = console.error;
+    
+    const stringifyArgs = (args: any[]) => args.map(a => {
+      if (typeof a === 'object' && a !== null) {
+        try {
+          return JSON.stringify(a);
+        } catch (e) {
+          return Object.prototype.toString.call(a);
+        }
+      }
+      return String(a);
+    }).join(' ');
+
+    console.log = (...args) => {
+      origLog(...args);
+      setAdminLogs(prev => [...prev, `[LOG] ${stringifyArgs(args)}`]);
+    };
+    console.info = (...args) => {
+      origInfo(...args);
+      setAdminLogs(prev => [...prev, `[INFO] ${stringifyArgs(args)}`]);
+    };
+    console.warn = (...args) => {
+      origWarn(...args);
+      setAdminLogs(prev => [...prev, `[WARN] ${stringifyArgs(args)}`]);
+    };
+    console.error = (...args) => {
+      origError(...args);
+      setAdminLogs(prev => [...prev, `[ERROR] ${stringifyArgs(args)}`]);
     };
 
     window.addEventListener("error", handleGlobalError);
     window.addEventListener("unhandledrejection", handleUnhandledRejection);
 
     return () => {
+      console.log = origLog;
+      console.info = origInfo;
+      console.warn = origWarn;
+      console.error = origError;
       window.removeEventListener("error", handleGlobalError);
       window.removeEventListener(
         "unhandledrejection",
@@ -2275,7 +2313,7 @@ export default function DevEngine() {
         {
           id: `help-${Date.now()}`,
           role: "model",
-          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/image <prompt>\` — Invokes stable generation of developer-focused vector images.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
+          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/sandbox <query>\` — Forces the model to execute any requested code securely inside the remote E2B Node.js Sandbox Sandbox environment and return the output.\n- \`/image <prompt>\` — Invokes stable generation of developer-focused vector images.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
         },
       ]);
       setInput("");

@@ -444,7 +444,14 @@ apiRouter.post('/chat', async (req, res) => {
     let cleanPrompt = prompt;
     let isForcedRAG = false;
 
-    if (/^\/rag\s+/i.test(prompt)) {
+    let isForcedSandbox = false;
+
+    if (/^\/sandbox\s+/i.test(prompt)) {
+      routingStrategy = 'DIRECT_CHAT';
+      cleanPrompt = prompt.replace(/^\/sandbox\s+/i, '').trim();
+      isForcedSandbox = true;
+      sendEvent('routing', { strategy: 'USE_SANDBOX', forced: true, message: 'Forced Sandbox mode activated via /SANDBOX command.' });
+    } else if (/^\/rag\s+/i.test(prompt)) {
       routingStrategy = 'USE_RAG';
       cleanPrompt = prompt.replace(/^\/rag\s+/i, '').trim();
       isForcedRAG = true;
@@ -463,6 +470,11 @@ apiRouter.post('/chat', async (req, res) => {
 3. TypeScript Excellence: Ensure any code provided is valid, strictly typed TypeScript.
 
 Always provide runnable code blocks/examples with Markdown syntax.`;
+
+    if (isForcedSandbox) {
+      finalSystemPrompt += `\n\n### MANDATORY SANDBOX INSTRUCTION\nThe user has explicitly requested to run code in the sandbox for this query. You MUST use the \`execute_nodejs_code\` tool to write and execute the code to solve the user's prompt. After receiving the output, present the results clearly to the user.`;
+      cleanPrompt = `Please write and execute the code to solve this, using the execute_nodejs_code tool. Query: ${cleanPrompt}`;
+    }
 
     if (customInstructions) {
       finalSystemPrompt += `\n\nUser Custom Personalization:\n${customInstructions}`;
@@ -539,107 +551,192 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           parameters: {
             type: Type.OBJECT,
             properties: {
-              content: {
-                type: Type.STRING,
-                description: 'The core knowledge content to store.'
-              },
-              reason: {
-                type: Type.STRING,
-                description: 'Why this knowledge should be remembered.'
-              }
+              content: { type: Type.STRING, description: 'The core knowledge content to store.' },
+              reason: { type: Type.STRING, description: 'Why this knowledge should be remembered.' }
             },
             required: ['content', 'reason']
+          }
+        },
+        {
+          name: "execute_nodejs_code",
+          description: "Execute Node.js code in a secure, ephemeral sandbox. Use this tool when you need to test code logic, execute data-processing algorithms, or verify math formulas before outputting the final response. Strip all markdown formatting like backticks from the 'code' parameter.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              code: { type: Type.STRING, description: "Raw, executable JavaScript/Node.js syntax." }
+            },
+            required: ["code"]
           }
         }
       ]
     };
 
     const chatModel = model || 'gemini-3.5-flash';
-    let responseStream;
     let finalModelUsed = chatModel;
+    let toolLoops = 0;
+    let lastUsageMetadata: any = null;
 
-    try {
-      responseStream = await aiInstance.models.generateContentStream({
-        model: finalModelUsed,
-        contents: formattedContents,
-        config: {
-          systemInstruction: finalSystemPrompt,
-          tools: [proposeKnowledgeTool],
-          thinkingConfig: (finalModelUsed.includes('thinking') || finalModelUsed === 'gemini-3.1-pro-preview') ? { 
-            thinkingLevel: thinkingLevel || 'LOW',
-            includeThoughts: true 
-          } : undefined,
-        }
-      });
-    } catch (streamError: any) {
-      const errorMsg = streamError.message || streamError.toString() || '';
-      const isQuotaExceeded = errorMsg.includes('429') || 
-                             errorMsg.includes('RESOURCE_EXHAUSTED') || 
-                             errorMsg.includes('Quota exceeded') ||
-                             errorMsg.includes('limit: 0');
-      
-      const isModelNotFound = errorMsg.includes('404') || 
-                             errorMsg.includes('not found') || 
-                             errorMsg.includes('not supported') ||
-                             errorMsg.includes('not be found');
-
-      if ((isQuotaExceeded || isModelNotFound) && finalModelUsed !== 'gemini-3.5-flash') {
-        console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error (${isQuotaExceeded ? 'Quota' : 'Not Found'}). Dynamic fallback to gemini-3.5-flash.`);
-        sendEvent('status', { 
-          message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance 'gemini-3.5-flash' to prevent interruption.` 
-        });
-        
-        finalModelUsed = 'gemini-3.5-flash';
+    while (toolLoops < 5) {
+      let responseStream;
+      try {
         responseStream = await aiInstance.models.generateContentStream({
           model: finalModelUsed,
           contents: formattedContents,
           config: {
             systemInstruction: finalSystemPrompt,
             tools: [proposeKnowledgeTool],
+            thinkingConfig: (finalModelUsed.includes('thinking') || finalModelUsed === 'gemini-3.1-pro-preview') ? { 
+              thinkingLevel: thinkingLevel || 'LOW',
+              includeThoughts: true 
+            } : undefined,
           }
         });
-      } else {
-        throw streamError;
-      }
-    }
+      } catch (streamError: any) {
+        const errorMsg = streamError.message || streamError.toString() || '';
+        const isQuotaExceeded = errorMsg.includes('429') || 
+                               errorMsg.includes('RESOURCE_EXHAUSTED') || 
+                               errorMsg.includes('Quota exceeded') ||
+                               errorMsg.includes('limit: 0');
+        const isModelNotFound = errorMsg.includes('404') || 
+                               errorMsg.includes('not found') || 
+                               errorMsg.includes('not supported') ||
+                               errorMsg.includes('not be found');
 
-    let lastUsageMetadata: any = null;
-
-    for await (const chunk of responseStream) {
-      if (chunk.usageMetadata) {
-        lastUsageMetadata = chunk.usageMetadata;
-      }
-      
-      if (chunk.functionCalls) {
-        for (const fc of chunk.functionCalls) {
-          if (fc.name === 'proposeKnowledge') {
-            const { content, reason } = fc.args as any;
-            try {
-              const { knowledgeProposals } = await import('./db/schema.js');
-              await txWithUser(payload.id as string, async (tx: any) => {
-                await tx.insert(knowledgeProposals).values({
-                  userId: payload.id as string,
-                  actionType: 'INSERT',
-                  proposedContent: content,
-                  reason: reason || 'AI Auto-Proposed',
-                  status: 'PENDING'
-                });
-              });
-              sendEvent('status', { 
-                message: `💡 AI auto-proposed a new knowledge memory! (Content length: ${content?.length || 0})` 
-              });
-              sendEvent('system_event', { type: 'knowledge_proposal_created' });
-            } catch (err) {
-              console.error('Failed to create AI knowledge proposal:', err);
-              sendEvent('status', { message: `⚠️ Output failed to propose knowledge memory.` });
+        if ((isQuotaExceeded || isModelNotFound) && finalModelUsed !== 'gemini-3.5-flash') {
+          console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error (${isQuotaExceeded ? 'Quota' : 'Not Found'}). Dynamic fallback.`);
+          sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance 'gemini-3.5-flash'.` });
+          
+          finalModelUsed = 'gemini-3.5-flash';
+          responseStream = await aiInstance.models.generateContentStream({
+            model: finalModelUsed,
+            contents: formattedContents,
+            config: {
+              systemInstruction: finalSystemPrompt,
+              tools: [proposeKnowledgeTool],
             }
-          }
+          });
+        } else {
+          throw streamError;
         }
       }
 
-      if (chunk.text) {
-        sendEvent('text', chunk.text);
+      let hasFunctionCalls = false;
+      const allFunctionCallsInStream: any[] = [];
+      const toolResponses: any[] = [];
+
+      for await (const chunk of responseStream) {
+        if (chunk.usageMetadata) {
+          lastUsageMetadata = chunk.usageMetadata;
+        }
+        
+        if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+          hasFunctionCalls = true;
+          for (const fc of chunk.functionCalls) {
+            allFunctionCallsInStream.push(fc);
+            
+            if (fc.name === 'proposeKnowledge') {
+              const { content, reason } = fc.args as any;
+              try {
+                const { knowledgeProposals } = await import('./db/schema.js');
+                await txWithUser(payload.id as string, async (tx: any) => {
+                  await tx.insert(knowledgeProposals).values({
+                    userId: payload.id as string,
+                    actionType: 'INSERT',
+                    proposedContent: content,
+                    reason: reason || 'AI Auto-Proposed',
+                    status: 'PENDING'
+                  });
+                });
+                sendEvent('status', { message: `💡 AI auto-proposed a new knowledge memory! (Content length: ${content?.length || 0})` });
+                sendEvent('system_event', { type: 'knowledge_proposal_created' });
+                toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success" } } });
+              } catch (err: any) {
+                console.error('Failed to create AI knowledge proposal:', err);
+                sendEvent('status', { message: `⚠️ Output failed to propose knowledge memory.` });
+                toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
+              }
+            } else if (fc.name === 'execute_nodejs_code') {
+              const { code } = fc.args as any;
+              sendEvent('status', { message: `🚀 E2B Sandbox: Executing code block securely...` });
+              sendEvent('text', `\n\n> **Executing Code in Sandbox:**\n\`\`\`javascript\n${code}\n\`\`\`\n\n> **Sandbox Output:**\n\`\`\`ansi\n`);
+              
+              const runCodeInE2BSandbox = async (codeToRun: string): Promise<string> => {
+                let e2bModule;
+                try {
+                  e2bModule = await import('@e2b/code-interpreter');
+                } catch (e) {
+                  return `Error: Sandbox library missing. \${(e as Error).message}`;
+                }
+                const apiKey = process.env.E2B_API_KEY;
+                if (!apiKey) return "Error: E2B_API_KEY not configured.";
+
+                let sandbox;
+                let fullOutput = "";
+                
+                try {
+                  sandbox = await e2bModule.Sandbox.create({ apiKey });
+                  const execution = await sandbox.runCode(codeToRun, { 
+                    language: 'javascript',
+                    onStdout: (out: any) => {
+                       const text = out.line || out.text || out.toString();
+                       fullOutput += text;
+                       sendEvent('text', text);
+                    },
+                    onStderr: (out: any) => {
+                       const text = out.line || out.text || out.toString();
+                       fullOutput += text;
+                       sendEvent('text', text);
+                    },
+                    onResult: (res: any) => {
+                       const text = res.text ? res.text + "\n" : JSON.stringify(res) + "\n";
+                       fullOutput += text;
+                       sendEvent('text', text);
+                    }
+                  });
+                  
+                  if (execution.error) {
+                     const errorText = `\nError: ${execution.error.name} - ${execution.error.value}\n${execution.error.traceback}\n`;
+                     fullOutput += errorText;
+                     sendEvent('text', errorText);
+                  }
+                  
+                  sendEvent('text', `\n\`\`\`\n\n`);
+                  return fullOutput || "Code executed successfully with no output.";
+                } catch (e: any) {
+                  const errorText = `Sandbox execution error: ${e.message}\n`;
+                  sendEvent('text', errorText);
+                  sendEvent('text', `\n\`\`\`\n\n`);
+                  return errorText;
+                } finally {
+                  if (sandbox) await sandbox.kill();
+                }
+              };
+
+              try {
+                const executionOutput = await runCodeInE2BSandbox(code);
+                toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success", output: executionOutput } } });
+              } catch (err: any) {
+                toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
+              }
+            } else {
+              toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success" } } });
+            }
+          }
+        }
+
+        if (chunk.text) {
+          sendEvent('text', chunk.text);
+        }
       }
+
+      if (hasFunctionCalls && allFunctionCallsInStream.length > 0) {
+        formattedContents.push({ role: 'model', parts: allFunctionCallsInStream.map(c => ({ functionCall: c })) });
+        formattedContents.push({ role: 'user', parts: toolResponses });
+        toolLoops++;
+        continue;
+      }
+      
+      break;
     }
 
     if (lastUsageMetadata) {

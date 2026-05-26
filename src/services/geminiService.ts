@@ -419,11 +419,25 @@ class GeminiService {
                   const strat = parsed.data.strategy;
                   const isForced = parsed.data.forced;
                   console.log(`[AI Query Router] Response Routed: ${strat} (Forced: ${isForced})`);
+                  transparencyLogger.log(
+                    "Network", 
+                    parsed.data.message || `Response Routed: ${strat}`, 
+                    { strategy: strat, forced: isForced },
+                    "completed"
+                  );
                   if (parsed.data.message) {
-                    onChunk?.(`*(System: ${parsed.data.message})*\n\n`);
+                    accumulatedText += `> ⚙️ **System:** *${parsed.data.message}*\n\n`;
+                    onChunk?.(accumulatedText);
                   }
                 } else if (parsed.type === 'status') {
-                  onChunk?.(`*[System: ${parsed.data.message}]*\n\n`);
+                  transparencyLogger.log(
+                    "System",
+                    parsed.data.message,
+                    {},
+                    "completed"
+                  );
+                  accumulatedText += `> 📡 **Status:** *${parsed.data.message}*\n\n`;
+                  onChunk?.(accumulatedText);
                 } else if (parsed.type === 'text') {
                   accumulatedText += parsed.data;
                   onChunk?.(accumulatedText);
@@ -505,9 +519,63 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
             try {
               const startTime = Date.now();
               if (attempts > 0) config.onModelSwitch?.(model);
+
+              // E2B Sandbox Tool Runner
+              const runCodeInE2BSandbox = async (codeToRun: string): Promise<string> => {
+                let e2bModule;
+                try {
+                  e2bModule = await import('@e2b/code-interpreter');
+                } catch (e) {
+                  return `Error: Sandbox environment failed to load. \${(e as Error).message}`;
+                }
+                const { Sandbox } = e2bModule;
+                
+                // Allow fallback in frontend context via VITE_ variables if desired,
+                // but default to process.env
+                const apiKey = process.env.E2B_API_KEY || (import.meta as any).env?.VITE_E2B_API_KEY;
+                if (!apiKey) return "Error: E2B_API_KEY not configured.";
+
+                let sandbox;
+                try {
+                  sandbox = await Sandbox.create({ apiKey });
+                  const execution = await sandbox.runCode(codeToRun, { language: 'javascript' });
+                  
+                  let output = "";
+                  if (execution.results && execution.results.length > 0) {
+                     output += "Results:\n" + execution.results.map((r: any) => JSON.stringify(r)).join("\n") + "\n";
+                  }
+                  if (execution.logs.stdout.length > 0) {
+                     output += "Stdout:\n" + execution.logs.stdout.join("\n") + "\n";
+                  }
+                  if (execution.logs.stderr.length > 0) {
+                     output += "Stderr:\n" + execution.logs.stderr.join("\n") + "\n";
+                  }
+                  if (execution.error) {
+                     output += `Error: ${execution.error.name} - ${execution.error.value}\n${execution.error.traceback}`;
+                  }
+                  return output || "Code executed successfully with no output.";
+                } catch (e: any) {
+                  return `Sandbox execution error: ${e.message}`;
+                } finally {
+                  if (sandbox) {
+                    await sandbox.kill();
+                  }
+                }
+              };
               
               const coreTools = {
                 functionDeclarations: [
+                  {
+                    name: "execute_nodejs_code",
+                    description: "Execute Node.js code in a secure, ephemeral sandbox. Use this tool when you need to test code logic, execute data-processing algorithms, or verify math formulas before outputting the final response. Strip all markdown formatting like backticks from the 'code' parameter.",
+                    parameters: {
+                      type: Type.OBJECT,
+                      properties: {
+                        code: { type: Type.STRING, description: "Raw, executable JavaScript/Node.js syntax." }
+                      },
+                      required: ["code"]
+                    }
+                  },
                   {
                     name: "analyze_github_repo",
                     description: "Analyzes a GitHub repository to understand its logic and structure.",
@@ -1026,6 +1094,31 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                           }
                         });
                         transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: { error: err.message } });
+                      }
+                    } else if (call.name === 'execute_nodejs_code') {
+                      const args = call.args as { code: string };
+                      onChunk?.(`[E2B Sandbox: Executing securely...]\n\n> **Executing Code in Sandbox:**\n\`\`\`javascript\n${args.code}\n\`\`\`\n\n`);
+                      try {
+                        const executionOutput = await runCodeInE2BSandbox(args.code);
+                        onChunk?.(`> **Sandbox Output:**\n\`\`\`ansi\n${executionOutput}\n\`\`\`\n\n`);
+                        const responsePayload = { status: "success", output: executionOutput };
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: responsePayload
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { outputSnippet: executionOutput.substring(0, 50) } });
+                      } catch (err: any) {
+                        onChunk?.(`> **Sandbox Error:**\n\`\`\`ansi\n${err.message}\n\`\`\`\n\n`);
+                        const responsePayload = { status: "failed", error: err.message || "Unknown error executing code" };
+                        toolResponses.push({
+                          functionResponse: {
+                            name: call.name,
+                            response: responsePayload
+                          }
+                        });
+                        transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: responsePayload });
                       }
                     } else if (call.name === 'googleSearch') {
                       let logic = "Analyzed current context; external real-time data needed for accurate response.";
