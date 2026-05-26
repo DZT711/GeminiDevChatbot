@@ -1966,7 +1966,7 @@ export default function DevEngine() {
         );
 
         setMessages((prev) => {
-          saveCurrentSession(prev, sessionId);
+          setTimeout(() => saveCurrentSession(prev, sessionId), 0);
           return prev;
         });
         setCurrentModel(geminiService.getCurrentModel());
@@ -2091,7 +2091,7 @@ export default function DevEngine() {
         );
 
         setMessages((prev) => {
-          saveCurrentSession(prev, sessionId);
+          setTimeout(() => saveCurrentSession(prev, sessionId), 0);
           return prev;
         });
       } catch (error: any) {
