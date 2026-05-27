@@ -228,7 +228,34 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
 
       codeString = codeString.replace(/\n$/, '');
 
-      // Use CodePreview for actual code languages, or multi-line text, or long text
+      if (language === 'ansi') {
+        return (
+          <div className="my-6 rounded-xl overflow-hidden border border-zinc-800/60 shadow-2xl bg-[#0a0a0c] font-sans">
+            <div className="bg-zinc-900/80 px-4 py-2.5 flex items-center justify-between border-b border-zinc-800/50">
+               <div className="flex items-center gap-2">
+                 <div className="flex gap-1.5">
+                   <div className="w-2.5 h-2.5 rounded-full bg-rose-500/80"></div>
+                   <div className="w-2.5 h-2.5 rounded-full bg-amber-500/80"></div>
+                   <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/80"></div>
+                 </div>
+                 <div className="h-3 w-px bg-zinc-800 mx-2"></div>
+                 <Terminal size={12} className="text-zinc-500" />
+                 <span className="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest ml-1">
+                   Sandbox Environment
+                 </span>
+               </div>
+               <span className="text-[9px] font-mono text-emerald-500/80 uppercase tracking-widest">
+                 Connected
+               </span>
+            </div>
+            <div className="p-5 overflow-x-auto text-[13px] font-mono text-zinc-300 whitespace-pre-wrap max-h-[400px] custom-scrollbar leading-relaxed">
+               {codeString || "Process exited with code 0 (success)"}
+            </div>
+          </div>
+        );
+      }
+
+      // Use CodePreview for actual code languages, or multi-line text, or long text, or ansi terminal output
       if (codeString && (language !== 'text' || codeString.includes('\n') || codeString.length > 60)) {
         const defaultShowPreview = typeof meta === 'string' && meta.includes('preview');
         return <CodePreview code={codeString} language={language} isLatest={isLatest} defaultShowPreview={defaultShowPreview} />;

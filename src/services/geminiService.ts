@@ -1,6 +1,6 @@
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { githubService } from "./githubService";
-import { transparencyLogger } from '../utils/transparencyLogger';
+import { transparencyLogger, thinkingStore } from '../utils/transparencyLogger';
 
 export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
@@ -375,6 +375,7 @@ class GeminiService {
           customInstructions: config.customInstructions
         };
 
+        thinkingStore.reset();
         const response = await fetch('/api/chat', {
           method: 'POST',
           headers: {
@@ -425,10 +426,7 @@ class GeminiService {
                     { strategy: strat, forced: isForced },
                     "completed"
                   );
-                  if (parsed.data.message) {
-                    accumulatedText += `> ⚙️ **System:** *${parsed.data.message}*\n\n`;
-                    onChunk?.(accumulatedText);
-                  }
+                  // We removed the injection into accumulatedText to clean up UI
                 } else if (parsed.type === 'status') {
                   transparencyLogger.log(
                     "System",
@@ -436,11 +434,14 @@ class GeminiService {
                     {},
                     "completed"
                   );
-                  accumulatedText += `> 📡 **Status:** *${parsed.data.message}*\n\n`;
-                  onChunk?.(accumulatedText);
+                  // We removed the injection into accumulatedText to clean up UI
                 } else if (parsed.type === 'text') {
                   accumulatedText += parsed.data;
                   onChunk?.(accumulatedText);
+                } else if (parsed.type === 'thinking') {
+                  thinkingStore.append(parsed.data);
+                } else if (parsed.type === 'thinking_done') {
+                  thinkingStore.finish();
                 } else if (parsed.type === 'metadata') {
                   if (config.onTokenUpdate && parsed.data?.totalTokenCount) {
                     config.onTokenUpdate(parsed.data.totalTokenCount);
@@ -1097,10 +1098,10 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                       }
                     } else if (call.name === 'execute_nodejs_code') {
                       const args = call.args as { code: string };
-                      onChunk?.(`[E2B Sandbox: Executing securely...]\n\n> **Executing Code in Sandbox:**\n\`\`\`javascript\n${args.code}\n\`\`\`\n\n`);
+                      onChunk?.(`\n\n\`\`\`javascript\n${args.code}\n\`\`\`\n\n`);
                       try {
                         const executionOutput = await runCodeInE2BSandbox(args.code);
-                        onChunk?.(`> **Sandbox Output:**\n\`\`\`ansi\n${executionOutput}\n\`\`\`\n\n`);
+                        onChunk?.(`\`\`\`ansi\n${executionOutput}\n\`\`\`\n\n`);
                         const responsePayload = { status: "success", output: executionOutput };
                         toolResponses.push({
                           functionResponse: {
@@ -1110,7 +1111,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         });
                         transparencyLogger.updateAction(actionId, { status: 'completed', outputPayload: { outputSnippet: executionOutput.substring(0, 50) } });
                       } catch (err: any) {
-                        onChunk?.(`> **Sandbox Error:**\n\`\`\`ansi\n${err.message}\n\`\`\`\n\n`);
+                        onChunk?.(`\`\`\`ansi\nError: ${err.message}\n\`\`\`\n\n`);
                         const responsePayload = { status: "failed", error: err.message || "Unknown error executing code" };
                         toolResponses.push({
                           functionResponse: {

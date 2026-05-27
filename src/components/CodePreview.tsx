@@ -31,14 +31,16 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   // Try to smartly determine if JS/TS code is actually React
   const codeImpliesReact = code.includes('import React') || code.includes('export default function App') || code.includes('from "react"') || code.includes('from \'react\'') || code.includes('useState') || code.includes('useEffect');
   
+  const codeImpliesBackendJs = code.includes('require(') || code.includes('process.env') || code.includes('import fs ') || code.includes('import os ') || code.includes('import path ') || code.includes('express()') || code.includes('http.createServer') || code.includes('import {') && code.includes('from \'fs\'');
+
   const effectiveIsReact = isReact || ((isJs || isTs) && codeImpliesReact);
-  const effectiveIsJs = isJs && !effectiveIsReact;
-  const effectiveIsTs = isTs && !effectiveIsReact;
+  const effectiveIsJs = isJs && !effectiveIsReact && !codeImpliesBackendJs;
+  const effectiveIsTs = isTs && !effectiveIsReact && !codeImpliesBackendJs;
 
   const isMarkdown = ['markdown', 'md'].includes(normalizedLang);
   const isMermaid = ['mermaid', 'uml', 'diagram'].includes(normalizedLang);
   const isSVG = normalizedLang === 'svg';
-  const isBackendE2B = ['python', 'py', 'c', 'cpp', 'c++', 'java', 'csharp', 'cs', 'bash', 'sh'].includes(normalizedLang);
+  const isBackendE2B = ['python', 'py', 'c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'java', 'bash', 'sh', 'javascript', 'js', 'typescript', 'ts', 'rust', 'rs', 'go', 'php', 'ruby', 'rb'].includes(normalizedLang);
   
   const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B;
   
@@ -145,31 +147,38 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   };
 
   return (
-    <div className="relative group/code my-6 rounded-xl overflow-hidden border border-zinc-800/80 shadow-2xl">
-      <div className="bg-zinc-900/80 px-4 py-2 flex items-center justify-between border-b border-zinc-800/50">
-        <div className="flex items-center gap-4">
-          <span className="text-[10px] font-mono font-bold text-zinc-500 uppercase tracking-widest flex-shrink-0">
+    <div className="relative group/code my-6 rounded-xl overflow-hidden border border-zinc-800/60 shadow-2xl">
+      <div className="bg-zinc-900/80 px-4 py-2.5 flex items-center justify-between border-b border-zinc-800/50">
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1.5 hidden sm:flex">
+             <div className="w-2.5 h-2.5 rounded-full bg-zinc-700/50"></div>
+             <div className="w-2.5 h-2.5 rounded-full bg-zinc-700/50"></div>
+             <div className="w-2.5 h-2.5 rounded-full bg-zinc-700/50"></div>
+          </div>
+          <div className="h-3 w-px bg-zinc-800 mx-1 hidden sm:block"></div>
+          <span className="text-[10px] font-mono font-bold text-zinc-400 uppercase tracking-widest flex-shrink-0 flex items-center gap-2">
+            <Code size={12} className="text-cyan-500/80 hidden sm:block" />
             {language || 'text'}
           </span>
           {isPreviewable && (
-            <div className="flex bg-zinc-950/50 rounded-lg p-0.5 border border-zinc-800/50">
+            <div className="flex bg-[#050505] rounded-md p-0.5 border border-zinc-800/80 ml-2">
               <button
                 onClick={() => setActiveTab('code')}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all",
-                  activeTab === 'code' ? "bg-cyan-500/20 text-cyan-400" : "text-zinc-500 hover:text-zinc-300"
+                  "flex items-center gap-1.5 px-3 py-1 text-[9px] font-bold uppercase rounded-sm transition-all tracking-wider",
+                  activeTab === 'code' ? "bg-cyan-500/20 text-cyan-400 shadow-sm" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50"
                 )}
               >
-                <Code size={12} /> Code
+                Code
               </button>
               <button
                 onClick={() => setActiveTab('preview')}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all",
-                  activeTab === 'preview' ? "bg-cyan-500/20 text-cyan-400" : "text-zinc-500 hover:text-zinc-300"
+                  "flex items-center gap-1.5 px-3 py-1 text-[9px] font-bold uppercase rounded-sm transition-all tracking-wider",
+                  activeTab === 'preview' ? "bg-cyan-500/20 text-cyan-400 shadow-sm" : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50"
                 )}
               >
-                <Eye size={12} /> Preview
+                Preview
               </button>
             </div>
           )}
@@ -178,12 +187,12 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
           whileTap={{ scale: 0.9 }}
           onClick={handleCopy}
           className={cn(
-            "flex items-center gap-1.5 p-1.5 rounded-md text-[10px] font-bold uppercase transition-all",
-            copied ? "text-green-400 bg-green-400/10" : "text-zinc-500 hover:text-white hover:bg-zinc-800"
+            "flex items-center gap-1.5 p-1.5 px-2 rounded-md text-[9px] font-bold uppercase transition-all tracking-wider",
+            copied ? "text-emerald-400 bg-emerald-400/10" : "text-zinc-500 hover:text-white hover:bg-zinc-800"
           )}
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
-          <span>{copied ? 'Copied' : 'Copy'}</span>
+          <span className="hidden sm:inline">{copied ? 'Copied' : 'Copy'}</span>
         </motion.button>
       </div>
       
@@ -206,7 +215,7 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
         </div>
         
         {isPreviewable && activeTab === 'preview' && (
-          <div className="bg-[#121212] overflow-auto custom-scrollbar items-center justify-center min-h-[200px] w-full flex">
+          <div className="bg-[#121212] overflow-auto custom-scrollbar items-center justify-center min-h-[200px] w-full flex flex-col">
              {isMermaid && <div ref={mermaidRef} className="flex justify-center w-full bg-white/5 p-4" />}
              {isSVG && <div dangerouslySetInnerHTML={{ __html: debouncedCode }} className="flex justify-center w-full bg-white/5 p-4 rounded" />}
              {isMarkdown && (

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 
-export type ActionCategory = 'Research/Retrieval' | 'Learning' | 'Analysis' | 'Task Execution';
+export type ActionCategory = 'Research/Retrieval' | 'Learning' | 'Analysis' | 'Task Execution' | 'Network' | 'System';
 
 export interface ModelAction {
   id: string;
@@ -79,4 +79,32 @@ export const useTransparencyLog = () => {
   }, []);
 
   return actions;
+};
+
+// ─── Thinking Store ────────────────────────────────────────────────────────────
+
+interface ThinkingState { text: string; isThinking: boolean; }
+type ThinkingListener = (state: ThinkingState) => void;
+
+class ThinkingStore {
+  private state: ThinkingState = { text: '', isThinking: false };
+  private listeners: Set<ThinkingListener> = new Set();
+  private emit() { this.listeners.forEach(l => l({ ...this.state })); }
+  append(chunk: string) { this.state = { text: this.state.text + chunk, isThinking: true }; this.emit(); }
+  finish() { this.state = { ...this.state, isThinking: false }; this.emit(); }
+  reset() { this.state = { text: '', isThinking: false }; this.emit(); }
+  get(): ThinkingState { return { ...this.state }; }
+  subscribe(listener: ThinkingListener) {
+    this.listeners.add(listener);
+    listener({ ...this.state });
+    return () => { this.listeners.delete(listener); };
+  }
+}
+
+export const thinkingStore = new ThinkingStore();
+
+export const useThinkingStore = (): ThinkingState => {
+  const [state, setState] = useState<ThinkingState>(thinkingStore.get());
+  useEffect(() => thinkingStore.subscribe(setState), []);
+  return state;
 };
