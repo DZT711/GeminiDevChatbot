@@ -425,52 +425,51 @@ apiRouter.post('/execute', async (req, res) => {
     }
 
     const lang = (language || 'javascript').toLowerCase();
-    const pistonLangs = ['c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'rust', 'rs', 'go', 'php', 'ruby', 'rb', 'java', 'typescript', 'ts'];
+    const judge0Langs = ['c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'rust', 'rs', 'go', 'php', 'ruby', 'rb', 'java', 'typescript', 'ts'];
     
-    const pistonAliases: Record<string, string> = {
-      'c': 'c', 'cpp': 'c++', 'c++': 'c++',
-      'csharp': 'csharp', 'cs': 'csharp', 'c#': 'csharp',
-      'typescript': 'typescript', 'ts': 'typescript',
-      'rust': 'rust', 'rs': 'rust', 'go': 'go',
-      'php': 'php', 'ruby': 'ruby', 'bash': 'bash', 'sh': 'bash',
-      'javascript': 'javascript', 'js': 'javascript',
-      'python': 'python', 'py': 'python', 'java': 'java'
-    };
-    const pistonVersions: Record<string, string> = {
-      'c': '10.2.0', 'c++': '10.2.0', 'csharp': '6.12.0',
-      'typescript': '5.0.3', 'rust': '1.68.2', 'go': '1.16.2',
-      'php': '8.2.3', 'ruby': '3.0.1', 'bash': '5.2.0',
-      'javascript': '18.15.0', 'python': '3.10.0', 'java': '15.0.2'
+    const judge0Aliases: Record<string, number> = {
+      'c': 103, 'cpp': 105, 'c++': 105,
+      'csharp': 51, 'cs': 51, 'c#': 51,
+      'typescript': 101, 'ts': 101,
+      'rust': 108, 'rs': 108, 'go': 107,
+      'php': 98, 'ruby': 72, 'rb': 72, 
+      'bash': 46, 'sh': 46,
+      'javascript': 102, 'js': 102,
+      'python': 109, 'py': 109, 'java': 91
     };
 
-    if (pistonLangs.includes(lang) || !process.env.E2B_API_KEY) {
+    if (judge0Langs.includes(lang) || !process.env.E2B_API_KEY) {
        try {
-         const pistonLangName = pistonAliases[lang] || lang;
-         const version = pistonVersions[pistonLangName] || '*';
-         const pistonRes = await fetch('https://emkc.org/api/v2/piston/execute', {
+         const judge0LangId = judge0Aliases[lang] || 102; // Default to JS if unknown
+         const judge0Res = await fetch('https://ce.judge0.com/submissions?base64_encoded=false&wait=true', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify({
-             language: pistonLangName,
-             version: version,
-             files: [{ content: code }]
+             language_id: judge0LangId,
+             source_code: code
            })
          });
          
-         const data = await pistonRes.json();
-         if (!pistonRes.ok) throw new Error(data.message || 'Piston execution failed');
+         const data = await judge0Res.json();
+         if (!judge0Res.ok) throw new Error(data.error || 'Judge0 execution failed');
          
          let output = '';
-         if (data.compile && data.compile.code !== 0) {
-            output += `Compilation Error:\n${data.compile.output}\n\n`;
+         if (data.compile_output) {
+            output += `Compilation Error:\n${data.compile_output}\n\n`;
          }
-         output += data.run.output || "Code executed successfully with no output.";
-         if (data.run.code !== 0 && data.run.stderr) {
-            output += `\nError execution status exit code ${data.run.code}`;
+         output += data.stdout || "";
+         if (data.stderr) {
+            output += (output ? "\n" : "") + data.stderr;
+         }
+         if (data.message) {
+            output += (output ? "\n" : "") + data.message;
+         }
+         if (!output.trim()) {
+            output = "Code executed successfully with no output.";
          }
          return res.json({ output });
        } catch (e: any) {
-         return res.status(500).json({ error: `Piston execution error: ${e.message}` });
+         return res.status(500).json({ error: `Judge0 execution error: ${e.message}` });
        }
     }
 
@@ -789,54 +788,53 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
               
               const runCodeInE2BSandbox = async (codeToRun: string, lang: string): Promise<string> => {
                 const targetLang = (lang || 'javascript').toLowerCase();
-                const pistonLangs = ['c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'rust', 'rs', 'go', 'php', 'ruby', 'rb', 'java', 'typescript', 'ts'];
+                const judge0Langs = ['c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'rust', 'rs', 'go', 'php', 'ruby', 'rb', 'java', 'typescript', 'ts'];
                 
-                const pistonAliases: Record<string, string> = {
-                  'c': 'c', 'cpp': 'c++', 'c++': 'c++',
-                  'csharp': 'csharp', 'cs': 'csharp', 'c#': 'csharp',
-                  'typescript': 'typescript', 'ts': 'typescript',
-                  'rust': 'rust', 'rs': 'rust', 'go': 'go',
-                  'php': 'php', 'ruby': 'ruby', 'bash': 'bash', 'sh': 'bash',
-                  'javascript': 'javascript', 'js': 'javascript',
-                  'python': 'python', 'py': 'python', 'java': 'java'
-                };
-                const pistonVersions: Record<string, string> = {
-                  'c': '10.2.0', 'c++': '10.2.0', 'csharp': '6.12.0',
-                  'typescript': '5.0.3', 'rust': '1.68.2', 'go': '1.16.2',
-                  'php': '8.2.3', 'ruby': '3.0.1', 'bash': '5.2.0',
-                  'javascript': '18.15.0', 'python': '3.10.0', 'java': '15.0.2'
+                const judge0Aliases: Record<string, number> = {
+                  'c': 103, 'cpp': 105, 'c++': 105,
+                  'csharp': 51, 'cs': 51, 'c#': 51,
+                  'typescript': 101, 'ts': 101,
+                  'rust': 108, 'rs': 108, 'go': 107,
+                  'php': 98, 'ruby': 72, 'rb': 72, 
+                  'bash': 46, 'sh': 46,
+                  'javascript': 102, 'js': 102,
+                  'python': 109, 'py': 109, 'java': 91
                 };
 
-                if (pistonLangs.includes(targetLang) || !process.env.E2B_API_KEY) {
+                if (judge0Langs.includes(targetLang) || !process.env.E2B_API_KEY) {
                    try {
-                     const pistonLangName = pistonAliases[targetLang] || targetLang;
-                     const version = pistonVersions[pistonLangName] || '*';
-                     const pistonRes = await fetch('https://emkc.org/api/v2/piston/execute', {
+                     const judge0LangId = judge0Aliases[targetLang] || 102; // Default to JS if unknown
+                     const judge0Res = await fetch('https://ce.judge0.com/submissions?base64_encoded=false&wait=true', {
                        method: 'POST',
                        headers: { 'Content-Type': 'application/json' },
                        body: JSON.stringify({
-                         language: pistonLangName,
-                         version: version,
-                         files: [{ content: codeToRun }]
+                         language_id: judge0LangId,
+                         source_code: codeToRun
                        })
                      });
                      
-                     const data = await pistonRes.json();
-                     if (!pistonRes.ok) throw new Error(data.message || 'Piston execution failed');
+                     const data = await judge0Res.json();
+                     if (!judge0Res.ok) throw new Error(data.error || 'Judge0 execution failed');
                      
                      let output = '';
-                     if (data.compile && data.compile.code !== 0) {
-                        output += `Compilation Error:\n${data.compile.output}\n\n`;
+                     if (data.compile_output) {
+                        output += `Compilation Error:\n${data.compile_output}\n\n`;
                      }
-                     output += data.run.output || "Code executed successfully with no output.";
-                     if (data.run.code !== 0 && data.run.stderr) {
-                        output += `\nError execution status exit code ${data.run.code}`;
+                     output += data.stdout || "";
+                     if (data.stderr) {
+                        output += (output ? "\n" : "") + data.stderr;
+                     }
+                     if (data.message) {
+                        output += (output ? "\n" : "") + data.message;
+                     }
+                     if (!output.trim()) {
+                        output = "Code executed successfully with no output.";
                      }
                      sendEvent('text', output);
                      sendEvent('text', `\n\`\`\`\n\n`);
                      return output;
                    } catch (e: any) {
-                     const errorText = `Piston execution error: ${e.message}\n`;
+                     const errorText = `Judge0 execution error: ${e.message}\n`;
                      sendEvent('text', errorText);
                      sendEvent('text', `\n\`\`\`\n\n`);
                      return errorText;
