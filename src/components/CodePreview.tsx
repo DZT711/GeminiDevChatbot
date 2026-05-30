@@ -40,11 +40,12 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   const isMarkdown = ['markdown', 'md'].includes(normalizedLang);
   const isMermaid = ['mermaid', 'uml', 'diagram'].includes(normalizedLang);
   const isSVG = normalizedLang === 'svg';
+  const isGithub = ['github', 'repo'].includes(normalizedLang) || Boolean(code.trim().match(/^https?:\/\/github\.com\/[^\/]+\/[^\/]+/i));
   const isBackendE2B = ['python', 'py', 'c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'java', 'bash', 'sh', 'javascript', 'js', 'typescript', 'ts', 'rust', 'rs', 'go', 'php', 'ruby', 'rb'].includes(normalizedLang);
   
-  const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B;
+  const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B || isGithub;
   
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG || isMarkdown) ? 'preview' : 'code');
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG || isMarkdown || isGithub) ? 'preview' : 'code');
   const [copied, setCopied] = useState(false);
   const mermaidRef = useRef<HTMLDivElement>(null);
 
@@ -227,6 +228,25 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
                  </div>
                </div>
              )}
+             {isGithub && (() => {
+               const urlMatch = debouncedCode.match(/https?:\/\/github\.com\/([^\/]+)\/([^\/\s]+)/i);
+               if (urlMatch) {
+                 const owner = urlMatch[1];
+                 const repo = urlMatch[2].replace(/\.git$/, '');
+                 return (
+                   <div className="w-full h-[600px] relative z-0">
+                     <iframe
+                       src={`https://stackblitz.com/github/${owner}/${repo}?embed=1&view=editor`}
+                       className="w-full h-full border-0"
+                       title={`GitHub Repo: ${owner}/${repo}`}
+                       allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
+                       sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
+                     />
+                   </div>
+                 );
+               }
+               return <div className="p-4 text-red-500 font-mono text-sm">Valid GitHub repository URL not found.</div>;
+             })()}
              {isBackendE2B && (
                <div className="w-full flex flex-col p-4 bg-[#0d0d0d] min-h-[300px]">
                  <div className="flex justify-between items-center mb-3">

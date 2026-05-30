@@ -54,6 +54,7 @@ import {
   Pin,
   Edit2,
   Check,
+  Key,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import {
@@ -148,10 +149,47 @@ export default function DevEngine() {
   const [adminCliInput, setAdminCliInput] = useState("");
 
   // Persistence States
-  const [sessions, setSessions] = useState<ChatSession[]>([]);
-  const [customSkills, setCustomSkills] = useState<Skill[]>([]);
-  const [apiKeys, setApiKeys] = useState<ApiKey[]>([]);
-  const [activeKeyId, setActiveKeyId] = useState<string>("");
+  const [sessions, setSessions] = useState<ChatSession[]>(() => {
+    try {
+      const saved = localStorage.getItem("devengine_sessions") || localStorage.getItem("chat_sessions");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [customSkills, setCustomSkills] = useState<Skill[]>(() => {
+    try {
+      const saved = localStorage.getItem("devengine_skills");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [apiKeys, setApiKeys] = useState<ApiKey[]>(() => {
+    try {
+      const saved = localStorage.getItem("devengine_api_keys");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+  const [activeKeyId, setActiveKeyId] = useState<string>(() => {
+    return localStorage.getItem("devengine_active_key_id") || "";
+  });
+  const [globalEnabledModels, setGlobalEnabledModels] = useState<string[]>(() => {
+    try {
+      const saved = localStorage.getItem("devengine_enabled_models");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [];
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("devengine_api_keys", JSON.stringify(apiKeys));
+      localStorage.setItem("devengine_active_key_id", activeKeyId);
+      localStorage.setItem("devengine_enabled_models", JSON.stringify(globalEnabledModels));
+      localStorage.setItem("devengine_sessions", JSON.stringify(sessions));
+      localStorage.setItem("devengine_skills", JSON.stringify(customSkills));
+    } catch {}
+  }, [apiKeys, activeKeyId, globalEnabledModels, sessions, customSkills]);
 
   // Session Edit States
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
@@ -162,7 +200,7 @@ export default function DevEngine() {
     const activeKey = apiKeys.find((k) => k.id === activeKeyId);
     if (activeKey) {
       if (activeKey.models && activeKey.models.length > 0) {
-        geminiService.setCustomQueue(activeKey.models);
+        geminiService.setCustomQueue(activeKey.models.filter(m => !m.startsWith("OFF:")));
       } else {
         const fallbackQueue =
           activeKey.provider === Provider.GOOGLE
@@ -171,7 +209,11 @@ export default function DevEngine() {
         geminiService.setCustomQueue(fallbackQueue);
       }
     } else {
-      geminiService.resetQueue();
+      if (globalEnabledModels.length > 0) {
+        geminiService.setCustomQueue(globalEnabledModels.filter(m => !m.startsWith("OFF:")));
+      } else {
+        geminiService.resetQueue();
+      }
     }
     const currentQueue = geminiService.getCurrentQueue();
     if (currentModel && currentQueue.includes(currentModel)) {
@@ -179,7 +221,7 @@ export default function DevEngine() {
     } else {
       setCurrentModel(geminiService.getCurrentModel());
     }
-  }, [activeKeyId, apiKeys]);
+  }, [activeKeyId, apiKeys, globalEnabledModels]);
 
   const [theme, setTheme] = useState<
     "midnight" | "cyberpunk" | "monochrome" | "light"
@@ -248,12 +290,11 @@ export default function DevEngine() {
   const [settingsTab, setSettingsTab] = useState<
     | "general"
     | "profile"
-    | "keys"
     | "context"
     | "theme"
     | "performance"
     | "knowledge"
-  >("keys");
+  >("general");
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
   const [repoUrl, setRepoUrl] = useState("");
   const [showInputBox, setShowInputBox] = useState(true);
@@ -716,11 +757,35 @@ export default function DevEngine() {
               setShowSkillSuggestions(
                 stateData.preferences.showSkillSuggestions ?? true,
               );
+              if (stateData.preferences.enabledModels) {
+                setGlobalEnabledModels(stateData.preferences.enabledModels);
+              }
             }
-            if (stateData.apiKeys) setApiKeys(stateData.apiKeys);
-            if (stateData.customSkills) setCustomSkills(stateData.customSkills);
+            if (stateData.apiKeys && stateData.apiKeys.length > 0) setApiKeys(stateData.apiKeys);
+            if (stateData.customSkills) {
+              setCustomSkills(prev => {
+                const merged = [...prev];
+                for (const s of stateData.customSkills) if (!merged.find(x => x.id === s.id)) merged.push(s);
+                return merged;
+              });
+            }
             if (stateData.sessions) {
-              setSessions(stateData.sessions);
+              setSessions(prev => {
+                const merged = [...prev];
+                for (const s of stateData.sessions) {
+                  const existingIdx = merged.findIndex(x => x.id === s.id);
+                  if (existingIdx !== -1) {
+                    if (s.updatedAt > merged[existingIdx].updatedAt) merged[existingIdx] = s;
+                  } else {
+                    merged.push(s);
+                  }
+                }
+                return merged.sort((a, b) => {
+                  const tB = new Date(b.updatedAt || 0).getTime();
+                  const tA = new Date(a.updatedAt || 0).getTime();
+                  return tB - tA;
+                });
+              });
             }
           }
 
@@ -935,6 +1000,7 @@ export default function DevEngine() {
               currentModel,
               activeKeyId,
               showSkillSuggestions,
+              enabledModels: globalEnabledModels,
             },
             apiKeys,
             customSkills,
@@ -954,6 +1020,7 @@ export default function DevEngine() {
     theme,
     currentModel,
     showSkillSuggestions,
+    globalEnabledModels,
     isStateLoaded,
   ]);
 
@@ -969,7 +1036,7 @@ export default function DevEngine() {
 
   // Modals / Views
   const [view, setView] = useState<
-    "chat" | "skills" | "knowledge" | "models" | "performance" | "admin-debug"
+    "chat" | "skills" | "knowledge" | "models" | "performance" | "admin-debug" | "keys"
   >("chat");
 
   useEffect(() => {
@@ -2478,118 +2545,174 @@ export default function DevEngine() {
             </div>
           </div>
 
-          <nav className="space-y-1">
-            <button
-              onClick={() => setView("chat")}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === "chat"
-                  ? theme === "light"
-                    ? "bg-cyan-50 text-cyan-600 border border-cyan-200 shadow-sm"
-                    : "bg-cyan-900/20 text-cyan-400 border border-cyan-800/30"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <MessageSquare size={14} />
-              Terminals
-            </button>
-            <button
-              onClick={() => setView("skills")}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === "skills"
-                  ? theme === "light"
-                    ? "bg-purple-50 text-purple-600 border border-purple-200 shadow-sm"
-                    : "bg-purple-900/20 text-purple-400 border border-purple-800/30"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <Sparkles size={14} />
-              Skills Lab
-            </button>
-            <button
-              onClick={() => setView("knowledge")}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === "knowledge"
-                  ? theme === "light"
-                    ? "bg-cyan-50 text-cyan-600 border border-cyan-200 shadow-sm"
-                    : "bg-cyan-900/20 text-cyan-400 border border-cyan-800/30"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <Database size={14} />
-              Knowledge Index
-            </button>
-            <button
-              onClick={() => setShowHistory(!showHistory)}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                showHistory
-                  ? theme === "light"
-                    ? "bg-slate-200 text-slate-900"
-                    : "bg-zinc-800 text-white"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <History size={14} />
-              History Archive
-            </button>
-            <button
-              onClick={() => setView("models")}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === "models"
-                  ? theme === "light"
-                    ? "bg-amber-50 text-amber-600 border border-amber-200 shadow-sm"
-                    : "bg-amber-900/20 text-amber-400 border border-amber-800/30"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <Database size={14} />
-              Model Catalog
-            </button>
-            <button
-              onClick={() => setView("performance")}
-              className={cn(
-                "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all",
-                view === "performance"
-                  ? theme === "light"
-                    ? "bg-green-50 text-green-600 border border-green-200 shadow-sm"
-                    : "bg-green-900/20 text-green-400 border border-green-800/30"
-                  : theme === "light"
-                    ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800/50",
-              )}
-            >
-              <Activity size={14} />
-              Performance
-            </button>
-            {user?.role === "ADMIN" && (
+          <div className="space-y-8">
+            <nav className="space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2 px-2">Core Tools</div>
               <button
-                onClick={() => setView("admin-debug")}
+                onClick={() => setView("chat")}
                 className={cn(
-                  "w-full flex items-center gap-3 p-2 rounded text-xs font-mono transition-all border border-transparent",
-                  view === "admin-debug"
-                    ? "bg-red-950/20 text-red-400 border-red-500/20 shadow-[0_0_15px_rgba(239,68,68,0.15)]"
-                    : "text-red-500 hover:text-red-450 hover:bg-red-950/10",
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "chat"
+                    ? theme === "light"
+                      ? "bg-white text-cyan-600 shadow-sm border-cyan-100"
+                      : "bg-cyan-500/10 text-cyan-400 border-cyan-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
                 )}
               >
-                <Terminal size={14} className="animate-pulse" />
-                Admin Console
+                <MessageSquare size={16} className={cn("transition-transform group-hover:scale-110", view === "chat" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Terminals</span>
+                {view === "chat" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.5)]" />
+                )}
               </button>
+              
+              <button
+                onClick={() => setView("skills")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "skills"
+                    ? theme === "light"
+                      ? "bg-white text-purple-600 shadow-sm border-purple-100"
+                      : "bg-purple-500/10 text-purple-400 border-purple-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Sparkles size={16} className={cn("transition-transform group-hover:scale-110", view === "skills" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Skills Lab</span>
+                {view === "skills" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.5)]" />
+                )}
+              </button>
+
+              <button
+                onClick={() => setView("knowledge")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "knowledge"
+                    ? theme === "light"
+                      ? "bg-white text-blue-600 shadow-sm border-blue-100"
+                      : "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Database size={16} className={cn("transition-transform group-hover:scale-110", view === "knowledge" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Knowledge Index</span>
+                {view === "knowledge" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
+                )}
+              </button>
+              
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  showHistory
+                    ? theme === "light"
+                      ? "bg-slate-100 text-slate-900 border-slate-200"
+                      : "bg-zinc-800 text-white border-zinc-700"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <History size={16} className={cn("transition-transform group-hover:scale-110", showHistory ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">History Archive</span>
+                <ChevronDown size={14} className={cn("transition-transform", showHistory ? "rotate-180 opacity-100" : "opacity-40")} />
+              </button>
+            </nav>
+
+            <nav className="space-y-1">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-500 mb-2 px-2">System</div>
+              <button
+                onClick={() => setView("keys")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "keys"
+                    ? theme === "light"
+                      ? "bg-white text-emerald-600 shadow-sm border-emerald-100"
+                      : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Key size={16} className={cn("transition-transform group-hover:scale-110", view === "keys" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Manage API Keys</span>
+                {view === "keys" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
+                )}
+              </button>
+
+              <button
+                onClick={() => setView("models")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "models"
+                    ? theme === "light"
+                      ? "bg-white text-amber-600 shadow-sm border-amber-100"
+                      : "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Database size={16} className={cn("transition-transform group-hover:scale-110", view === "models" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Model Catalog</span>
+                {view === "models" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_8px_rgba(251,191,36,0.5)]" />
+                )}
+              </button>
+
+              <button
+                onClick={() => setView("performance")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "performance"
+                    ? theme === "light"
+                      ? "bg-white text-green-600 shadow-sm border-green-100"
+                      : "bg-green-500/10 text-green-400 border-green-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Activity size={16} className={cn("transition-transform group-hover:scale-110", view === "performance" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Performance</span>
+                {view === "performance" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.5)]" />
+                )}
+              </button>
+            </nav>
+
+            {user?.role === "ADMIN" && (
+              <nav className="space-y-1">
+                <div className="text-[10px] font-bold uppercase tracking-widest text-red-500/60 mb-2 px-2">Access Control</div>
+                <button
+                  onClick={() => setView("admin-debug")}
+                  className={cn(
+                    "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border group",
+                    view === "admin-debug"
+                      ? "bg-red-500/10 text-red-400 border-red-500/30 shadow-[0_0_15px_rgba(239,68,68,0.15)]"
+                      : theme === "light"
+                        ? "text-red-500 hover:text-red-600 hover:bg-red-50 border-transparent"
+                        : "text-red-500/80 hover:text-red-400 hover:bg-red-500/10 border-transparent hover:border-red-500/20",
+                  )}
+                >
+                  <Terminal size={16} className={cn("transition-transform group-hover:scale-110", view === "admin-debug" ? "animate-pulse opacity-100 scale-110" : "opacity-80")} />
+                  <span className="flex-1 text-left tracking-wide">Admin Console</span>
+                  {view === "admin-debug" && (
+                    <div className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse shadow-[0_0_8px_rgba(239,68,68,0.8)]" />
+                  )}
+                </button>
+              </nav>
             )}
-          </nav>
+          </div>
 
           {/* History Bubble (Inline or Overlay) */}
           <AnimatePresence>
@@ -2900,10 +3023,10 @@ export default function DevEngine() {
                                 contextLength: undefined,
                               },
                               ...(() => {
-                                const modalModels = activeKeyId
+                                const modalModels = (activeKeyId
                                   ? apiKeys.find((k) => k.id === activeKeyId)
                                       ?.models || []
-                                  : geminiService.getCurrentQueue();
+                                  : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue())).filter(m => !m.startsWith("OFF:"));
                                 return modalModels.map((id) => {
                                   const baseModelId = id.split("/").pop() || "";
                                   const catalogInfo = modelCatalog.find(
@@ -3544,8 +3667,8 @@ export default function DevEngine() {
                         </div>
                         <button
                           onClick={() => {
-                            setSettingsTab("keys");
-                            setShowSettings(true);
+                            setView("keys");
+                            setShowSettings(false);
                           }}
                           className={cn(
                             "px-3 py-1 rounded-lg text-[9px] font-bold uppercase tracking-wider transition-all border",
@@ -4488,9 +4611,8 @@ export default function DevEngine() {
                       })
                       .sort((a, b) => {
                         const activeModels = activeKeyId
-                          ? apiKeys.find((k) => k.id === activeKeyId)?.models ||
-                            []
-                          : geminiService.getCurrentQueue();
+                          ? apiKeys.find((k) => k.id === activeKeyId)?.models || []
+                          : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue());
                         const aActive = activeModels.includes(a.id);
                         const bActive = activeModels.includes(b.id);
                         if (aActive && !bActive) return -1;
@@ -4516,9 +4638,8 @@ export default function DevEngine() {
                       <>
                         {paginatedModels.map((model) => {
                           const activeModels = activeKeyId
-                            ? apiKeys.find((k) => k.id === activeKeyId)
-                                ?.models || []
-                            : geminiService.getCurrentQueue();
+                            ? apiKeys.find((k) => k.id === activeKeyId)?.models || []
+                            : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue());
                           const isActiveModel = activeModels.includes(model.id);
                           return (
                             <div
@@ -4559,18 +4680,70 @@ export default function DevEngine() {
                                     )}
                                   </div>
                                 </div>
-                                {model.contextLength && (
-                                  <div className="flex flex-col flex-end items-end text-right">
-                                    <span className="text-[14px] font-mono font-bold text-emerald-500">
-                                      {Number(
-                                        model.contextLength,
-                                      ).toLocaleString()}
-                                    </span>
-                                    <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">
-                                      Max Context
-                                    </span>
-                                  </div>
-                                )}
+                                <div className="flex items-center gap-4 relative z-10">
+                                  {model.contextLength && (
+                                    <div className="flex flex-col flex-end items-end text-right">
+                                      <span className="text-[14px] font-mono font-bold text-emerald-500">
+                                        {Number(
+                                          model.contextLength,
+                                        ).toLocaleString()}
+                                      </span>
+                                      <span className="text-[8px] text-zinc-600 font-mono tracking-tighter uppercase font-bold">
+                                        Max Context
+                                      </span>
+                                    </div>
+                                  )}
+                                  <button
+                                    onClick={() => {
+                                      if (activeKeyId) {
+                                        setApiKeys(prev => prev.map(k => {
+                                          if (k.id === activeKeyId) {
+                                            const hasOn = k.models?.includes(model.id);
+                                            const hasOff = k.models?.includes(`OFF:${model.id}`);
+                                            
+                                            if (hasOn && k.models?.filter(m => !m.startsWith("OFF:")).length === 1) return k; // prevent turning off only core node
+                                            
+                                            let updated = [...(k.models || [])];
+                                            if (hasOn) {
+                                              updated = updated.filter(m => m !== model.id);
+                                              updated.push(`OFF:${model.id}`);
+                                            } else {
+                                              if (hasOff) updated = updated.filter(m => m !== `OFF:${model.id}`);
+                                              updated.push(model.id); // Or insert before the first OFF: item to be safe, but push is fine
+                                            }
+                                            return { ...k, models: updated };
+                                          }
+                                          return k;
+                                        }));
+                                      } else {
+                                        const currentDefaults = geminiService.getCurrentQueue(); // defaults from system
+                                        const activeList = globalEnabledModels.length > 0 ? globalEnabledModels : currentDefaults;
+                                        const hasOn = activeList.includes(model.id);
+                                        const hasOff = activeList.includes(`OFF:${model.id}`);
+                                        if (hasOn && activeList.filter(m => !m.startsWith("OFF:")).length === 1) return;
+                                        
+                                        let updated = [...activeList];
+                                        if (hasOn) {
+                                          updated = updated.filter(m => m !== model.id);
+                                          updated.push(`OFF:${model.id}`);
+                                        } else {
+                                          if (hasOff) updated = updated.filter(m => m !== `OFF:${model.id}`);
+                                          updated.push(model.id);
+                                        }
+                                        setGlobalEnabledModels(updated);
+                                      }
+                                    }}
+                                    className={cn(
+                                      "w-8 h-4 rounded-full transition-colors relative flex items-center shadow-inner shrink-0 cursor-pointer",
+                                      isActiveModel ? "bg-cyan-500/20 border border-cyan-500/50" : "bg-black border border-zinc-800 hover:border-zinc-700"
+                                    )}
+                                  >
+                                    <div className={cn(
+                                      "w-3 h-3 rounded-full transition-all absolute",
+                                      isActiveModel ? "bg-cyan-400 right-0.5 shadow-[0_0_5px_rgba(34,211,238,0.8)]" : "bg-zinc-600 left-0.5"
+                                    )} />
+                                  </button>
+                                </div>
                               </div>
                               <p className="text-xs text-zinc-400 relative z-10 leading-relaxed font-light line-clamp-3">
                                 {model.description}
@@ -5310,550 +5483,20 @@ export default function DevEngine() {
               </div>
             </div>
           </div>
-        ) : view === "admin-debug" && user?.role === "ADMIN" ? (
-          <div className="flex-1 overflow-y-auto p-6 sm:p-12 custom-scrollbar">
-            <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4">
-              <header className="flex justify-between items-end border-b border-zinc-800 pb-6">
+        ) : view === "keys" ? (
+          <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
+            <div className="max-w-4xl mx-auto space-y-12 animate-in fade-in slide-in-from-bottom-4">
+              <header className="flex flex-col md:flex-row md:justify-between md:items-end gap-6 border-b border-border-dim pb-8">
                 <div>
-                  <h1 className="text-3xl font-mono font-bold tracking-tighter text-red-500 mb-1 uppercase flex items-center gap-3">
-                    <Terminal size={24} className="animate-pulse" />
-                    System CLI Console
+                  <h1 className="text-4xl font-mono font-bold tracking-tighter text-white mb-2 uppercase">
+                    Key Infrastructure
                   </h1>
-                  <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-widest leading-none">
-                    Diagnostic & Command Injection Terminal
+                  <p className="text-zinc-500 font-mono text-sm uppercase tracking-widest tracking-tighter opacity-60">
+                    Manage Neural Keys and Model Proxies
                   </p>
-                </div>
-                <div className="flex items-center gap-3 bg-red-950/20 border border-red-500/20 px-3 py-1.5 rounded-xl">
-                  <span className="text-[9px] font-mono text-red-400 uppercase font-bold tracking-wider animate-pulse">
-                    Root Access Linked
-                  </span>
-                  <div className="w-2 h-2 rounded-full bg-red-500 animate-ping shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
                 </div>
               </header>
-
-              <div className="bg-[#050507] border border-red-950 rounded-2xl p-5 font-mono text-xs shadow-2xl relative overflow-hidden flex flex-col min-h-[500px]">
-                {/* Vintage glowing scanlines */}
-                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.03)_0%,transparent_80%)]" />
-
-                {/* Console Output Block */}
-                <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-[400px] custom-scrollbar pr-3">
-                  {adminLogs.map((log, idx) => {
-                    let colorClass = "text-zinc-400";
-                    if (
-                      log.includes("[RUNTIME_ERROR]") ||
-                      log.includes("[REJECTION_ERROR]") ||
-                      log.includes("[SYSTEM_FAULT]") ||
-                      log.includes("[API_FAILURE]")
-                    ) {
-                      colorClass =
-                        "text-red-500 font-bold bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10";
-                    } else if (
-                      log.includes("[SYSTEM]") ||
-                      log.includes("[READY]")
-                    ) {
-                      colorClass = "text-cyan-400 font-bold";
-                    } else if (
-                      log.includes("[DATABASE]") ||
-                      log.includes("[SUCCESS]")
-                    ) {
-                      colorClass = "text-emerald-400";
-                    } else if (
-                      log.includes("[COMMAND]") ||
-                      log.includes("[CLI_INPUT]")
-                    ) {
-                      colorClass = "text-yellow-500";
-                    } else if (log.includes("DIAGNOSTIC EVENT")) {
-                      colorClass =
-                        "text-pink-400 font-extrabold bg-pink-500/5 px-2.5 py-1 rounded border border-pink-500/10";
-                    }
-                    return (
-                      <div
-                        key={idx}
-                        className={cn("leading-relaxed break-all", colorClass)}
-                      >
-                        {log}
-                      </div>
-                    );
-                  })}
-                </div>
-
-                {/* CLI Input Prompter */}
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const cmd = adminCliInput.trim();
-                    if (!cmd) return;
-
-                    const normalized = cmd.toLowerCase();
-                    const newLogs = [...adminLogs, `> ${cmd}`];
-
-                    if (normalized === "help") {
-                      newLogs.push(
-                        `[SHELL] AVAILABLE DIAGNOSICS COMMANDS:`,
-                        `  help          - View this contextual index mapper.`,
-                        `  status        - Inspect workspace databases, metrics & queues.`,
-                        `  list-skills   - Query active custom-compiled and default skills.`,
-                        `  list-keys     - Enumerate bound custom API gateway slots.`,
-                        `  test-agent    - Perform diagnostic ping on the LLM queue.`,
-                        `  clear         - Wipe the terminal display buffer.`,
-                        `  sysinfo       - Print detailed host environment telemetry details.`,
-                      );
-                    } else if (normalized === "clear") {
-                      setAdminLogs([]);
-                      setAdminCliInput("");
-                      return;
-                    } else if (normalized === "status") {
-                      newLogs.push(
-                        `[DATABASE] STATUS: OK (using direct Supabase pgPool connection)`,
-                        `[KNOWLEDGE] SYNC: ESTABLISHED (${knowledgeNodes.length} active memories, ${knowledgeProposals.length} pending proposals)`,
-                        `[ACTIVE_MODEL] QUEUE LENGTH: ${geminiService.getCurrentQueue().length} models loaded. Active: "${currentModel}"`,
-                      );
-                    } else if (normalized === "list-skills") {
-                      newLogs.push(
-                        `[ACTIVE_SKILLS_QUERY]:`,
-                        ...[...DEFAULT_SKILLS, ...customSkills].map(
-                          (s) =>
-                            `  - [${s.id}] Name: ${s.name} (Compatible Target Model: ${s.model || "general"})`,
-                        ),
-                      );
-                    } else if (normalized === "list-keys") {
-                      newLogs.push(
-                        `[BOUND_PROVIDERS_KEYS]:`,
-                        apiKeys.length === 0
-                          ? "  No custom keys bound. Falling back to default server environment key."
-                          : apiKeys
-                              .map(
-                                (k) =>
-                                  `  - SlotID: ${k.id} | Name: ${k.name} | Provider: ${k.provider}`,
-                              )
-                              .join("\n"),
-                      );
-                    } else if (normalized === "test-agent") {
-                      newLogs.push(
-                        `[TEST_LLM_PROBE]: Initializing custom link check...`,
-                        `[SUCCESS]: Model "${currentModel}" returned 200 OK. Queue responsive.`,
-                      );
-                    } else if (normalized === "sysinfo") {
-                      newLogs.push(
-                        `[SYSTEM_INFO_TELEMETRY]:`,
-                        `  UI_FRAMEWORK : React 19 (Strict Mode active)`,
-                        `  COMPLIANCE   : Strict type safety enforced (No implicit any)`,
-                        `  VIRTUAL_HOST : ${window.location.hostname}`,
-                        `  USER_AGENT   : ${navigator.userAgent}`,
-                        `  COGNITIVE_UTC: ${new Date().toISOString()}`,
-                      );
-                    } else if (normalized.includes("nguyen")) {
-                      newLogs.push(
-                        `[DIAGNOSTIC EVENT]: Lead cloud architect of DevGenie is Nguyen and he loves building high-performance TypeScript programs! 🚀🔥`,
-                      );
-                    } else {
-                      newLogs.push(
-                        `[SHELL_ERROR]: Command "${cmd}" not recognized. Type "help" for a list of available routines.`,
-                      );
-                    }
-
-                    setAdminLogs(newLogs);
-                    setAdminCliInput("");
-                  }}
-                  className="flex items-center gap-3 bg-black/60 border border-zinc-900 rounded-xl px-4 py-3 relative focus-within:border-red-500/30 transition-all shadow-inner"
-                >
-                  <span className="text-red-500 font-bold opacity-80 shrink-0 mr-1 animate-pulse">
-                    &gt;_
-                  </span>
-                  <input
-                    type="text"
-                    value={adminCliInput}
-                    onChange={(e) => setAdminCliInput(e.target.value)}
-                    placeholder='Type diagnostics console command... (try "help" or "nguyen")'
-                    className="flex-1 bg-transparent border-none text-zinc-100 font-mono text-xs outline-none placeholder:text-zinc-800"
-                    autoFocus
-                  />
-                  <button
-                    type="submit"
-                    className="px-4 py-1.5 bg-red-950/20 hover:bg-gradient-to-r hover:from-red-900/40 hover:to-red-950 border border-red-500/20 text-red-400 rounded-lg text-[10px] font-bold uppercase transition-all shadow-md active:scale-95"
-                  >
-                    Execute Inbound
-                  </button>
-                </form>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </main>
-
-      {/* Transparency Dashboard Modal */}
-      <TransparencyDashboard
-        isOpen={showTransparency}
-        onClose={() => setShowTransparency(false)}
-        theme={theme}
-      />
-
-      {/* Settings Modal */}
-      <AnimatePresence>
-        {showSettings && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 backdrop-blur-sm bg-black/60">
-            <motion.div
-              initial={{ scale: 0.95, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.95, opacity: 0 }}
-              className={cn(
-                "w-full max-w-xl rounded-3xl p-8 shadow-2xl border transition-all",
-                theme === "light"
-                  ? "bg-white border-slate-200"
-                  : "bg-surface-card border-border-dim",
-              )}
-            >
-              <div className="flex justify-between items-center mb-8">
-                <div>
-                  <h2
-                    className={cn(
-                      "text-xl font-bold uppercase tracking-tight",
-                      theme === "light" ? "text-slate-900" : "text-white",
-                    )}
-                  >
-                    System Configuration
-                  </h2>
-                  <p
-                    className={cn(
-                      "text-xs font-mono mt-1",
-                      theme === "light" ? "text-slate-500" : "text-zinc-500",
-                    )}
-                  >
-                    Adjust core neural path parameters
-                  </p>
-                </div>
-                <button
-                  onClick={() => setShowSettings(false)}
-                  className={cn(
-                    "p-2 rounded-full transition-colors",
-                    theme === "light"
-                      ? "hover:bg-slate-100 text-slate-400"
-                      : "hover:bg-zinc-800 text-zinc-500",
-                  )}
-                >
-                  <X size={20} />
-                </button>
-              </div>
-
-              <div
-                className={cn(
-                  "flex gap-8 border-b mb-8 overflow-x-auto",
-                  theme === "light" ? "border-slate-100" : "border-border-dim",
-                )}
-              >
-                {["general", "profile", "keys", "context", "theme"].map(
-                  (tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setSettingsTab(tab as any)}
-                      className={cn(
-                        "pb-4 text-[10px] whitespace-nowrap font-bold uppercase tracking-widest transition-all",
-                        settingsTab === tab
-                          ? theme === "light"
-                            ? "border-b-2 border-cyan-500 text-slate-900"
-                            : "border-b-2 border-cyan-500 text-white"
-                          : theme === "light"
-                            ? "text-slate-400 hover:text-slate-600"
-                            : "text-zinc-500 hover:text-zinc-300",
-                      )}
-                    >
-                      {tab}
-                    </button>
-                  ),
-                )}
-              </div>
-
-              <div className="space-y-6">
-                {settingsTab === "general" && (
-                  <div className="space-y-6">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                        General Configuration
-                      </label>
-                    </div>
-
-                    <div className="space-y-4">
-                      {/* Input Box Toggle */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-white">
-                            Show Chat Input Box
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            Toggle the visibility of the primary chat input area
-                            at the bottom.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => setShowInputBox((prev) => !prev)}
-                          className={cn(
-                            "relative w-10 h-5 rounded-full transition-colors",
-                            showInputBox ? "bg-cyan-500" : "bg-zinc-700",
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
-                              showInputBox ? "left-6" : "left-1",
-                            )}
-                          />
-                        </button>
-                      </div>
-
-                      {/* Skills Suggest Toggle */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-white">
-                            Skill Suggestions
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            Automatically suggest relevant skills based on your
-                            chat context.
-                          </p>
-                        </div>
-                        <button
-                          onClick={toggleSkillSuggestions}
-                          className={cn(
-                            "relative w-10 h-5 rounded-full transition-colors",
-                            showSkillSuggestions
-                              ? "bg-purple-500"
-                              : "bg-zinc-700",
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
-                              showSkillSuggestions ? "left-6" : "left-1",
-                            )}
-                          />
-                        </button>
-                      </div>
-
-                      {/* Auto Scroll Toggle */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-white">
-                            Auto Scroll
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            Automatically scroll to the newest messages as they
-                            stream in.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => setAutoScroll((prev) => !prev)}
-                          className={cn(
-                            "relative w-10 h-5 rounded-full transition-colors",
-                            autoScroll ? "bg-cyan-500" : "bg-zinc-700",
-                          )}
-                        >
-                          <div
-                            className={cn(
-                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
-                              autoScroll ? "left-6" : "left-1",
-                            )}
-                          />
-                        </button>
-                      </div>
-
-                      {/* Summarize Session */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2">
-                            <FileText size={14} /> Summarize Session
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            Generate a summary of the current chat and
-                            auto-title the session.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setShowSettings(false);
-                            handleSummarizeChat();
-                          }}
-                          disabled={messages.length === 0 || isLoading}
-                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
-                        >
-                          Summarize
-                        </button>
-                      </div>
-
-                      {/* Copy Full Transcript */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-cyan-400 flex items-center gap-2">
-                            <Copy size={14} /> Copy Transcript
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            Copy the full history of this chat session to your
-                            clipboard.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            handleCopyFullChat();
-                            setShowSettings(false);
-                          }}
-                          disabled={messages.length === 0}
-                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
-                        >
-                          Copy
-                        </button>
-                      </div>
-
-                      {/* Transparency Dashboard */}
-                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
-                        <div>
-                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2">
-                            <Shield size={14} /> Transparency Dashboard
-                          </p>
-                          <p className="text-[10px] text-zinc-500 mt-1">
-                            View system metrics, knowledge ingestion logs, and
-                            privacy boundaries.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            setShowSettings(false);
-                            setShowTransparency(true);
-                          }}
-                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
-                        >
-                          Open
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {settingsTab === "profile" && (
-                  <div className="space-y-6">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                        User Profile Configuration
-                      </label>
-                    </div>
-                    {user?.isGuest && (
-                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs rounded-xl flex items-start gap-2">
-                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                        <span>
-                          You are using a Guest Session. If you log out or clear
-                          your cache, your session data might be lost unless a
-                          permanent account is created. To upgrade, please log
-                          out and authenticate normally. Your data is still
-                          stored in the sandbox safely.
-                        </span>
-                      </div>
-                    )}
-                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-                      <div className="space-y-1.5">
-                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
-                          Registered Email
-                        </label>
-                        <input
-                          type="text"
-                          value={user?.email || ""}
-                          disabled
-                          className="w-full bg-black/40 border border-zinc-800/50 rounded-xl px-4 py-2.5 text-xs text-zinc-500 font-mono cursor-not-allowed"
-                          title="Email cannot be changed"
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
-                          Display Name
-                        </label>
-                        <input
-                          type="text"
-                          value={user?.name || ""}
-                          onChange={(e) =>
-                            setUser((prev) =>
-                              prev ? { ...prev, name: e.target.value } : null,
-                            )
-                          }
-                          className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all"
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
-                          System Instructions (Model Personalization)
-                        </label>
-                        <textarea
-                          value={user?.customInstructions || ""}
-                          onChange={(e) =>
-                            setUser((prev) =>
-                              prev
-                                ? {
-                                    ...prev,
-                                    customInstructions: e.target.value,
-                                  }
-                                : null,
-                            )
-                          }
-                          placeholder="e.g. Always respond in markdown... Act like a senior developer..."
-                          className="w-full h-24 bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all resize-none"
-                        />
-                      </div>
-                      <div className="pt-2">
-                        <button
-                          onClick={async () => {
-                            if (!user) return;
-                            const token = localStorage.getItem("session");
-                            try {
-                              const res = await fetch("/api/auth/me", {
-                                method: "PUT",
-                                headers: {
-                                  "Content-Type": "application/json",
-                                  Authorization: `Bearer ${token}`,
-                                },
-                                body: JSON.stringify({
-                                  name: user.name,
-                                  avatarUrl: user.avatarUrl,
-                                  customInstructions: user.customInstructions,
-                                }),
-                              });
-                              if (res.ok) {
-                                const updated = await res.json();
-                                setUser(updated);
-                                setValidationStatus({
-                                  type: "success",
-                                  message: "Profile updated successfully.",
-                                });
-                                setTimeout(
-                                  () => setValidationStatus(null),
-                                  3000,
-                                );
-                              }
-                            } catch (e: any) {
-                              setValidationStatus({
-                                type: "error",
-                                message: "Failed to update profile.",
-                              });
-                              setTimeout(() => setValidationStatus(null), 3000);
-                            }
-                          }}
-                          className="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95"
-                        >
-                          Save Profile
-                        </button>
-                        {validationStatus && (
-                          <span
-                            className={cn(
-                              "text-xs font-mono ml-4",
-                              validationStatus.type === "success"
-                                ? "text-green-400"
-                                : "text-red-400",
-                            )}
-                          >
-                            {validationStatus.message}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {settingsTab === "keys" && (
+              
                   <div className="space-y-6">
                     <div className="space-y-4">
                       <div className="flex items-center justify-between">
@@ -6193,127 +5836,682 @@ export default function DevEngine() {
                         ))}
                       </div>
 
-                      {activeKeyId &&
-                        apiKeys.find((k) => k.id === activeKeyId)?.models && (
+                      {(activeKeyId ? apiKeys.find((k) => k.id === activeKeyId)?.models : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue())) && (
                           <div className="pt-6 border-t border-zinc-900/50 space-y-4">
                             <div className="flex items-center justify-between">
                               <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                                Node Queue Management
+                                {activeKeyId ? "Node Queue Management" : "Default Queue Management"}
                               </label>
                               <span className="text-[10px] font-mono text-zinc-600">
                                 Active Priority
                               </span>
                             </div>
-                            <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar pr-2">
-                              {(
-                                apiKeys.find((k) => k.id === activeKeyId)
-                                  ?.models || []
-                              ).map((modelId, idx) => {
-                                return (
-                                  <div
-                                    key={`${modelId}-${idx}`}
-                                    className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node"
-                                  >
-                                    <div className="flex items-center justify-between">
-                                      <div className="flex items-center gap-3 overflow-hidden">
-                                        <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
-                                          {idx + 1}
+                            <div className="space-y-2 max-h-[500px] overflow-y-auto custom-scrollbar pr-2">
+                              {(() => {
+                                const queueModels = activeKeyId 
+                                  ? (apiKeys.find((k) => k.id === activeKeyId)?.models || []) 
+                                  : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue());
+                                
+                                return queueModels.map((rawModelId, idx) => {
+                                  const isOff = rawModelId.startsWith("OFF:");
+                                  const modelId = isOff ? rawModelId.substring(4) : rawModelId;
+                                  return (
+                                    <div
+                                      key={`${rawModelId}-${idx}`}
+                                      className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node"
+                                    >
+                                      <div className="flex items-center justify-between">
+                                        <div className="flex items-center gap-3 overflow-hidden">
+                                          <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
+                                            {idx + 1}
+                                          </div>
+                                          <div className="flex flex-col">
+                                            <span className={cn("text-[10px] font-mono truncate uppercase tracking-tight", isOff ? "text-zinc-600 line-through" : "text-zinc-300")}>
+                                              {modelId.split("/").pop()}
+                                            </span>
+                                          </div>
                                         </div>
-                                        <div className="flex flex-col">
-                                          <span className="text-[10px] font-mono text-zinc-300 truncate uppercase tracking-tight">
-                                            {modelId.split("/").pop()}
-                                          </span>
+                                        <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
+                                          <button
+                                            disabled={idx === 0}
+                                            onClick={() => {
+                                              if (activeKeyId) {
+                                                setApiKeys((prev) =>
+                                                  prev.map((k) => {
+                                                    if (k.id === activeKeyId && k.models) {
+                                                      const next = [...k.models];
+                                                      [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                                      return { ...k, models: next };
+                                                    }
+                                                    return k;
+                                                  })
+                                                );
+                                              } else {
+                                                const next = [...queueModels];
+                                                [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                                setGlobalEnabledModels(next);
+                                              }
+                                            }}
+                                            className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                          >
+                                            <ChevronUp size={14} />
+                                          </button>
+                                          <button
+                                            disabled={idx === queueModels.length - 1}
+                                            onClick={() => {
+                                              if (activeKeyId) {
+                                                setApiKeys((prev) =>
+                                                  prev.map((k) => {
+                                                    if (k.id === activeKeyId && k.models) {
+                                                      const next = [...k.models];
+                                                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                                      return { ...k, models: next };
+                                                    }
+                                                    return k;
+                                                  })
+                                                );
+                                              } else {
+                                                const next = [...queueModels];
+                                                [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                                setGlobalEnabledModels(next);
+                                              }
+                                            }}
+                                            className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                          >
+                                            <ChevronDown size={14} />
+                                          </button>
+                                          <button
+                                            disabled={idx === 0 && !isOff && queueModels.filter(m => !m.startsWith("OFF:")).length === 1}
+                                            onClick={() => {
+                                              if (activeKeyId) {
+                                                setApiKeys((prev) =>
+                                                  prev.map((k) => {
+                                                    if (k.id === activeKeyId && k.models) {
+                                                      const next = k.models.filter((_, i) => i !== idx);
+                                                      const newVal = isOff ? modelId : `OFF:${modelId}`;
+                                                      next.push(newVal);
+                                                      return { ...k, models: next };
+                                                    }
+                                                    return k;
+                                                  })
+                                                );
+                                              } else {
+                                                const next = queueModels.filter((_, i) => i !== idx);
+                                                const newVal = isOff ? modelId : `OFF:${modelId}`;
+                                                next.push(newVal);
+                                                setGlobalEnabledModels(next);
+                                              }
+                                            }}
+                                            className={cn(
+                                              "w-7 h-3.5 rounded-full transition-colors relative flex items-center shadow-inner shrink-0",
+                                              (idx === 0 && queueModels.filter(m => !m.startsWith("OFF:")).length === 1 && !isOff) ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+                                              isOff ? "bg-black border border-zinc-800" : "bg-cyan-500/20 border border-cyan-500/50"
+                                            )}
+                                            title={isOff ? "Enable model" : "Disable model"}
+                                          >
+                                            <div className={cn(
+                                              "w-2.5 h-2.5 rounded-full transition-all absolute",
+                                              isOff ? "bg-zinc-600 left-0.5" : "bg-cyan-400 right-0.5 shadow-[0_0_5px_rgba(34,211,238,0.8)]"
+                                            )} />
+                                          </button>
                                         </div>
-                                      </div>
-                                      <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
-                                        <button
-                                          disabled={idx === 0}
-                                          onClick={() => {
-                                            setApiKeys((prev) =>
-                                              prev.map((k) => {
-                                                if (
-                                                  k.id === activeKeyId &&
-                                                  k.models
-                                                ) {
-                                                  const next = [...k.models];
-                                                  [next[idx], next[idx - 1]] = [
-                                                    next[idx - 1],
-                                                    next[idx],
-                                                  ];
-                                                  return { ...k, models: next };
-                                                }
-                                                return k;
-                                              }),
-                                            );
-                                          }}
-                                          className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                        >
-                                          <ChevronUp size={14} />
-                                        </button>
-                                        <button
-                                          disabled={
-                                            idx ===
-                                            (apiKeys.find(
-                                              (k) => k.id === activeKeyId,
-                                            )?.models?.length || 1) -
-                                              1
-                                          }
-                                          onClick={() => {
-                                            setApiKeys((prev) =>
-                                              prev.map((k) => {
-                                                if (
-                                                  k.id === activeKeyId &&
-                                                  k.models
-                                                ) {
-                                                  const next = [...k.models];
-                                                  [next[idx], next[idx + 1]] = [
-                                                    next[idx + 1],
-                                                    next[idx],
-                                                  ];
-                                                  return { ...k, models: next };
-                                                }
-                                                return k;
-                                              }),
-                                            );
-                                          }}
-                                          className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                        >
-                                          <ChevronDown size={14} />
-                                        </button>
-                                        <button
-                                          onClick={() => {
-                                            setApiKeys((prev) =>
-                                              prev.map((k) => {
-                                                if (
-                                                  k.id === activeKeyId &&
-                                                  k.models
-                                                ) {
-                                                  return {
-                                                    ...k,
-                                                    models: k.models.filter(
-                                                      (_, i) => i !== idx,
-                                                    ),
-                                                  };
-                                                }
-                                                return k;
-                                              }),
-                                            );
-                                          }}
-                                          className="p-1 text-zinc-600 hover:text-red-500"
-                                        >
-                                          <X size={14} />
-                                        </button>
                                       </div>
                                     </div>
-                                  </div>
-                                );
-                              })}
+                                  );
+                                });
+                              })()}
                             </div>
                           </div>
                         )}
                     </div>
                   </div>
+                
+            </div>
+          </div>
+        ) : view === "admin-debug" && user?.role === "ADMIN" ? (
+          <div className="flex-1 overflow-y-auto p-6 sm:p-12 custom-scrollbar">
+            <div className="max-w-5xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4">
+              <header className="flex justify-between items-end border-b border-zinc-800 pb-6">
+                <div>
+                  <h1 className="text-3xl font-mono font-bold tracking-tighter text-red-500 mb-1 uppercase flex items-center gap-3">
+                    <Terminal size={24} className="animate-pulse" />
+                    System CLI Console
+                  </h1>
+                  <p className="text-zinc-500 font-mono text-[10px] uppercase tracking-widest leading-none">
+                    Diagnostic & Command Injection Terminal
+                  </p>
+                </div>
+                <div className="flex items-center gap-3 bg-red-950/20 border border-red-500/20 px-3 py-1.5 rounded-xl">
+                  <span className="text-[9px] font-mono text-red-400 uppercase font-bold tracking-wider animate-pulse">
+                    Root Access Linked
+                  </span>
+                  <div className="w-2 h-2 rounded-full bg-red-500 animate-ping shadow-[0_0_10px_rgba(239,68,68,0.5)]" />
+                </div>
+              </header>
+
+              <div className="bg-[#050507] border border-red-950 rounded-2xl p-5 font-mono text-xs shadow-2xl relative overflow-hidden flex flex-col min-h-[500px]">
+                {/* Vintage glowing scanlines */}
+                <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_at_center,rgba(239,68,68,0.03)_0%,transparent_80%)]" />
+
+                {/* Console Output Block */}
+                <div className="flex-1 overflow-y-auto space-y-2 mb-4 max-h-[400px] custom-scrollbar pr-3">
+                  {adminLogs.map((log, idx) => {
+                    let colorClass = "text-zinc-400";
+                    if (
+                      log.includes("[RUNTIME_ERROR]") ||
+                      log.includes("[REJECTION_ERROR]") ||
+                      log.includes("[SYSTEM_FAULT]") ||
+                      log.includes("[API_FAILURE]")
+                    ) {
+                      colorClass =
+                        "text-red-500 font-bold bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10";
+                    } else if (
+                      log.includes("[SYSTEM]") ||
+                      log.includes("[READY]")
+                    ) {
+                      colorClass = "text-cyan-400 font-bold";
+                    } else if (
+                      log.includes("[DATABASE]") ||
+                      log.includes("[SUCCESS]")
+                    ) {
+                      colorClass = "text-emerald-400";
+                    } else if (
+                      log.includes("[COMMAND]") ||
+                      log.includes("[CLI_INPUT]")
+                    ) {
+                      colorClass = "text-yellow-500";
+                    } else if (log.includes("DIAGNOSTIC EVENT")) {
+                      colorClass =
+                        "text-pink-400 font-extrabold bg-pink-500/5 px-2.5 py-1 rounded border border-pink-500/10";
+                    }
+                    return (
+                      <div
+                        key={idx}
+                        className={cn("leading-relaxed break-all", colorClass)}
+                      >
+                        {log}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* CLI Input Prompter */}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const cmd = adminCliInput.trim();
+                    if (!cmd) return;
+
+                    const normalized = cmd.toLowerCase();
+                    const newLogs = [...adminLogs, `> ${cmd}`];
+
+                    if (normalized === "help") {
+                      newLogs.push(
+                        `[SHELL] AVAILABLE DIAGNOSICS COMMANDS:`,
+                        `  help          - View this contextual index mapper.`,
+                        `  status        - Inspect workspace databases, metrics & queues.`,
+                        `  list-skills   - Query active custom-compiled and default skills.`,
+                        `  list-keys     - Enumerate bound custom API gateway slots.`,
+                        `  test-agent    - Perform diagnostic ping on the LLM queue.`,
+                        `  clear         - Wipe the terminal display buffer.`,
+                        `  sysinfo       - Print detailed host environment telemetry details.`,
+                      );
+                    } else if (normalized === "clear") {
+                      setAdminLogs([]);
+                      setAdminCliInput("");
+                      return;
+                    } else if (normalized === "status") {
+                      newLogs.push(
+                        `[DATABASE] STATUS: OK (using direct Supabase pgPool connection)`,
+                        `[KNOWLEDGE] SYNC: ESTABLISHED (${knowledgeNodes.length} active memories, ${knowledgeProposals.length} pending proposals)`,
+                        `[ACTIVE_MODEL] QUEUE LENGTH: ${geminiService.getCurrentQueue().length} models loaded. Active: "${currentModel}"`,
+                      );
+                    } else if (normalized === "list-skills") {
+                      newLogs.push(
+                        `[ACTIVE_SKILLS_QUERY]:`,
+                        ...[...DEFAULT_SKILLS, ...customSkills].map(
+                          (s) =>
+                            `  - [${s.id}] Name: ${s.name} (Compatible Target Model: ${s.model || "general"})`,
+                        ),
+                      );
+                    } else if (normalized === "list-keys") {
+                      newLogs.push(
+                        `[BOUND_PROVIDERS_KEYS]:`,
+                        apiKeys.length === 0
+                          ? "  No custom keys bound. Falling back to default server environment key."
+                          : apiKeys
+                              .map(
+                                (k) =>
+                                  `  - SlotID: ${k.id} | Name: ${k.name} | Provider: ${k.provider}`,
+                              )
+                              .join("\n"),
+                      );
+                    } else if (normalized === "test-agent") {
+                      newLogs.push(
+                        `[TEST_LLM_PROBE]: Initializing custom link check...`,
+                        `[SUCCESS]: Model "${currentModel}" returned 200 OK. Queue responsive.`,
+                      );
+                    } else if (normalized === "sysinfo") {
+                      newLogs.push(
+                        `[SYSTEM_INFO_TELEMETRY]:`,
+                        `  UI_FRAMEWORK : React 19 (Strict Mode active)`,
+                        `  COMPLIANCE   : Strict type safety enforced (No implicit any)`,
+                        `  VIRTUAL_HOST : ${window.location.hostname}`,
+                        `  USER_AGENT   : ${navigator.userAgent}`,
+                        `  COGNITIVE_UTC: ${new Date().toISOString()}`,
+                      );
+                    } else if (normalized.includes("nguyen")) {
+                      newLogs.push(
+                        `[DIAGNOSTIC EVENT]: Lead cloud architect of DevGenie is Nguyen and he loves building high-performance TypeScript programs! 🚀🔥`,
+                      );
+                    } else {
+                      newLogs.push(
+                        `[SHELL_ERROR]: Command "${cmd}" not recognized. Type "help" for a list of available routines.`,
+                      );
+                    }
+
+                    setAdminLogs(newLogs);
+                    setAdminCliInput("");
+                  }}
+                  className="flex items-center gap-3 bg-black/60 border border-zinc-900 rounded-xl px-4 py-3 relative focus-within:border-red-500/30 transition-all shadow-inner"
+                >
+                  <span className="text-red-500 font-bold opacity-80 shrink-0 mr-1 animate-pulse">
+                    &gt;_
+                  </span>
+                  <input
+                    type="text"
+                    value={adminCliInput}
+                    onChange={(e) => setAdminCliInput(e.target.value)}
+                    placeholder='Type diagnostics console command... (try "help" or "nguyen")'
+                    className="flex-1 bg-transparent border-none text-zinc-100 font-mono text-xs outline-none placeholder:text-zinc-800"
+                    autoFocus
+                  />
+                  <button
+                    type="submit"
+                    className="px-4 py-1.5 bg-red-950/20 hover:bg-gradient-to-r hover:from-red-900/40 hover:to-red-950 border border-red-500/20 text-red-400 rounded-lg text-[10px] font-bold uppercase transition-all shadow-md active:scale-95"
+                  >
+                    Execute Inbound
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </main>
+
+      {/* Transparency Dashboard Modal */}
+      <TransparencyDashboard
+        isOpen={showTransparency}
+        onClose={() => setShowTransparency(false)}
+        theme={theme}
+      />
+
+      {/* Settings Modal */}
+      <AnimatePresence>
+        {showSettings && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 backdrop-blur-sm bg-black/60">
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className={cn(
+                "w-full max-w-xl rounded-3xl p-8 shadow-2xl border transition-all",
+                theme === "light"
+                  ? "bg-white border-slate-200"
+                  : "bg-surface-card border-border-dim",
+              )}
+            >
+              <div className="flex justify-between items-center mb-8">
+                <div>
+                  <h2
+                    className={cn(
+                      "text-xl font-bold uppercase tracking-tight",
+                      theme === "light" ? "text-slate-900" : "text-white",
+                    )}
+                  >
+                    System Configuration
+                  </h2>
+                  <p
+                    className={cn(
+                      "text-xs font-mono mt-1",
+                      theme === "light" ? "text-slate-500" : "text-zinc-500",
+                    )}
+                  >
+                    Adjust core neural path parameters
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowSettings(false)}
+                  className={cn(
+                    "p-2 rounded-full transition-colors",
+                    theme === "light"
+                      ? "hover:bg-slate-100 text-slate-400"
+                      : "hover:bg-zinc-800 text-zinc-500",
+                  )}
+                >
+                  <X size={20} />
+                </button>
+              </div>
+
+              <div
+                className={cn(
+                  "flex gap-8 border-b mb-8 overflow-x-auto",
+                  theme === "light" ? "border-slate-100" : "border-border-dim",
                 )}
+              >
+                {["general", "profile", "context", "theme"].map(
+                  (tab) => (
+                    <button
+                      key={tab}
+                      onClick={() => setSettingsTab(tab as any)}
+                      className={cn(
+                        "pb-4 text-[10px] whitespace-nowrap font-bold uppercase tracking-widest transition-all",
+                        settingsTab === tab
+                          ? theme === "light"
+                            ? "border-b-2 border-cyan-500 text-slate-900"
+                            : "border-b-2 border-cyan-500 text-white"
+                          : theme === "light"
+                            ? "text-slate-400 hover:text-slate-600"
+                            : "text-zinc-500 hover:text-zinc-300",
+                      )}
+                    >
+                      {tab}
+                    </button>
+                  ),
+                )}
+              </div>
+
+              <div className="space-y-6">
+                {settingsTab === "general" && (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                        General Configuration
+                      </label>
+                    </div>
+
+                    <div className="space-y-4">
+                      {/* Input Box Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">
+                            Show Chat Input Box
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Toggle the visibility of the primary chat input area
+                            at the bottom.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setShowInputBox((prev) => !prev)}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            showInputBox ? "bg-cyan-500" : "bg-zinc-700",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                              showInputBox ? "left-6" : "left-1",
+                            )}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Skills Suggest Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">
+                            Skill Suggestions
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Automatically suggest relevant skills based on your
+                            chat context.
+                          </p>
+                        </div>
+                        <button
+                          onClick={toggleSkillSuggestions}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            showSkillSuggestions
+                              ? "bg-purple-500"
+                              : "bg-zinc-700",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                              showSkillSuggestions ? "left-6" : "left-1",
+                            )}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Auto Scroll Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-white">
+                            Auto Scroll
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Automatically scroll to the newest messages as they
+                            stream in.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setAutoScroll((prev) => !prev)}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors",
+                            autoScroll ? "bg-cyan-500" : "bg-zinc-700",
+                          )}
+                        >
+                          <div
+                            className={cn(
+                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                              autoScroll ? "left-6" : "left-1",
+                            )}
+                          />
+                        </button>
+                      </div>
+
+                      {/* Summarize Session */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2">
+                            <FileText size={14} /> Summarize Session
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Generate a summary of the current chat and
+                            auto-title the session.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setShowSettings(false);
+                            handleSummarizeChat();
+                          }}
+                          disabled={messages.length === 0 || isLoading}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Summarize
+                        </button>
+                      </div>
+
+                      {/* Copy Full Transcript */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-cyan-400 flex items-center gap-2">
+                            <Copy size={14} /> Copy Transcript
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Copy the full history of this chat session to your
+                            clipboard.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            handleCopyFullChat();
+                            setShowSettings(false);
+                          }}
+                          disabled={messages.length === 0}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Copy
+                        </button>
+                      </div>
+
+                      {/* Transparency Dashboard */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div>
+                          <p className="text-xs font-bold text-emerald-400 flex items-center gap-2">
+                            <Shield size={14} /> Transparency Dashboard
+                          </p>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            View system metrics, knowledge ingestion logs, and
+                            privacy boundaries.
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            setShowSettings(false);
+                            setShowTransparency(true);
+                          }}
+                          className="px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs font-bold uppercase transition-colors"
+                        >
+                          Open
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {settingsTab === "profile" && (
+                  <div className="space-y-6">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                        User Profile Configuration
+                      </label>
+                    </div>
+                    {user?.isGuest && (
+                      <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-500 text-xs rounded-xl flex items-start gap-2">
+                        <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                        <span>
+                          You are using a Guest Session. If you log out or clear
+                          your cache, your session data might be lost unless a
+                          permanent account is created. To upgrade, please log
+                          out and authenticate normally. Your data is still
+                          stored in the sandbox safely.
+                        </span>
+                      </div>
+                    )}
+                    <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
+                          Registered Email
+                        </label>
+                        <input
+                          type="text"
+                          value={user?.email || ""}
+                          disabled
+                          className="w-full bg-black/40 border border-zinc-800/50 rounded-xl px-4 py-2.5 text-xs text-zinc-500 font-mono cursor-not-allowed"
+                          title="Email cannot be changed"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
+                          Display Name
+                        </label>
+                        <input
+                          type="text"
+                          value={user?.name || ""}
+                          onChange={(e) =>
+                            setUser((prev) =>
+                              prev ? { ...prev, name: e.target.value } : null,
+                            )
+                          }
+                          className="w-full bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all"
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <label className="text-[8px] font-mono text-zinc-500 uppercase">
+                          System Instructions (Model Personalization)
+                        </label>
+                        <textarea
+                          value={user?.customInstructions || ""}
+                          onChange={(e) =>
+                            setUser((prev) =>
+                              prev
+                                ? {
+                                    ...prev,
+                                    customInstructions: e.target.value,
+                                  }
+                                : null,
+                            )
+                          }
+                          placeholder="e.g. Always respond in markdown... Act like a senior developer..."
+                          className="w-full h-24 bg-black/60 border border-zinc-800 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 text-cyan-100 font-mono transition-all resize-none"
+                        />
+                      </div>
+                      <div className="pt-2">
+                        <button
+                          onClick={async () => {
+                            if (!user) return;
+                            const token = localStorage.getItem("session");
+                            try {
+                              const res = await fetch("/api/auth/me", {
+                                method: "PUT",
+                                headers: {
+                                  "Content-Type": "application/json",
+                                  Authorization: `Bearer ${token}`,
+                                },
+                                body: JSON.stringify({
+                                  name: user.name,
+                                  avatarUrl: user.avatarUrl,
+                                  customInstructions: user.customInstructions,
+                                }),
+                              });
+                              if (res.ok) {
+                                const updated = await res.json();
+                                setUser(updated);
+                                setValidationStatus({
+                                  type: "success",
+                                  message: "Profile updated successfully.",
+                                });
+                                setTimeout(
+                                  () => setValidationStatus(null),
+                                  3000,
+                                );
+                              }
+                            } catch (e: any) {
+                              setValidationStatus({
+                                type: "error",
+                                message: "Failed to update profile.",
+                              });
+                              setTimeout(() => setValidationStatus(null), 3000);
+                            }
+                          }}
+                          className="px-6 py-2.5 bg-cyan-600 hover:bg-cyan-500 text-black rounded-xl text-xs font-bold uppercase tracking-widest transition-all shadow-lg active:scale-95"
+                        >
+                          Save Profile
+                        </button>
+                        {validationStatus && (
+                          <span
+                            className={cn(
+                              "text-xs font-mono ml-4",
+                              validationStatus.type === "success"
+                                ? "text-green-400"
+                                : "text-red-400",
+                            )}
+                          >
+                            {validationStatus.message}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                
 
                 {settingsTab === "context" && (
                   <div className="space-y-3">

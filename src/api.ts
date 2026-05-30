@@ -2,7 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import * as jose from 'jose';
 import crypto from 'crypto';
-import { eq, sql } from 'drizzle-orm';
+import { eq, sql, inArray } from 'drizzle-orm';
 import path from 'path';
 
 import { db } from './db/index.js';
@@ -692,6 +692,22 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
             },
             required: ["code", "language"]
           }
+        },
+        {
+          name: "read_github_repo",
+          description: "Read the file structure and contents of a public GitHub repository. This tool returns the repository file tree. You can optionally request the content of specific files by providing their paths. Use this when the user shares a GitHub link and asks you to read or analyze it.",
+          parameters: {
+            type: Type.OBJECT,
+            properties: {
+              repoUrl: { type: Type.STRING, description: "The public GitHub repository URL (e.g. https://github.com/DZT711/DZT711)" },
+              filesToRead: { 
+                type: Type.ARRAY, 
+                items: { type: Type.STRING },
+                description: "Optional list of file paths (from the repo root) to read their contents. e.g. ['package.json', 'src/index.ts']"
+              }
+            },
+            required: ["repoUrl"]
+          }
         }
       ]
     };
@@ -905,6 +921,59 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
                 toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success", output: executionOutput } } });
               } catch (err: any) {
                 toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
+              }
+            } else if (fc.name === 'read_github_repo') {
+              const { repoUrl, filesToRead } = fc.args as any;
+              sendEvent('status', { message: `🔍 Reading GitHub Repository: ${repoUrl}` });
+              
+              const fetchGithubRepo = async (url: string, files?: string[]): Promise<any> => {
+                const match = url.match(/github\.com\/([^\/]+)\/([^\/\s]+)/i);
+                if (!match) {
+                   throw new Error("Invalid GitHub URL format.");
+                }
+                const owner = match[1];
+                const repo = match[2].replace(/\.git$/, '');
+                
+                try {
+                  const defaultBranchUrl = `https://api.github.com/repos/${owner}/${repo}`;
+                  const repoInfoRes = await fetch(defaultBranchUrl, { headers: { 'User-Agent': 'DevGenie-AI' }});
+                  if (!repoInfoRes.ok) throw new Error("Could not fetch repo info. Ensure it is public.");
+                  const repoInfo = await repoInfoRes.json();
+                  const defaultBranch = repoInfo.default_branch || 'main';
+
+                  let result: any = { status: "success", owner, repo, defaultBranch };
+
+                  if (!files || files.length === 0) {
+                     const treeUrl = `https://api.github.com/repos/${owner}/${repo}/git/trees/${defaultBranch}?recursive=1`;
+                     const treeRes = await fetch(treeUrl, { headers: { 'User-Agent': 'DevGenie-AI' }});
+                     if (!treeRes.ok) throw new Error("Could not fetch file tree.");
+                     const treeData = await treeRes.json();
+                     result.fileTree = treeData.tree.map((node: any) => node.path).filter((p: string) => !p.startsWith('.git/'));
+                  } else {
+                     result.fileContents = {};
+                     for (const file of files) {
+                        const rawUrl = `https://raw.githubusercontent.com/${owner}/${repo}/${defaultBranch}/${file}`;
+                        const rawRes = await fetch(rawUrl, { headers: { 'User-Agent': 'DevGenie-AI' }});
+                        if (rawRes.ok) {
+                           result.fileContents[file] = await rawRes.text();
+                        } else {
+                           result.fileContents[file] = `Error: Could not read file ${file}. (${rawRes.status})`;
+                        }
+                     }
+                  }
+                  return result;
+                } catch (e: any) {
+                  return { status: "error", error: e.message };
+                }
+              };
+
+              try {
+                const fetchResult = await fetchGithubRepo(repoUrl, filesToRead);
+                toolResponses.push({ functionResponse: { name: fc.name, response: fetchResult } });
+                sendEvent('text', `\n*Successfully processed GitHub operation for ${repoUrl}*\n`);
+              } catch (err: any) {
+                toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
+                sendEvent('text', `\n*Failed to read ${repoUrl}: ${err.message}*\n`);
               }
             } else {
               toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success" } } });
@@ -1567,11 +1636,13 @@ apiRouter.get('/user/state', async (req, res) => {
       const sessionsList = await tx.select().from(sessions).where(eq(sessions.userId, userId));
       const ids = sessionsList.map(s => s.id);
       const messagesList = ids.length > 0 
-        ? await tx.select().from(messages).where(sql`${messages.sessionId} IN ${ids}`)
+        ? await tx.select().from(messages).where(inArray(messages.sessionId, ids))
         : [];
       
       const formatted = sessionsList.map(s => ({
         ...s,
+        updatedAt: s.updatedAt ? new Date(s.updatedAt).getTime() : Date.now(),
+        createdAt: s.createdAt ? new Date(s.createdAt).getTime() : Date.now(),
         messages: messagesList.filter(m => m.sessionId === s.id).map(m => ({
           id: m.id,
           role: m.role,
@@ -1582,7 +1653,7 @@ apiRouter.get('/user/state', async (req, res) => {
           attachments: m.attachments,
           rating: m.rating,
           createdAt: new Date(m.createdAt).getTime(),
-        }))
+        })).sort((a, b) => a.createdAt - b.createdAt)
       }));
 
       return { userPrefs: prefs, userKeys: keys, userSkills: skills, formattedSessions: formatted };
@@ -1663,6 +1734,8 @@ apiRouter.put('/user/state', async (req, res) => {
             userId,
             title: s.title || 'Chat Session',
             pinned: s.pinned || false,
+            updatedAt: s.updatedAt ? new Date(s.updatedAt) : new Date(),
+            createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
           });
           if (s.messages && Array.isArray(s.messages) && s.messages.length > 0) {
             const msgsToInsert = s.messages.map((m: any) => ({
@@ -1670,11 +1743,12 @@ apiRouter.put('/user/state', async (req, res) => {
               sessionId: s.id,
               role: m.role || 'user',
               content: m.content || '',
-              modelUsed: m.modelName,
+              modelUsed: m.modelName || m.modelUsed,
               imageUrl: m.imageUrl,
               videoUrl: m.videoUrl,
               attachments: m.attachments || [],
               rating: typeof m.rating === 'number' ? m.rating : 0,
+              createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
             }));
             await tx.insert(messages).values(msgsToInsert);
           }

@@ -190,6 +190,7 @@ export const userPreferences = pgTable('user_preferences', {
   currentModel: varchar('current_model', { length: 255 }),
   activeKeyId: varchar('active_key_id', { length: 255 }),
   showSkillSuggestions: boolean('show_skill_suggestions').default(true),
+  enabledModels: jsonb('enabled_models').$type<string[]>(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
