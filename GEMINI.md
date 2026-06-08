@@ -29,4 +29,14 @@
 - Do not use any for types.
 - Do not put business logic directly in UI components.
 
-@./src/agent/SKILLS.md
+@./.agents/skills/frontend-design.md
+@./.agents/skills/taste-skill.md
+
+@./.agents/skills/gsap-core.md
+@./.agents/skills/gsap-frameworks.md
+@./.agents/skills/gsap-performance.md
+@./.agents/skills/gsap-plugins.md
+@./.agents/skills/gsap-react.md
+@./.agents/skills/gsap-scrolltrigger.md
+@./.agents/skills/gsap-timeline.md
+@./.agents/skills/gsap-utils.md
