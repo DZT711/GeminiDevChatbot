@@ -41,6 +41,12 @@ const isLocal = !dbUrl || dbUrl.includes('localhost') || dbUrl.includes('127.0.0
 const pool = new Pool({
   connectionString: getSafeDbUrl(dbUrl),
   ssl: isLocal ? undefined : { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+});
+
+pool.on('error', (err, client) => {
+  console.error('Unexpected error on idle client', err);
 });
 
 export const db = drizzle(pool, { schema });

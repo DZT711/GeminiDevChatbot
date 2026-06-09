@@ -1,3 +1,5 @@
+import { setupLogInterception } from './src/logInterceptor.js';
+setupLogInterception();
 import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';

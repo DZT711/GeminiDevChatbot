@@ -247,6 +247,24 @@ export default function DevEngine() {
   );
   const [modelCatalog, setModelCatalog] = useState<ModelInformation[]>([]);
 
+  const currentContextTokens = useMemo(() => {
+    // Rough estimate: ~4 chars per token for messages + explicit input
+    const historyText = messages.map(m => m.content).join(' ');
+    const allText = historyText + ' ' + input;
+    return Math.ceil(allText.length / 4);
+  }, [messages, input]);
+
+  const currentModelMaxContext = useMemo(() => {
+    if (currentModel === ModelId.HYBRID) return 1000000;
+    const baseModelId = currentModel.split('/').pop() || "";
+    const catalogInfo = modelCatalog.find(
+      (mc) =>
+        mc.id === currentModel ||
+        (baseModelId && mc.id.endsWith("/" + baseModelId)),
+    );
+    return catalogInfo?.contextLength ? Number(catalogInfo.contextLength) : 128000;
+  }, [currentModel, modelCatalog]);
+
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const [isRepoModalOpen, setIsRepoModalOpen] = useState(false);
@@ -864,6 +882,26 @@ export default function DevEngine() {
       ]);
     };
     
+    // Connect to Backend System Logs
+    const token = localStorage.getItem('session');
+    let evtSource: EventSource | null = null;
+    if (token) {
+      evtSource = new EventSource(`/api/admin/logs?token=${token}`);
+      evtSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'history') {
+            setAdminLogs(prev => [...prev, ...data.logs]);
+          } else if (data.type === 'log') {
+            setAdminLogs(prev => [...prev, data.log]);
+          }
+        } catch(e) {}
+      };
+      evtSource.onerror = () => {
+         // silently close/reconnect
+      };
+    }
+
     // Intercept console logs to pipe to System CLI Console
     const origLog = console.log;
     const origInfo = console.info;
@@ -871,11 +909,17 @@ export default function DevEngine() {
     const origError = console.error;
     
     const stringifyArgs = (args: any[]) => args.map(a => {
+      if (a instanceof Error) {
+        return `${a.name}: ${a.message}`;
+      }
       if (typeof a === 'object' && a !== null) {
         try {
-          return JSON.stringify(a);
+          // If object has no keys (like some custom error instances Event etc), try to read its properties
+          const str = JSON.stringify(a);
+          if (str === '{}' && a.message) return a.message;
+          return str;
         } catch (e) {
-          return Object.prototype.toString.call(a);
+          return String(a);
         }
       }
       return String(a);
@@ -3439,7 +3483,7 @@ export default function DevEngine() {
                                   : "placeholder:text-zinc-600 text-zinc-200",
                                 isInputMaximized
                                   ? "min-h-[50vh] max-h-[80vh]"
-                                  : "min-h-[80px] max-h-64"
+                                  : "min-h-[140px] max-h-64"
                               )}
                               onKeyDown={(e) => {
                                 if (showCommands) {
@@ -3601,6 +3645,23 @@ export default function DevEngine() {
                                     </div>
                                   </div>
                                 )}
+                              </div>
+                              
+                              <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
+                              
+                              <div className={cn("flex flex-col justify-center px-1 shrink-0 cursor-help min-w-[70px]", theme === 'light' ? "text-slate-500" : "text-zinc-400")} title="Estimated Context Usage">
+                                <div className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider font-bold whitespace-nowrap">
+                                  <span>{currentContextTokens > 1000 ? (currentContextTokens/1000).toFixed(1) + 'k' : currentContextTokens}</span>
+                                  <span className="opacity-50 text-[8px] mt-px">/</span>
+                                  <span>{currentModelMaxContext >= 1000000 ? (currentModelMaxContext/1000000).toFixed(1) + 'M' : currentModelMaxContext >= 1000 ? (currentModelMaxContext/1000).toFixed(0) + 'K' : currentModelMaxContext}</span>
+                                  <span className="opacity-50 ml-0.5">Ctx</span>
+                                </div>
+                                <div className={cn("w-full h-1 rounded-full overflow-hidden mt-1 shadow-inner", theme === 'light' ? "bg-slate-200/80" : "bg-black/40")}>
+                                  <div 
+                                    className={cn("h-full transition-all duration-500", (currentContextTokens / currentModelMaxContext) > 0.8 ? "bg-red-500/80" : (currentContextTokens / currentModelMaxContext) > 0.5 ? "bg-amber-500/80" : "bg-emerald-500/80")} 
+                                    style={{ width: `${Math.min(100, Math.max(0, (currentContextTokens / currentModelMaxContext) * 100))}%` }} 
+                                  />
+                                </div>
                               </div>
                             </div>
 
@@ -5463,9 +5524,13 @@ export default function DevEngine() {
                     let colorClass = "text-zinc-400";
                     if (
                       log.includes("[RUNTIME_ERROR]") ||
-                      log.includes("[REJECTION_ERROR]") ||
+                      log.includes("[REJECTION]") ||
                       log.includes("[SYSTEM_FAULT]") ||
-                      log.includes("[API_FAILURE]")
+                      log.includes("[API_FAILURE]") ||
+                      log.includes("[ERROR]") ||
+                      log.includes("[BACKEND_ERROR]") ||
+                      log.includes("Error:") ||
+                      log.includes("unhandledrejection")
                     ) {
                       colorClass =
                         "text-red-500 font-bold bg-red-500/5 px-2 py-0.5 rounded border border-red-500/10";

@@ -12,6 +12,56 @@ import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from './agent/agent.config.js';
 
 export const apiRouter = express.Router();
 
+import { systemLogEmitter, logHistory } from './logInterceptor.js';
+
+// GET /admin/logs - stream backend console logs via SSE
+apiRouter.get('/admin/logs', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization || req.query.token as string;
+    if (!authHeader) return res.status(401).json({ error: 'No token' });
+    
+    let tokenStr = authHeader;
+    if (authHeader.startsWith('Bearer ')) {
+      tokenStr = authHeader.split(' ')[1];
+    }
+    
+    const { payload } = await jose.jwtVerify(tokenStr, JWT_SECRET);
+    if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
+    
+    // Check if user is admin
+    const { users } = await import('./db/schema.js');
+    const [userRecord] = await db.select().from(users).where(eq(users.id, payload.id as string));
+    if (!userRecord || userRecord.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Forbidden. Admin only.' });
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    res.write(`data: ${JSON.stringify({ type: 'history', logs: logHistory })}\n\n`);
+
+    const logListener = (logMsg: string) => {
+      res.write(`data: ${JSON.stringify({ type: 'log', log: logMsg })}\n\n`);
+    };
+
+    systemLogEmitter.on('log', logListener);
+
+    req.on('close', () => {
+      systemLogEmitter.off('log', logListener);
+    });
+  } catch (err) {
+    console.error('SSE /admin/logs init error', err);
+    if (!res.headersSent) res.status(500).end();
+  }
+});
+
+
+const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
+
+
+
+
 apiRouter.use(express.json({ limit: '50mb' }));
 apiRouter.use(express.urlencoded({ limit: '50mb', extended: true }));
 
@@ -64,8 +114,6 @@ apiRouter.get('/models/info', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
 
 
 apiRouter.get('/health', (req, res) => {
@@ -717,6 +765,11 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
     let toolLoops = 0;
     let lastUsageMetadata: any = null;
 
+    // Auto-save RAG accumulators
+    let autoSave_aiOutputText = '';
+    const autoSave_allFunctionCalls: any[] = [];
+    const autoSave_toolResponses: any[] = [];
+
     while (toolLoops < 5) {
       let responseStream;
       try {
@@ -774,6 +827,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           hasFunctionCalls = true;
           for (const fc of chunk.functionCalls) {
             allFunctionCallsInStream.push(fc);
+            autoSave_allFunctionCalls.push({ name: fc.name });
             
             if (fc.name === 'proposeKnowledge') {
               const { content, reason } = fc.args as any;
@@ -990,12 +1044,14 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
 
         if (chunk.text) {
           sendEvent('text', chunk.text);
+          autoSave_aiOutputText += chunk.text;
         }
       }
 
       sendEvent('thinking_done', null);
 
       if (hasFunctionCalls && allFunctionCallsInStream.length > 0) {
+        autoSave_toolResponses.push(...toolResponses);
         formattedContents.push({ role: 'model', parts: allFunctionCallsInStream.map(c => ({ functionCall: c })) });
         formattedContents.push({ role: 'user', parts: toolResponses });
         toolLoops++;
@@ -1003,6 +1059,78 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       }
       
       break;
+    }
+
+    try {
+      const summaryParts = [];
+      summaryParts.push(`User Prompt: ${cleanPrompt}`);
+      if (autoSave_allFunctionCalls.length > 0) {
+        summaryParts.push(`Tools Used by AI: ${autoSave_allFunctionCalls.map(fc => fc.name).join(', ')}`);
+        
+        const trimmedToolResponses = autoSave_toolResponses.map(tr => {
+            let resObjStr = typeof tr.functionResponse.response === 'string' 
+              ? tr.functionResponse.response 
+              : JSON.stringify(tr.functionResponse.response);
+            if (resObjStr && resObjStr.length > 2500) resObjStr = resObjStr.substring(0, 2500) + '...[truncated]';
+            return `Tool [${tr.functionResponse.name}] Response:\n${resObjStr}`;
+        });
+        if (trimmedToolResponses.length > 0) {
+            summaryParts.push(`Tool Execution Results:\n${trimmedToolResponses.join('\n\n')}`);
+        }
+      }
+      
+      const attachedFilesTextLines = [];
+      const userParts = history[history.length - 1]?.parts || [];
+      for (const p of userParts) {
+         if (p.inlineData && p.inlineData.mimeType && p.inlineData.data) {
+            if (p.inlineData.mimeType.startsWith('text/')) {
+               const base64Text = Buffer.from(p.inlineData.data, 'base64').toString('utf8');
+               attachedFilesTextLines.push(`Attached File/Data (${p.inlineData.mimeType}):\n${base64Text.substring(0, 3000)}${base64Text.length > 3000 ? '...[truncated]' : ''}`);
+            } else {
+               attachedFilesTextLines.push(`Media / Attachment provided: [${p.inlineData.mimeType} - Data omitted for brevity]`);
+            }
+         }
+      }
+      if (attachedFilesTextLines.length > 0) {
+         summaryParts.push(attachedFilesTextLines.join('\n'));
+      }
+      
+      if (autoSave_aiOutputText.trim()) {
+         summaryParts.push(`AI Output Response:\n${autoSave_aiOutputText.substring(0, 4000)}${autoSave_aiOutputText.length > 4000 ? '...[truncated]' : ''}`);
+      }
+
+      const fullContextStr = summaryParts.join('\n\n---\n\n');
+      
+      if (fullContextStr.length > 10) {
+         import('@google/genai').then(({ GoogleGenAI, Type }) => {
+            const aiBackground = new GoogleGenAI({ apiKey });
+            import('./agent/agent.config.js').then(({ EMBEDDING_MODEL }) => {
+               aiBackground.models.embedContent({
+                   model: EMBEDDING_MODEL,
+                   contents: fullContextStr.substring(0, 9000),
+                   config: { outputDimensionality: 768 }
+               }).then(async (embedResponse) => {
+                   const embeddingVector = embedResponse.embeddings?.[0]?.values;
+                   if (embeddingVector) {
+                       const { knowledgeNodes } = await import('./db/schema.js');
+                       await txWithUser(userId, async (tx) => {
+                           await tx.insert(knowledgeNodes).values({
+                               content: fullContextStr,
+                               nodeType: 'past_response',
+                               embedding: embeddingVector,
+                               metadata: { source: 'Auto-Saved AI Execution Context', date: new Date().toISOString() }
+                           });
+                       });
+                       console.log("[Auto-RAG] Indexed user's chat context & executions.");
+                   }
+               }).catch(err => {
+                   console.error("[Auto-RAG] Embed fails:", err.message);
+               });
+            });
+         });
+      }
+    } catch (err) {
+      console.error("Failed to construct auto-RAG context", err);
     }
 
     if (lastUsageMetadata) {
