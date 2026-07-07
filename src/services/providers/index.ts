@@ -12,39 +12,41 @@ import { Provider, PROVIDER_CONFIGS } from '../geminiService';
 
 const providerCache = new Map<string, ProviderInterface>();
 
-export function getProvider(providerKey: string): ProviderInterface {
-  if (providerCache.has(providerKey)) {
-    return providerCache.get(providerKey)!;
+export function getProvider(providerKey: string, customBaseUrl?: string): ProviderInterface {
+  const cacheKey = customBaseUrl ? `${providerKey}-${customBaseUrl}` : providerKey;
+  if (providerCache.has(cacheKey)) {
+    return providerCache.get(cacheKey)!;
   }
 
   let instance: ProviderInterface;
   const config = PROVIDER_CONFIGS[providerKey];
+  const baseUrl = customBaseUrl || config?.baseUrl;
   
   if (providerKey === Provider.OLLAMA) {
     instance = new OllamaProvider();
   } else if (providerKey === Provider.NVIDIA) {
-    instance = new NvidiaProvider(config.name, config.baseUrl!);
+    instance = new NvidiaProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.GROQ) {
-    instance = new GroqProvider(config.name, config.baseUrl!);
+    instance = new GroqProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.MISTRAL) {
-    instance = new MistralProvider(config.name, config.baseUrl!);
+    instance = new MistralProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.TOGETHER) {
-    instance = new TogetherProvider(config.name, config.baseUrl!);
+    instance = new TogetherProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.CEREBRAS) {
-    instance = new CerebrasProvider(config.name, config.baseUrl!);
+    instance = new CerebrasProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.HUGGINGFACE) {
-    instance = new HuggingFaceProvider(config.name, config.baseUrl!);
+    instance = new HuggingFaceProvider(config.name, baseUrl!);
   } else if (providerKey === Provider.GITHUB) {
-    instance = new GithubProvider(config.name, config.baseUrl!);
+    instance = new GithubProvider(config.name, baseUrl!);
   } else {
-    // Other providers like OpenAI, OpenRouter, DeepSeek, xAI etc.
-    if (!config || !config.baseUrl) {
+    // Other providers like OpenAI, OpenRouter, DeepSeek, xAI, Custom etc.
+    if (!baseUrl) {
       throw new Error(`Unsupported generic provider: ${providerKey}`);
     }
-    instance = new OpenAICompatibleProvider(config.name, config.baseUrl);
+    instance = new OpenAICompatibleProvider(config?.name || "Custom", baseUrl);
   }
 
-  providerCache.set(providerKey, instance);
+  providerCache.set(cacheKey, instance);
   return instance;
 }
 

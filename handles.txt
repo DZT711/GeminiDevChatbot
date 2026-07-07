@@ -1,0 +1,32 @@
+424:    const handleInteraction = (e: Event) => {
+435:    const handleKnowledgeUpdate = () => fetchKnowledgeData();
+448:  const handleApproveProposal = async (proposalId: string) => {
+479:  const handleRejectProposal = async (proposalId: string) => {
+504:  const handleSaveProposalEdit = async (proposalId: string) => {
+532:  const handleDeleteNode = async (nodeId: string) => {
+592:  const handleSaveNodeEdit = async (nodeId: string) => {
+654:  const handleKSearch = async () => {
+683:  const handleCreateNewProposal = async () => {
+871:    const handleGlobalError = (event: ErrorEvent) => {
+878:    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+1103:  const handleUploadSkillFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+1127:  const handleCreateCustomSkillManual = (e: React.FormEvent) => {
+1226:  const handleStop = () => {
+1234:  const handleEditMessage = async (index: number, newContent: string) => {
+1255:  const handleRevertMessage = (index: number, versionContent: string) => {
+1276:  const handleRateMessage = async (messageId: string, rating: number) => {
+1303:  const handleToggleRepoModal = () => {
+1375:  const handleTogglePinSession = (e: React.MouseEvent, id: string) => {
+1382:  const handleStartEditingSession = (
+1392:  const handleSaveSessionTitle = (
+1408:  const handleCopyFullChat = async () => {
+1453:  const handleImageGen = async (prompt: string, sessionId?: string) => {
+1509:  const handleVideoGen = async (prompt: string, sessionId?: string) => {
+1646:  const handlePaste = async (e: React.ClipboardEvent) => {
+1670:  const handleAddRepo = async () => {
+1709:  const handleEnhancePrompt = async () => {
+1727:  const handleSummarizeChat = async () => {
+1841:  const handleSubmit = async (
+2234:  const handleEditSkill = (skill: Skill) => {
+2264:  const handleGithubImport = async () => {
+2305:  const handleCreateSkill = async () => {

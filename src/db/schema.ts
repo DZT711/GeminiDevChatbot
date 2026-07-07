@@ -63,6 +63,7 @@ export const sessions = pgTable('sessions', {
   userId: uuid('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
   title: varchar('title', { length: 255 }),
   pinned: boolean('pinned').default(false).notNull(),
+  summary: text('summary'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (t) => [
@@ -157,6 +158,7 @@ export const modelInformation = pgTable('model_information', {
   pricing: jsonb('pricing'), // store pricing details
   topProviderRate: varchar('top_provider_rate', { length: 255 }),
   architecture: varchar('architecture', { length: 255 }),
+  canUseTool: boolean('can_use_tool').default(false),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
@@ -167,6 +169,7 @@ export const apiKeys = pgTable('api_keys', {
   name: varchar('name', { length: 255 }).notNull(),
   key: varchar('api_key_value', { length: 1024 }).notNull(),
   provider: varchar('provider', { length: 255 }).notNull(),
+  baseUrl: varchar('base_url', { length: 1024 }),
   models: jsonb('models').$type<string[]>(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });

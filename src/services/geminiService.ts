@@ -1,6 +1,7 @@
 import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { githubService } from "./githubService";
 import { transparencyLogger, thinkingStore } from '../utils/transparencyLogger';
+import { manageSessionMemory } from './memoryManager';
 
 export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
@@ -26,11 +27,12 @@ export enum Provider {
   MISTRAL = "mistral",
   OLLAMA = "ollama",
   HUGGINGFACE = "huggingface",
-  GITHUB = "github"
+  GITHUB = "github",
+  CUSTOM = "custom"
 }
 
 export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, isGoogle?: boolean }> = {
-  [Provider.GOOGLE]: { name: "Google AI Studio", isGoogle: true },
+  [Provider.GOOGLE]: { name: "Google", isGoogle: true },
   [Provider.OPENAI]: { name: "OpenAI", baseUrl: "https://api.openai.com/v1" },
   [Provider.ANTHROPIC]: { name: "Anthropic", baseUrl: "https://api.anthropic.com/v1" },
   [Provider.XAI]: { name: "xAI (Grok)", baseUrl: "https://api.x.ai/v1" },
@@ -43,7 +45,8 @@ export const PROVIDER_CONFIGS: Record<string, { name: string, baseUrl?: string, 
   [Provider.MISTRAL]: { name: "Mistral AI", baseUrl: "https://api.mistral.ai/v1" },
   [Provider.OLLAMA]: { name: "Ollama (Local)" },
   [Provider.HUGGINGFACE]: { name: "Hugging Face", baseUrl: "https://api-inference.huggingface.co/v1" },
-  [Provider.GITHUB]: { name: "GitHub Models", baseUrl: "https://models.inference.ai.azure.com" }
+  [Provider.GITHUB]: { name: "GitHub Models", baseUrl: "https://models.inference.ai.azure.com" },
+  [Provider.CUSTOM]: { name: "Custom Endpoint" }
 };
 
 export interface Skill {
@@ -62,6 +65,7 @@ export interface ChatSession {
   messages: Message[];
   updatedAt: number;
   pinned?: boolean;
+  current_session_summary?: string;
 }
 
 export interface Attachment {
@@ -273,7 +277,7 @@ class GeminiService {
     console.log(`Rotating to: ${this.getCurrentModel()}`);
   }
 
-  async checkKey(key: string, provider: Provider = Provider.GOOGLE) {
+  async checkKey(key: string, provider: Provider = Provider.GOOGLE, baseUrl?: string) {
     try {
       if (provider === Provider.GOOGLE) {
         const ai = new GoogleGenAI({ apiKey: key });
@@ -347,8 +351,10 @@ class GeminiService {
       attachments?: Attachment[];
       customKey?: string;
       provider?: Provider;
+      customBaseUrl?: string;
       customInstructions?: string | null;
       githubToken?: string;
+      session?: ChatSession;
       onModelSwitch?: (model: string) => void;
       onTokenUpdate?: (tokens: number) => void;
     } = {},
@@ -474,6 +480,13 @@ class GeminiService {
       const allSkills = [...DEFAULT_SKILLS, ...customSkills];
       const activeSkills = allSkills.filter(s => activeSkillIds.includes(s.id));
       
+            if (config.session) {
+        await manageSessionMemory(config.session);
+        if (config.session.messages.length < history.length) {
+          history = history.slice(history.length - config.session.messages.length);
+        }
+      }
+
       let systemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository. You communicate directly with the project owner to review architecture, debug code, and implement features.
 
 ### TECH STACK PROFILE
@@ -1194,6 +1207,13 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
         throw new Error(provider === Provider.OLLAMA ? "Ollama Service URL is required" : `API Key required for ${providerConfig.name}`);
       }
       
+            if (config.session) {
+        await manageSessionMemory(config.session);
+        if (config.session.messages.length < history.length) {
+          history = history.slice(history.length - config.session.messages.length);
+        }
+      }
+
       let systemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository. You communicate directly with the project owner to review architecture, debug code, and implement features.
 
 ### TECH STACK PROFILE
@@ -1238,7 +1258,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
           if (attempts > 0) config.onModelSwitch?.(model);
 
           const { getProvider } = await import('./providers');
-          const providerInstance = getProvider(provider);
+          const providerInstance = getProvider(provider, config.customBaseUrl);
           
           return await providerInstance.generateResponse(
             prompt,

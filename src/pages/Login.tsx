@@ -68,6 +68,7 @@ export default function Login() {
     const handleMessage = (event: MessageEvent) => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         const token = event.data.token
+        localStorage.removeItem('session')
         localStorage.setItem('session', token)
         navigate('/app')
       } else if (event.data?.type === 'OAUTH_AUTH_ERROR') {
@@ -91,6 +92,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to login')
       
+      localStorage.removeItem('session')
       localStorage.setItem('session', data.token)
       navigate('/app')
     } catch(e: any) {
@@ -111,6 +113,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to register')
       
+      localStorage.removeItem('session')
       localStorage.setItem('session', data.token)
       navigate('/app')
     } catch(e: any) {
@@ -129,6 +132,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to create guest session')
       
+      localStorage.removeItem('session')
       localStorage.setItem('session', data.token)
       navigate('/app')
     } catch(e: any) {

@@ -12,6 +12,45 @@ import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from './agent/agent.config.js';
 
 export const apiRouter = express.Router();
 
+import { GoogleGenAI } from '@google/genai';
+
+apiRouter.post('/summarize-memory', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).json({ error: 'No token' });
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET).catch(() => ({ payload: null }));
+    if (!payload || !payload.id) return res.status(401).json({ error: 'Invalid token' });
+
+    const { logs, existingSummary } = req.body;
+    
+    // We strictly use gemini-2.0-flash as background compaction agent
+    const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+    
+    const instruction = 'Act as a memory compaction agent. Summarize the technical decisions, codebase changes, architecture paths, and fixed bugs from these logs into a single high-density paragraph. Preserve absolute pathnames and system configurations.' 
+      + (existingSummary ? '\n\nPreviously summarized context:\n' + existingSummary : '');
+      
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: [{ role: 'user', parts: [{ text: logs }] }],
+      config: {
+        systemInstruction: instruction
+      }
+    });
+
+    res.json({ summary: response.text });
+  } catch (err: any) {
+    const is503 = err?.message?.includes('503') || err?.message?.includes('UNAVAILABLE');
+    if (is503) {
+      console.info('Compaction failed due to high demand (503). Retrying later.');
+    } else {
+      console.error('Compaction failed:', err.message || err);
+    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 import { systemLogEmitter, logHistory } from './logInterceptor.js';
 
 // GET /admin/logs - stream backend console logs via SSE
@@ -115,6 +154,73 @@ apiRouter.get('/models/info', async (req, res) => {
   }
 });
 
+apiRouter.post('/models/refresh', async (req, res) => {
+  try {
+    const openRouterRes = await fetch('https://openrouter.ai/api/v1/models');
+    if (openRouterRes.ok) {
+      const dataResponse = await openRouterRes.json();
+      const data = dataResponse.data;
+      if (Array.isArray(data)) {
+        for (const m of data) {
+          const provider = m.id.split('/')[0] || 'unknown';
+          await db.insert(modelInformation).values({
+            id: m.id,
+            provider: provider,
+            name: m.name,
+            contextLength: m.context_length?.toString(),
+            description: m.description || '',
+            pricing: m.pricing,
+            architecture: m.architecture?.modality || m.architecture?.instruct_type || '',
+            updatedAt: new Date()
+          }).onConflictDoUpdate({
+            target: modelInformation.id,
+            set: {
+              name: m.name,
+              contextLength: m.context_length?.toString(),
+              description: m.description || '',
+              pricing: m.pricing,
+              architecture: m.architecture?.modality || m.architecture?.instruct_type || '',
+              updatedAt: new Date()
+            }
+          });
+        }
+      }
+    }
+    const updatedModels = await db.select().from(modelInformation);
+    res.json(updatedModels);
+  } catch(e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+apiRouter.post('/models/custom', async (req, res) => {
+  try {
+    const { id, name, provider, contextLength, canUseTool } = req.body;
+    if (!id || !provider) return res.status(400).json({ error: 'Missing id or provider' });
+    
+    await db.insert(modelInformation).values({
+      id,
+      provider,
+      name: name || id,
+      contextLength: contextLength || "8192",
+      description: "Custom model",
+      canUseTool: !!canUseTool,
+      updatedAt: new Date()
+    }).onConflictDoUpdate({
+      target: modelInformation.id,
+      set: {
+        name: name || id,
+        contextLength: contextLength || "8192",
+        canUseTool: !!canUseTool,
+        updatedAt: new Date()
+      }
+    });
+    
+    res.json({ status: 'ok' });
+  } catch(e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 apiRouter.get('/health', (req, res) => {
   res.json({ status: 'ok', using: 'supabase-postgres' });
@@ -446,8 +552,12 @@ You MUST follow these rules strictly:
       return 'USE_RAG';
     }
     return 'DIRECT_CHAT';
-  } catch (e) {
-    console.error('[AI Query Router] Failure executing classifier, fallback to DIRECT_CHAT', e);
+  } catch (e: any) {
+    if (e?.message?.includes('503') || e?.message?.includes('UNAVAILABLE')) {
+      console.info('[AI Query Router] Classifier hit 503 high demand, silent fallback to DIRECT_CHAT');
+    } else {
+      console.error('[AI Query Router] Failure executing classifier, fallback to DIRECT_CHAT', e.message || e);
+    }
     return 'DIRECT_CHAT';
   }
 }
@@ -772,46 +882,66 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
 
     while (toolLoops < 5) {
       let responseStream;
-      try {
-        responseStream = await aiInstance.models.generateContentStream({
-          model: finalModelUsed,
-          contents: formattedContents,
-          config: {
-            systemInstruction: finalSystemPrompt,
-            tools: [proposeKnowledgeTool],
-            thinkingConfig: (finalModelUsed.includes('thinking') || finalModelUsed === 'gemini-3.1-pro-preview') ? { 
-              thinkingLevel: thinkingLevel || 'LOW',
-              includeThoughts: true 
-            } : undefined,
-          }
-        });
-      } catch (streamError: any) {
-        const errorMsg = streamError.message || streamError.toString() || '';
-        const isQuotaExceeded = errorMsg.includes('429') || 
-                               errorMsg.includes('RESOURCE_EXHAUSTED') || 
-                               errorMsg.includes('Quota exceeded') ||
-                               errorMsg.includes('limit: 0');
-        const isModelNotFound = errorMsg.includes('404') || 
-                               errorMsg.includes('not found') || 
-                               errorMsg.includes('not supported') ||
-                               errorMsg.includes('not be found');
+      let streamSuccess = false;
+      let attemptCount = 0;
+      let lastStreamError: any = null;
 
-        if ((isQuotaExceeded || isModelNotFound) && finalModelUsed !== 'gemini-3.5-flash') {
-          console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error (${isQuotaExceeded ? 'Quota' : 'Not Found'}). Dynamic fallback.`);
-          sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance 'gemini-3.5-flash'.` });
-          
-          finalModelUsed = 'gemini-3.5-flash';
+      while (!streamSuccess && attemptCount < 4) {
+        attemptCount++;
+        try {
           responseStream = await aiInstance.models.generateContentStream({
             model: finalModelUsed,
             contents: formattedContents,
             config: {
               systemInstruction: finalSystemPrompt,
               tools: [proposeKnowledgeTool],
+              thinkingConfig: (finalModelUsed.includes('thinking') || finalModelUsed === 'gemini-3.1-pro-preview') ? { 
+                thinkingLevel: thinkingLevel || 'LOW',
+                includeThoughts: true 
+              } : undefined,
             }
           });
-        } else {
-          throw streamError;
+          streamSuccess = true;
+        } catch (streamError: any) {
+          lastStreamError = streamError;
+          const errorMsg = streamError.message || streamError.toString() || '';
+          const isQuotaExceeded = errorMsg.includes('429') || 
+                                 errorMsg.includes('RESOURCE_EXHAUSTED') || 
+                                 errorMsg.includes('Quota exceeded') ||
+                                 errorMsg.includes('limit: 0');
+          const isModelNotFound = errorMsg.includes('404') || 
+                                 errorMsg.includes('not found') || 
+                                 errorMsg.includes('not supported') ||
+                                 errorMsg.includes('not be found');
+          const isUnavailable = errorMsg.includes('503') || errorMsg.includes('UNAVAILABLE') || errorMsg.includes('experiencing high demand');
+
+          const needsFallback = isQuotaExceeded || isModelNotFound || isUnavailable;
+          const normalizedModel = finalModelUsed.replace('models/', '');
+
+          if (needsFallback && normalizedModel !== 'gemini-3.5-flash' && normalizedModel !== 'gemini-3-flash-preview' && normalizedModel !== 'gemini-1.5-flash' && normalizedModel !== 'gemini-2.0-flash') {
+            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Dynamic fallback to gemini-3.5-flash.`);
+            sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance 'gemini-3.5-flash'.` });
+            finalModelUsed = 'gemini-3.5-flash';
+          } else if (needsFallback && normalizedModel === 'gemini-3.5-flash') {
+            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to gemini-3-flash-preview.`);
+            sendEvent('status', { message: `⚠️ High demand on standard models. Connecting to alternative model...` });
+            finalModelUsed = 'gemini-3-flash-preview';
+          } else if (needsFallback && normalizedModel === 'gemini-3-flash-preview') {
+            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to gemini-2.0-flash.`);
+            sendEvent('status', { message: `⚠️ Extremely high demand on standard models. Connecting to alternative fallback...` });
+            finalModelUsed = 'gemini-2.0-flash';
+          } else if (needsFallback && normalizedModel === 'gemini-2.0-flash') {
+            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to gemini-1.5-flash.`);
+            sendEvent('status', { message: `⚠️ Extremely high demand on standard models. Connecting to alternative fallback...` });
+            finalModelUsed = 'gemini-1.5-flash';
+          } else {
+            throw streamError;
+          }
         }
+      }
+
+      if (!streamSuccess) {
+        throw lastStreamError;
       }
 
       let hasFunctionCalls = false;
@@ -1141,8 +1271,14 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
     res.write('event: end\ndata: {}\n\n');
     res.end();
   } catch (e: any) {
-    console.error('[AI Query Router ERROR]:', e);
-    res.write(`data: ${JSON.stringify({ type: 'error', data: e.message || 'An unexpected error occurred in backend chat pipeline.' })}\n\n`);
+    const is503 = e?.message?.includes('503') || e?.message?.includes('UNAVAILABLE');
+    if (is503) {
+      console.error('[AI Query Router ERROR]: AI Model cluster is currently experiencing high demand. Please try again shortly.');
+      res.write(`data: ${JSON.stringify({ type: 'error', data: 'AI Model cluster is currently experiencing extremely high demand. We cascaded through all fallback models but they are currently unavailable. Please try again shortly.' })}\n\n`);
+    } else {
+      console.error('[AI Query Router ERROR]:', e.message || e);
+      res.write(`data: ${JSON.stringify({ type: 'error', data: e.message || 'An unexpected error occurred in backend chat pipeline.' })}\n\n`);
+    }
     res.write('event: end\ndata: {}\n\n');
     res.end();
   }
@@ -1831,6 +1967,7 @@ apiRouter.put('/user/state', async (req, res) => {
             name: k.name,
             key: encryptKey(k.key),
             provider: k.provider,
+            baseUrl: k.baseUrl,
             models: k.models,
           })));
         }

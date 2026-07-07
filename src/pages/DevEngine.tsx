@@ -114,6 +114,7 @@ interface ApiKey {
   id: string;
   provider: Provider;
   models?: string[];
+  baseUrl?: string;
 }
 
 interface ModelInformation {
@@ -136,6 +137,49 @@ interface UserContext {
   isGuest?: boolean;
   githubToken?: string;
 }
+
+const validateKeyPrefix = (provider: Provider, key: string, expectedPrefix?: string): { valid: boolean; message?: string } => {
+  if (provider === Provider.CUSTOM) {
+    if (expectedPrefix && !key.startsWith(expectedPrefix)) {
+      return { valid: false, message: `Custom provider key must start with '${expectedPrefix}'` };
+    }
+    return { valid: true };
+  }
+
+  const strictPrefixes: Partial<Record<Provider, string[]>> = {
+    [Provider.GOOGLE]: ["AIza"],
+    [Provider.ANTHROPIC]: ["sk-ant-"],
+    [Provider.NVIDIA]: ["nvapi-"],
+    [Provider.XAI]: ["xai-"],
+    [Provider.GROQ]: ["gsk_"],
+    [Provider.OPENROUTER]: ["sk-or-"],
+    [Provider.GITHUB]: ["ghp_", "github_pat_"]
+  };
+
+  const expected = strictPrefixes[provider];
+  if (expected) {
+    const hasMatch = expected.some(p => key.startsWith(p));
+    if (!hasMatch) {
+      return { valid: false, message: `Invalid key format for ${provider}. Expected prefix like '${expected[0]}'` };
+    }
+  } else {
+    // If it's a non-strict provider (e.g. OpenAI using "sk-"), make sure it's not a key from another STRICT provider.
+    const allStrict = [
+      { pfx: "AIza", name: Provider.GOOGLE },
+      { pfx: "sk-ant-", name: Provider.ANTHROPIC },
+      { pfx: "nvapi-", name: Provider.NVIDIA },
+      { pfx: "xai-", name: Provider.XAI },
+      { pfx: "gsk_", name: Provider.GROQ },
+      { pfx: "sk-or-", name: Provider.OPENROUTER }
+    ];
+    for (const strict of allStrict) {
+      if (key.startsWith(strict.pfx) && provider !== strict.name) {
+        return { valid: false, message: `Key looks like a ${strict.name} key, but you selected ${provider}.` };
+      }
+    }
+  }
+  return { valid: true };
+};
 
 export default function DevEngine() {
   const [user, setUser] = useState<UserContext | null>(null);
@@ -191,6 +235,28 @@ export default function DevEngine() {
     } catch {}
   }, [apiKeys, activeKeyId, globalEnabledModels, sessions, customSkills]);
 
+  const [globalModelCatalog, setGlobalModelCatalog] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchModels = async () => {
+      try {
+        const res = await fetch('/api/models/info');
+        if (res.ok) {
+          const data = await res.json();
+          setGlobalModelCatalog(data);
+        }
+      } catch (err) {
+        console.error("Failed to fetch model catalog", err);
+      }
+    };
+    fetchModels();
+  }, []);
+
+  const [newModelName, setNewModelName] = useState("");
+  const [newModelId, setNewModelId] = useState("");
+  const [newModelContext, setNewModelContext] = useState("");
+  const [newModelTools, setNewModelTools] = useState(false);
+
   // Session Edit States
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingSessionTitle, setEditingSessionTitle] = useState("");
@@ -237,6 +303,7 @@ export default function DevEngine() {
   const [suggestedSkills, setSuggestedSkills] = useState<Skill[]>([]);
   const [autocompleteSuggestion, setAutocompleteSuggestion] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [visibleKeyIds, setVisibleKeyIds] = useState<string[]>([]);
   const [activeSkillIds, setActiveSkillIds] = useState<string[]>([]);
   const [modelSearch, setModelSearch] = useState("");
   const [catalogSearch, setCatalogSearch] = useState("");
@@ -300,6 +367,8 @@ export default function DevEngine() {
   } | null>(null);
   const [newKeyName, setNewKeyName] = useState("");
   const [newKeyVal, setNewKeyVal] = useState("");
+  const [newKeyBaseUrl, setNewKeyBaseUrl] = useState("");
+  const [newKeyExpectedPrefix, setNewKeyExpectedPrefix] = useState("");
   const [newKeyProvider, setNewKeyProvider] = useState<Provider>(
     Provider.GOOGLE,
   );
@@ -730,11 +799,11 @@ export default function DevEngine() {
 
   const activeKey = apiKeys.find((k) => k.id === activeKeyId);
   const activeApiKey = activeKey?.key || "";
+  const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   // Update Page Title based on current session
   useEffect(() => {
     if (currentSessionId && sessions.length > 0) {
-      const currentSession = sessions.find((s) => s.id === currentSessionId);
       if (currentSession && currentSession.title) {
         document.title = `${currentSession.title} | DevEngine`;
         return;
@@ -830,7 +899,7 @@ export default function DevEngine() {
     const checkKeysUsability = async () => {
       if (apiKeys.length === 0) {
         setApiKeyWarning(
-          "CAUTION: No API keys are currently configured. Connect a Google AI Studio gateway key in settings to unlock custom capabilities.",
+          "CAUTION: No API keys are currently configured. Connect a Google gateway key in settings to unlock custom capabilities.",
         );
         return;
       }
@@ -1090,6 +1159,7 @@ export default function DevEngine() {
   }, [view]);
 
   const [showHistory, setShowHistory] = useState(false);
+  const [managingKeyId, setManagingKeyId] = useState<string | null>(null);
   const [newSkillPrompt, setNewSkillPrompt] = useState("");
   const [isCreatingSkill, setIsCreatingSkill] = useState(false);
 
@@ -1353,6 +1423,7 @@ export default function DevEngine() {
         messages: updatedMessages,
         updatedAt: Date.now(),
         pinned: existingSession ? existingSession.pinned : false,
+        current_session_summary: existingSession ? existingSession.current_session_summary : undefined,
       };
 
       if (idx > -1) {
@@ -1782,6 +1853,7 @@ export default function DevEngine() {
           model: currentModel,
           customKey: activeKey?.key,
           provider: activeKey?.provider,
+          customBaseUrl: activeKey?.baseUrl,
           thinkingLevel:
             currentModel === ModelId.PRO
               ? undefined
@@ -2025,6 +2097,7 @@ export default function DevEngine() {
           {
             model: currentModel,
             useSearch,
+            session: sessions.find(s => s.id === currentSessionId),
             thinkingLevel:
               currentModel === ModelId.PRO
                 ? undefined
@@ -2035,6 +2108,7 @@ export default function DevEngine() {
             attachments: userMessage.attachments,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
+            customBaseUrl: activeKey?.baseUrl,
             customInstructions: user?.customInstructions,
             githubToken: user?.githubToken,
             onModelSwitch: (newModel) => {
@@ -2177,6 +2251,7 @@ export default function DevEngine() {
           {
             model: currentModel,
             useSearch,
+            session: sessions.find(s => s.id === currentSessionId),
             thinkingLevel:
               currentModel === ModelId.PRO
                 ? undefined
@@ -2186,6 +2261,7 @@ export default function DevEngine() {
             signal: abortControllerRef.current.signal,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
+            customBaseUrl: activeKey?.baseUrl,
             customInstructions: user?.customInstructions,
             githubToken: user?.githubToken,
           },
@@ -3240,7 +3316,7 @@ export default function DevEngine() {
               ref={scrollRef}
               className="flex-1 overflow-y-auto custom-scrollbar px-4 pt-4"
             >
-              <div className="max-w-4xl mx-auto pb-64">
+              <div className="max-w-4xl mx-auto pb-[50vh]">
                 {messages.length === 0 ? (
                   <div className="h-full min-h-[60vh] flex flex-col items-center justify-center text-center opacity-40">
                     <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-6">
@@ -5150,6 +5226,34 @@ export default function DevEngine() {
                                   className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
                                 />
                               </div>
+                              {newKeyProvider === Provider.CUSTOM && (
+                                <>
+                                  <div className="space-y-1.5 md:col-span-2">
+                                    <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">
+                                      Base Endpoint URL
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="https://api.custom-provider.com/v1"
+                                      value={newKeyBaseUrl}
+                                      onChange={(e) => setNewKeyBaseUrl(e.target.value)}
+                                      className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
+                                    />
+                                  </div>
+                                  <div className="space-y-1.5 md:col-span-2">
+                                    <label className="text-[9px] font-mono font-bold tracking-wider text-zinc-400 uppercase">
+                                      Expected Key Prefix (Optional)
+                                    </label>
+                                    <input
+                                      type="text"
+                                      placeholder="e.g. sk-custom-"
+                                      value={newKeyExpectedPrefix}
+                                      onChange={(e) => setNewKeyExpectedPrefix(e.target.value)}
+                                      className="w-full bg-[#09090c] border border-zinc-800 hover:border-zinc-700 rounded-xl px-4 py-2.5 text-xs outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 text-cyan-100 placeholder:text-zinc-700 font-mono transition-all"
+                                    />
+                                  </div>
+                                </>
+                              )}
                             </div>
 
                             {validationStatus && (
@@ -5180,6 +5284,61 @@ export default function DevEngine() {
                                     });
                                     return;
                                   }
+
+                                  const prefixCheck = validateKeyPrefix(newKeyProvider, newKeyVal, newKeyExpectedPrefix);
+                                  if (!prefixCheck.valid) {
+                                    setValidationStatus({
+                                      type: "error",
+                                      message: `VALIDATION FAILED: ${prefixCheck.message}`,
+                                    });
+                                    return;
+                                  }
+
+                                  setValidationStatus({
+                                    type: "success",
+                                    message: `TESTING CONNECTION TO ${newKeyProvider.toUpperCase()} GATEWAY WORKSPACE...`,
+                                  });
+                                  const result = await geminiService.checkKey(
+                                    newKeyVal,
+                                    newKeyProvider,
+                                    newKeyProvider === Provider.CUSTOM ? newKeyBaseUrl : undefined
+                                  );
+                                  if (result.valid) {
+                                    const discovered = result.models || [];
+                                    setValidationStatus({
+                                      type: "success",
+                                      message: `CONNECTION SUCCESSFUL: ${discovered.length} NODES DISCOVERED`,
+                                    });
+                                  } else {
+                                    setValidationStatus({
+                                      type: "error",
+                                      message: `REJECTED: ${result.error}`,
+                                    });
+                                  }
+                                }}
+                                className="flex-1 py-3 bg-zinc-800 hover:bg-zinc-700 text-cyan-400 rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(0,0,0,0.15)] active:scale-[0.98] cursor-pointer"
+                              >
+                                Test Connection
+                              </button>
+                              <button
+                                onClick={async () => {
+                                  if (!newKeyVal.trim()) {
+                                    setValidationStatus({
+                                      type: "error",
+                                      message: "Key cannot be empty",
+                                    });
+                                    return;
+                                  }
+
+                                  const prefixCheck = validateKeyPrefix(newKeyProvider, newKeyVal, newKeyExpectedPrefix);
+                                  if (!prefixCheck.valid) {
+                                    setValidationStatus({
+                                      type: "error",
+                                      message: `VALIDATION FAILED: ${prefixCheck.message}`,
+                                    });
+                                    return;
+                                  }
+
                                   setValidationStatus({
                                     type: "success",
                                     message: `CONNECTING TO ${newKeyProvider.toUpperCase()} GATEWAY WORKSPACE...`,
@@ -5187,6 +5346,7 @@ export default function DevEngine() {
                                   const result = await geminiService.checkKey(
                                     newKeyVal,
                                     newKeyProvider,
+                                    newKeyProvider === Provider.CUSTOM ? newKeyBaseUrl : undefined
                                   );
                                   if (result.valid) {
                                     const discovered = result.models || [];
@@ -5202,6 +5362,7 @@ export default function DevEngine() {
                                         PROVIDER_CONFIGS[newKeyProvider].name,
                                       key: newKeyVal,
                                       provider: newKeyProvider,
+                                      baseUrl: newKeyProvider === Provider.CUSTOM ? newKeyBaseUrl : undefined,
                                       models: discovered.map((m) => m.id),
                                     };
                                     setApiKeys((prev) => [...prev, keyObj]);
@@ -5219,275 +5380,454 @@ export default function DevEngine() {
                                 }}
                                 className="flex-1 py-3 bg-cyan-500 hover:bg-cyan-400 text-black rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(6,182,212,0.15)] hover:shadow-[0_0_25px_rgba(6,182,212,0.3)] active:scale-[0.98] cursor-pointer"
                               >
-                                Authenticate & Discover Nodes
+                                Save Credentials
                               </button>
                             </div>
                           </div>
                         </motion.div>
                       )}
 
-                      <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar pr-2">
-                        {apiKeys.length === 0 && (
-                          <div className="text-[10px] text-zinc-600 italic p-8 bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-800 text-center">
-                            No security tokens mapped to this terminal.
-                          </div>
-                        )}
-                        {apiKeys.map((k) => (
-                          <div
-                            key={k.id}
-                            onClick={() => setActiveKeyId(k.id)}
-                            className={cn(
-                              "flex items-center justify-between p-4 rounded-2xl border transition-all group/key relative overflow-hidden cursor-pointer",
-                              activeKeyId === k.id
-                                ? "bg-cyan-900/10 border-cyan-500/30 ring-1 ring-cyan-500/20"
-                                : "bg-black/40 border-zinc-900 hover:border-zinc-800",
-                            )}
-                          >
-                            <div className="flex items-center gap-4 flex-1 min-w-0">
-                              <div
-                                className={cn(
-                                  "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-inner",
-                                  activeKeyId === k.id
-                                    ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]"
-                                    : "bg-zinc-900 text-zinc-600 group-hover/key:bg-zinc-800",
-                                )}
-                              >
-                                {(() => {
-                                  const Icon =
-                                    PROVIDER_ICONS[k.provider] || Shield;
-                                  return <Icon size={18} />;
-                                })()}
-                              </div>
-                              <div className="flex-1 min-w-0">
-                                <div
-                                  className={cn(
-                                    "text-xs font-bold uppercase tracking-tight",
-                                    activeKeyId === k.id
-                                      ? "text-cyan-400"
-                                      : "text-zinc-400 transition-colors group-hover/key:text-zinc-200",
-                                  )}
-                                >
-                                  {k.name}{" "}
-                                  <span className="text-[8px] opacity-40 ml-2 font-mono">
-                                    [
-                                    {PROVIDER_CONFIGS[k.provider]?.name ||
-                                      k.provider}
-                                    ]
-                                  </span>
-                                </div>
-                                <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
-                                  ••••••••{k.key.slice(-4)}
-                                </div>
-                                {k.models && (
-                                  <div className="text-[8px] font-mono text-cyan-500/50 mt-1 uppercase">
-                                    {k.models.length} Nodes Mapped
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <button
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  setValidationStatus({
-                                    type: "success",
-                                    message: `INITIATING NEURAL PROBE: CRAWLING ${k.provider.toUpperCase()} QUOTA...`,
-                                  });
-                                  const result = await geminiService.checkKey(
-                                    k.key,
-                                    k.provider,
-                                  );
-                                  if (result.valid) {
-                                    const discovered = result.models || [];
-                                    setApiKeys((prev) =>
-                                      prev.map((prevK) =>
-                                        prevK.id === k.id
-                                          ? {
-                                              ...prevK,
-                                              models: discovered.map(
-                                                (m) => m.id,
-                                              ),
-                                            }
-                                          : prevK,
-                                      ),
-                                    );
-                                    setValidationStatus({
-                                      type: "success",
-                                      message: `SUCCESS: NODE_MAP & QUOTA_CRAWL COMPLETE`,
-                                    });
-                                    setTimeout(
-                                      () => setValidationStatus(null),
-                                      2000,
-                                    );
-                                  } else {
-                                    setValidationStatus({
-                                      type: "error",
-                                      message: `CRAWL FAILED: ${result.error}`,
-                                    });
-                                  }
-                                }}
-                                className="p-2 text-zinc-700 hover:text-cyan-400 transition-all opacity-0 group-hover/key:opacity-100"
-                                title="Crawl exact node usage & nodes"
-                              >
-                                <RefreshCw
-                                  size={14}
-                                  className={isLoading ? "animate-spin" : ""}
-                                />
-                              </button>
-                              {activeKeyId === k.id && (
-                                <motion.div
-                                  initial={{ opacity: 0, x: 5 }}
-                                  animate={{ opacity: 1, x: 0 }}
-                                  className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30"
-                                >
-                                  Active
-                                </motion.div>
-                              )}
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setApiKeys((prev) =>
-                                    prev.filter((ik) => ik.id !== k.id),
-                                  );
-                                  if (activeKeyId === k.id) setActiveKeyId("");
-                                }}
-                                className="p-2 text-zinc-700 hover:text-red-500 transition-all opacity-0 group-hover/key:opacity-100"
-                                title="Revoke Access"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                      {managingKeyId ? (
+                        <div className="space-y-6 animate-in fade-in slide-in-from-right-4">
+                          <div className="flex items-center gap-4 border-b border-zinc-900/50 pb-4">
+                            <button
+                              onClick={() => setManagingKeyId(null)}
+                              className="p-2 bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white rounded-xl transition-all"
+                            >
+                              <ChevronLeft size={16} />
+                            </button>
+                            <div>
+                              <h2 className="text-sm font-bold uppercase tracking-widest text-zinc-300">
+                                Node Configuration
+                              </h2>
+                              <p className="text-[10px] font-mono text-zinc-600 uppercase">
+                                {apiKeys.find(k => k.id === managingKeyId)?.name} [{apiKeys.find(k => k.id === managingKeyId)?.provider}]
+                              </p>
                             </div>
                           </div>
-                        ))}
-                      </div>
-
-                      {(activeKeyId ? apiKeys.find((k) => k.id === activeKeyId)?.models : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue())) && (
-                          <div className="pt-6 border-t border-zinc-900/50 space-y-4">
-                            <div className="flex items-center justify-between">
-                              <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                                {activeKeyId ? "Node Queue Management" : "Default Queue Management"}
-                              </label>
-                              <span className="text-[10px] font-mono text-zinc-600">
-                                Active Priority
-                              </span>
-                            </div>
-                            <div className="space-y-2 max-h-[500px] overflow-y-auto custom-scrollbar pr-2">
-                              {(() => {
-                                const queueModels = activeKeyId 
-                                  ? (apiKeys.find((k) => k.id === activeKeyId)?.models || []) 
-                                  : (globalEnabledModels.length > 0 ? globalEnabledModels : geminiService.getCurrentQueue());
-                                
-                                return queueModels.map((rawModelId, idx) => {
-                                  const isOff = rawModelId.startsWith("OFF:");
-                                  const modelId = isOff ? rawModelId.substring(4) : rawModelId;
-                                  return (
-                                    <div
-                                      key={`${rawModelId}-${idx}`}
-                                      className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node"
-                                    >
-                                      <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-3 overflow-hidden">
-                                          <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
-                                            {idx + 1}
-                                          </div>
-                                          <div className="flex flex-col">
-                                            <span className={cn("text-[10px] font-mono truncate uppercase tracking-tight", isOff ? "text-zinc-600 line-through" : "text-zinc-300")}>
-                                              {modelId.split("/").pop()}
-                                            </span>
-                                          </div>
+                          
+                          {(() => {
+                            const k = apiKeys.find(key => key.id === managingKeyId);
+                            if (!k) return null;
+                            return (
+                              <div className="space-y-6">
+                                <div className="p-5 border border-zinc-800 rounded-2xl bg-[#09090c] space-y-4">
+                                  <div className="flex items-center justify-between flex-wrap gap-4">
+                                    <div className="flex items-center gap-4">
+                                      <div className={cn("w-12 h-12 rounded-xl flex items-center justify-center shadow-inner", activeKeyId === k.id ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]" : "bg-zinc-900 text-zinc-600")}>
+                                        {(() => {
+                                          const Icon = PROVIDER_ICONS[k.provider] || Shield;
+                                          return <Icon size={20} />;
+                                        })()}
+                                      </div>
+                                      <div>
+                                        <div className={cn("text-sm font-bold uppercase tracking-tight", activeKeyId === k.id ? "text-cyan-400" : "text-zinc-300")}>
+                                          {k.name}
                                         </div>
-                                        <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
-                                          <button
-                                            disabled={idx === 0}
-                                            onClick={() => {
-                                              if (activeKeyId) {
-                                                setApiKeys((prev) =>
-                                                  prev.map((k) => {
-                                                    if (k.id === activeKeyId && k.models) {
-                                                      const next = [...k.models];
-                                                      [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
-                                                      return { ...k, models: next };
-                                                    }
-                                                    return k;
-                                                  })
-                                                );
-                                              } else {
-                                                const next = [...queueModels];
-                                                [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
-                                                setGlobalEnabledModels(next);
-                                              }
-                                            }}
-                                            className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                          >
-                                            <ChevronUp size={14} />
-                                          </button>
-                                          <button
-                                            disabled={idx === queueModels.length - 1}
-                                            onClick={() => {
-                                              if (activeKeyId) {
-                                                setApiKeys((prev) =>
-                                                  prev.map((k) => {
-                                                    if (k.id === activeKeyId && k.models) {
-                                                      const next = [...k.models];
-                                                      [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                                      return { ...k, models: next };
-                                                    }
-                                                    return k;
-                                                  })
-                                                );
-                                              } else {
-                                                const next = [...queueModels];
-                                                [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                                setGlobalEnabledModels(next);
-                                              }
-                                            }}
-                                            className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
-                                          >
-                                            <ChevronDown size={14} />
-                                          </button>
-                                          <button
-                                            disabled={idx === 0 && !isOff && queueModels.filter(m => !m.startsWith("OFF:")).length === 1}
-                                            onClick={() => {
-                                              if (activeKeyId) {
-                                                setApiKeys((prev) =>
-                                                  prev.map((k) => {
-                                                    if (k.id === activeKeyId && k.models) {
-                                                      const next = k.models.filter((_, i) => i !== idx);
-                                                      const newVal = isOff ? modelId : `OFF:${modelId}`;
-                                                      next.push(newVal);
-                                                      return { ...k, models: next };
-                                                    }
-                                                    return k;
-                                                  })
-                                                );
-                                              } else {
-                                                const next = queueModels.filter((_, i) => i !== idx);
-                                                const newVal = isOff ? modelId : `OFF:${modelId}`;
-                                                next.push(newVal);
-                                                setGlobalEnabledModels(next);
-                                              }
-                                            }}
-                                            className={cn(
-                                              "w-7 h-3.5 rounded-full transition-colors relative flex items-center shadow-inner shrink-0",
-                                              (idx === 0 && queueModels.filter(m => !m.startsWith("OFF:")).length === 1 && !isOff) ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
-                                              isOff ? "bg-black border border-zinc-800" : "bg-cyan-500/20 border border-cyan-500/50"
-                                            )}
-                                            title={isOff ? "Enable model" : "Disable model"}
-                                          >
-                                            <div className={cn(
-                                              "w-2.5 h-2.5 rounded-full transition-all absolute",
-                                              isOff ? "bg-zinc-600 left-0.5" : "bg-cyan-400 right-0.5 shadow-[0_0_5px_rgba(34,211,238,0.8)]"
-                                            )} />
-                                          </button>
+                                        <div className="flex flex-col gap-1 mt-1">
+                                          {k.baseUrl && (
+                                            <div className="text-[10px] font-mono text-zinc-500 bg-zinc-900/50 px-2 py-0.5 rounded flex items-center gap-1">
+                                              <span className="text-zinc-600">Endpoint:</span> {k.baseUrl}
+                                            </div>
+                                          )}
+                                          <div className="flex items-center gap-2">
+                                            <div className="text-[10px] font-mono text-zinc-600 tracking-widest bg-zinc-950 px-2 py-0.5 rounded border border-zinc-800">
+                                              {visibleKeyIds.includes(k.id) ? k.key : `••••••••${k.key.slice(-4)}`}
+                                            </div>
+                                            <button 
+                                              onClick={() => setVisibleKeyIds(prev => prev.includes(k.id) ? prev.filter(id => id !== k.id) : [...prev, k.id])}
+                                              className="text-[10px] text-zinc-500 hover:text-cyan-400 uppercase tracking-wider font-bold"
+                                            >
+                                              {visibleKeyIds.includes(k.id) ? "Hide" : "Show"}
+                                            </button>
+                                          </div>
                                         </div>
                                       </div>
                                     </div>
-                                  );
-                                });
-                              })()}
-                            </div>
+                                    <div className="flex items-center gap-3">
+                                      {activeKeyId !== k.id ? (
+                                        <button
+                                          onClick={() => setActiveKeyId(k.id)}
+                                          className="text-[10px] bg-cyan-500/10 border border-cyan-500/20 text-cyan-400 px-4 py-2 rounded-lg hover:bg-cyan-500/20 transition-all uppercase font-bold tracking-tighter"
+                                        >
+                                          Make Active
+                                        </button>
+                                      ) : (
+                                        <span className="text-[10px] bg-cyan-500/20 border border-cyan-500/30 text-cyan-400 px-4 py-2 rounded-lg uppercase font-bold tracking-tighter flex items-center gap-2">
+                                          <div className="w-1.5 h-1.5 bg-cyan-400 rounded-full animate-pulse" />
+                                          Active Identity
+                                        </span>
+                                      )}
+                                      <button
+                                        onClick={async () => {
+                                          setValidationStatus({
+                                            type: "success",
+                                            message: `INITIATING NEURAL PROBE: CRAWLING ${k.provider.toUpperCase()} QUOTA...`,
+                                          });
+                                          const result = await geminiService.checkKey(
+                                            k.key,
+                                            k.provider,
+                                          );
+                                          if (result.valid) {
+                                            const discovered = result.models || [];
+                                            setApiKeys((prev) =>
+                                              prev.map((prevK) =>
+                                                prevK.id === k.id
+                                                  ? {
+                                                      ...prevK,
+                                                      models: discovered.map(
+                                                        (m) => m.id,
+                                                      ),
+                                                    }
+                                                  : prevK,
+                                              ),
+                                            );
+                                            setValidationStatus({
+                                              type: "success",
+                                              message: `SUCCESS: NODE_MAP & QUOTA_CRAWL COMPLETE`,
+                                            });
+                                            setTimeout(
+                                              () => setValidationStatus(null),
+                                              2000,
+                                            );
+                                          } else {
+                                            setValidationStatus({
+                                              type: "error",
+                                              message: `CRAWL FAILED: ${result.error}`,
+                                            });
+                                          }
+                                        }}
+                                        className="text-[10px] bg-zinc-900 border border-zinc-800 text-zinc-400 px-4 py-2 rounded-lg hover:text-white transition-all uppercase font-bold tracking-tighter flex items-center gap-1.5"
+                                      >
+                                        <RefreshCw size={12} className={isLoading ? "animate-spin" : ""} /> Refresh
+                                      </button>
+                                      <button
+                                        onClick={() => {
+                                          setApiKeys((prev) => prev.filter((ik) => ik.id !== k.id));
+                                          if (activeKeyId === k.id) setActiveKeyId("");
+                                          setManagingKeyId(null);
+                                        }}
+                                        className="text-[10px] bg-red-500/10 border border-red-500/20 text-red-400 px-4 py-2 rounded-lg hover:bg-red-500/20 transition-all uppercase font-bold tracking-tighter flex items-center gap-1.5"
+                                      >
+                                        <Trash2 size={12} /> Remove
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {validationStatus && (
+                                    <div
+                                      className={cn(
+                                        "p-3 rounded-xl border text-[9px] font-mono animate-in slide-in-from-top-1 text-left mt-2",
+                                        validationStatus.type === "error"
+                                          ? "bg-red-500/10 border-red-500/20 text-red-400"
+                                          : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400 shadow-[0_0_10px_rgba(6,182,212,0.05)]",
+                                      )}
+                                    >
+                                      <span className="font-bold mr-1">
+                                        {validationStatus.type === "error"
+                                          ? "▶ ERROR:"
+                                          : "▶ STATUS:"}
+                                      </span>
+                                      {validationStatus.message}
+                                    </div>
+                                  )}
+                                </div>
+
+                                <div className="pt-2 space-y-4">
+                                  <div className="flex items-center justify-between">
+                                    <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                                      Node Queue Management
+                                    </label>
+                                    <div className="flex items-center gap-4">
+                                      <button 
+                                        onClick={async () => {
+                                          try {
+                                            const res = await fetch('/api/models/refresh', { method: 'POST' });
+                                            if (res.ok) {
+                                              const updated = await res.json();
+                                              setGlobalModelCatalog(updated);
+                                            }
+                                          } catch (e) {
+                                            console.error(e);
+                                          }
+                                        }}
+                                        className="text-[10px] text-zinc-500 hover:text-cyan-400 uppercase tracking-widest font-mono flex items-center gap-1"
+                                      >
+                                        <RefreshCw size={10} />
+                                        Refresh Global Catalog
+                                      </button>
+                                      <span className="text-[10px] font-mono text-zinc-600">
+                                        Active Priority
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="space-y-2 max-h-[500px] overflow-y-auto custom-scrollbar pr-2">
+                                    {(() => {
+                                      const queueModels = k.models || [];
+                                      return queueModels.map((rawModelId, idx) => {
+                                        const isOff = rawModelId.startsWith("OFF:");
+                                        const modelId = isOff ? rawModelId.substring(4) : rawModelId;
+                                        return (
+                                          <div
+                                            key={`${rawModelId}-${idx}`}
+                                            className="flex flex-col gap-2 p-3 bg-zinc-900/40 border border-zinc-800 rounded-xl group/node"
+                                          >
+                                            <div className="flex items-center justify-between">
+                                              <div className="flex items-center gap-3 overflow-hidden">
+                                                <div className="w-6 h-6 rounded-lg bg-zinc-950 flex items-center justify-center text-[10px] font-mono text-zinc-600 font-bold shrink-0">
+                                                  {idx + 1}
+                                                </div>
+                                                <div className="flex flex-col">
+                                                  {(() => {
+                                                    const info = globalModelCatalog.find(m => m.id === modelId);
+                                                    const displayName = info?.name || modelId.split("/").pop();
+                                                    return (
+                                                      <>
+                                                        <span className={cn("text-[10px] font-mono truncate uppercase tracking-tight", isOff ? "text-zinc-600 line-through" : "text-zinc-300")}>
+                                                          {displayName}
+                                                        </span>
+                                                        {info && (
+                                                          <div className="flex items-center gap-2 mt-1">
+                                                            <span className="text-[8px] font-mono text-zinc-500 bg-zinc-950 px-1 py-0.5 rounded border border-zinc-800">
+                                                              CTX: {info.contextLength || "?"}
+                                                            </span>
+                                                            <span className={cn("text-[8px] font-mono px-1 py-0.5 rounded border", info.canUseTool ? "text-green-500/80 bg-green-500/10 border-green-500/20" : "text-red-500/80 bg-red-500/10 border-red-500/20")}>
+                                                              TOOLS: {info.canUseTool ? "YES" : "NO"}
+                                                            </span>
+                                                          </div>
+                                                        )}
+                                                      </>
+                                                    );
+                                                  })()}
+                                                </div>
+                                              </div>
+                                              <div className="flex items-center gap-1 opacity-0 group-hover/node:opacity-100 transition-opacity">
+                                                <button
+                                                  disabled={idx === 0}
+                                                  onClick={() => {
+                                                    setApiKeys((prev) =>
+                                                      prev.map((ik) => {
+                                                        if (ik.id === k.id && ik.models) {
+                                                          const next = [...ik.models];
+                                                          [next[idx], next[idx - 1]] = [next[idx - 1], next[idx]];
+                                                          return { ...ik, models: next };
+                                                        }
+                                                        return ik;
+                                                      })
+                                                    );
+                                                  }}
+                                                  className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                                >
+                                                  <ChevronUp size={14} />
+                                                </button>
+                                                <button
+                                                  disabled={idx === queueModels.length - 1}
+                                                  onClick={() => {
+                                                    setApiKeys((prev) =>
+                                                      prev.map((ik) => {
+                                                        if (ik.id === k.id && ik.models) {
+                                                          const next = [...ik.models];
+                                                          [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
+                                                          return { ...ik, models: next };
+                                                        }
+                                                        return ik;
+                                                      })
+                                                    );
+                                                  }}
+                                                  className="p-1 text-zinc-600 hover:text-cyan-400 disabled:opacity-30"
+                                                >
+                                                  <ChevronDown size={14} />
+                                                </button>
+                                                <button
+                                                  disabled={idx === 0 && !isOff && queueModels.filter(m => !m.startsWith("OFF:")).length === 1}
+                                                  onClick={() => {
+                                                    setApiKeys((prev) =>
+                                                      prev.map((ik) => {
+                                                        if (ik.id === k.id && ik.models) {
+                                                          const next = ik.models.filter((_, i) => i !== idx);
+                                                          const newVal = isOff ? modelId : `OFF:${modelId}`;
+                                                          next.push(newVal);
+                                                          return { ...ik, models: next };
+                                                        }
+                                                        return ik;
+                                                      })
+                                                    );
+                                                  }}
+                                                  className={cn(
+                                                    "w-7 h-3.5 rounded-full transition-colors relative flex items-center shadow-inner shrink-0",
+                                                    (idx === 0 && queueModels.filter(m => !m.startsWith("OFF:")).length === 1 && !isOff) ? "opacity-50 cursor-not-allowed" : "cursor-pointer",
+                                                    isOff ? "bg-black border border-zinc-800" : "bg-cyan-500/20 border border-cyan-500/50"
+                                                  )}
+                                                  title={isOff ? "Enable model" : "Disable model"}
+                                                >
+                                                  <div className={cn(
+                                                    "w-2.5 h-2.5 rounded-full transition-all absolute",
+                                                    isOff ? "bg-zinc-600 left-0.5" : "bg-cyan-400 right-0.5 shadow-[0_0_5px_rgba(34,211,238,0.8)]"
+                                                  )} />
+                                                </button>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        );
+                                      });
+                                    })()}
+                                  </div>
+                                  <div className="pt-2 border-t border-zinc-900 flex flex-col gap-2">
+                                    <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-500">
+                                      Add Custom Model to Provider
+                                    </label>
+                                    <div className="flex gap-2 items-center flex-wrap">
+                                      <input 
+                                        type="text" 
+                                        placeholder="Model ID (e.g. gpt-4)"
+                                        value={newModelId}
+                                        onChange={e => setNewModelId(e.target.value)}
+                                        className="flex-1 min-w-[120px] bg-black border border-zinc-800 rounded px-2 py-1.5 text-xs text-zinc-300 outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20"
+                                      />
+                                      <input 
+                                        type="text" 
+                                        placeholder="Name (e.g. GPT-4)"
+                                        value={newModelName}
+                                        onChange={e => setNewModelName(e.target.value)}
+                                        className="flex-1 min-w-[120px] bg-black border border-zinc-800 rounded px-2 py-1.5 text-xs text-zinc-300 outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20"
+                                      />
+                                      <input 
+                                        type="text" 
+                                        placeholder="Max Context"
+                                        value={newModelContext}
+                                        onChange={e => setNewModelContext(e.target.value)}
+                                        className="w-24 bg-black border border-zinc-800 rounded px-2 py-1.5 text-xs text-zinc-300 outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20"
+                                      />
+                                      <label className="flex items-center gap-1 cursor-pointer">
+                                        <input 
+                                          type="checkbox" 
+                                          checked={newModelTools}
+                                          onChange={e => setNewModelTools(e.target.checked)}
+                                          className="w-3 h-3 bg-black border-zinc-800 rounded"
+                                        />
+                                        <span className="text-[10px] text-zinc-500">Tools</span>
+                                      </label>
+                                      <button
+                                        onClick={async () => {
+                                          if (!newModelId.trim()) return;
+                                          const newM = {
+                                            id: newModelId.trim(),
+                                            name: newModelName.trim() || newModelId.trim(),
+                                            provider: k.provider,
+                                            contextLength: newModelContext.trim(),
+                                            canUseTool: newModelTools
+                                          };
+                                          
+                                          // Update global catalog in state
+                                          setGlobalModelCatalog(prev => {
+                                            if (prev.find(m => m.id === newM.id)) return prev;
+                                            return [...prev, newM];
+                                          });
+
+                                          // Post to backend to save in Supabase
+                                          await fetch('/api/models/custom', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify(newM)
+                                          }).catch(console.error);
+
+                                          // Add to provider's queue
+                                          setApiKeys(prev => prev.map(ik => {
+                                            if (ik.id === k.id) {
+                                              return { ...ik, models: [...(ik.models || []), newM.id] };
+                                            }
+                                            return ik;
+                                          }));
+                                          
+                                          setNewModelId("");
+                                          setNewModelName("");
+                                          setNewModelContext("");
+                                          setNewModelTools(false);
+                                        }}
+                                        className="bg-cyan-500/20 text-cyan-400 px-3 py-1.5 rounded text-[10px] uppercase font-bold hover:bg-cyan-500/30 transition-colors"
+                                      >
+                                        Add
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      ) : (
+                        <div className="space-y-6 animate-in fade-in">
+                          <div className="space-y-3 max-h-64 overflow-y-auto custom-scrollbar pr-2">
+                            {apiKeys.length === 0 && (
+                              <div className="text-[10px] text-zinc-600 italic p-8 bg-zinc-950/20 rounded-2xl border border-dashed border-zinc-800 text-center">
+                                No security tokens mapped to this terminal.
+                              </div>
+                            )}
+                            {apiKeys.map((k) => (
+                              <div
+                                key={k.id}
+                                onClick={() => setManagingKeyId(k.id)}
+                                className={cn(
+                                  "flex items-center justify-between p-4 rounded-2xl border transition-all group/key relative overflow-hidden cursor-pointer",
+                                  activeKeyId === k.id
+                                    ? "bg-cyan-900/10 border-cyan-500/30 ring-1 ring-cyan-500/20"
+                                    : "bg-black/40 border-zinc-900 hover:border-zinc-800",
+                                )}
+                              >
+                                <div className="flex items-center gap-4 flex-1 min-w-0">
+                                  <div
+                                    className={cn(
+                                      "w-10 h-10 rounded-xl flex items-center justify-center transition-all shadow-inner",
+                                      activeKeyId === k.id
+                                        ? "bg-cyan-500 text-white shadow-[0_0_15px_rgba(6,182,212,0.3)]"
+                                        : "bg-zinc-900 text-zinc-600 group-hover/key:bg-zinc-800",
+                                    )}
+                                  >
+                                    {(() => {
+                                      const Icon = PROVIDER_ICONS[k.provider] || Shield;
+                                      return <Icon size={18} />;
+                                    })()}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div
+                                      className={cn(
+                                        "text-xs font-bold uppercase tracking-tight",
+                                        activeKeyId === k.id
+                                          ? "text-cyan-400"
+                                          : "text-zinc-400 transition-colors group-hover/key:text-zinc-200",
+                                      )}
+                                    >
+                                      {k.name}{" "}
+                                      <span className="text-[8px] opacity-40 ml-2 font-mono">
+                                        [{PROVIDER_CONFIGS[k.provider]?.name || k.provider}]
+                                      </span>
+                                    </div>
+                                    <div className="text-[10px] font-mono text-zinc-600 mt-0.5 tracking-widest truncate">
+                                      ••••••••{k.key.slice(-4)}
+                                    </div>
+                                    {k.models && (
+                                      <div className="text-[8px] font-mono text-cyan-500/50 mt-1 uppercase">
+                                        {k.models.length} Nodes Mapped
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                  {activeKeyId === k.id && (
+                                    <motion.div
+                                      initial={{ opacity: 0, x: 5 }}
+                                      animate={{ opacity: 1, x: 0 }}
+                                      className="text-[8px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 mr-2"
+                                    >
+                                      Active
+                                    </motion.div>
+                                  )}
+                                  <ChevronRight size={14} className="text-zinc-600 group-hover/key:text-cyan-400 transition-colors" />
+                                </div>
+                              </div>
+                            ))}
                           </div>
-                        )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 

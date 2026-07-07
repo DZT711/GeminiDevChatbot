@@ -16,6 +16,7 @@ export default function AuthCallback() {
     }
 
     // Store JWT in localStorage so ProtectedRoute can read it
+    localStorage.removeItem('session')
     localStorage.setItem('session', token)
 
     // Redirect into the app
