@@ -1,11 +1,11 @@
 {
-  "name": "react-example",
+  "name": "gemini-dev-chatbot",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx server.ts",
-    "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
+    "dev": "tsx src/server/server.ts",
+    "build": "vite build && esbuild src/server/server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "NODE_ENV=production node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist",
@@ -28,6 +28,7 @@
     "lucide-react": "^0.546.0",
     "mermaid": "^11.14.0",
     "motion": "^12.38.0",
+    "openai": "^6.49.0",
     "pg": "^8.20.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

@@ -17,10 +17,30 @@
     "jsx": "react-jsx",
     "paths": {
       "@/*": [
-        "./src/*"
+        "./src/client/*"
       ]
     },
     "allowImportingTsExtensions": true,
     "noEmit": true
-  }
+  },
+  "exclude": [
+    "dist",
+    "add_column.ts",
+    "check_api_keys_table.ts",
+    "check_api.ts",
+    "check_db.ts",
+    "check_models.ts",
+    "print_models.ts",
+    "test-api-request.ts",
+    "test-drop.ts",
+    "test-embedding-dimension.ts",
+    "test-exact-flow.ts",
+    "test-full-error.ts",
+    "test-insert-drizzle.ts",
+    "test-insert.ts",
+    "test-migrate.ts",
+    "test-query.ts",
+    "test-table-metadata.ts",
+    "api/index.ts"
+  ]
 }

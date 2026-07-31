@@ -2,5 +2,7 @@
   "name": "DevGenie AI",
   "description": "A powerful multi-model AI developer assistant with automatic model switching and specialized technical skills.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["AI Chat", "Code Generation", "Model Rotation"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

@@ -6,3 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# AI Studio specific files
+.agents/
+.gemini/
+plans/
+skills-lock.json
+AGENTS.md
+GEMINI.md
+report.md
+test_adapter.ts
+test_validate.ts
+response*.json
