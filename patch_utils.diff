@@ -1,0 +1,29 @@
+--- src/server/controllers/utils.ts
++++ src/server/controllers/utils.ts
+@@ -52,9 +52,22 @@
+   return process.env.GEMINI_API_KEY;
+ }
+ 
+-export async function determineRoutingStrategy(userQuery: string, apiKey: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {
++export async function determineRoutingStrategy(userQuery: string, apiKey: string, provider?: string, customBaseUrl?: string, userId?: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {
+   try {
+-    const aiInstance = di.llmService.getClient(apiKey);
++    let routeApiKey = apiKey;
++    let routeProvider = provider;
++    let routeBaseUrl = customBaseUrl;
++    let routeModel = CLASSIFICATION_MODEL;
++    
++    if (provider && provider !== 'google') {
++       const googleKey = userId ? await resolveGoogleApiKey(userId, undefined, 'google') : undefined;
++       if (googleKey) {
++          routeApiKey = googleKey;
++          routeProvider = 'google';
++          routeBaseUrl = undefined;
++       } else {
++          return 'DIRECT_CHAT'; // Fallback immediately if we don't have Google API key to use Google models
++       }
++    }
++
++    const aiInstance = di.llmService.getClient(routeApiKey, routeBaseUrl, routeProvider);
+     const systemPrompt = `You are an elite AI Router designed to analyze developer queries and routing them accurately to either RAG or DIRECT chat paths.
+ Determine whether the user query is specific to this codebase/repository context, or if it is a general coding question/normal conversation.

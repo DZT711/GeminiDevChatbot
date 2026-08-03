@@ -232,7 +232,7 @@ router.post('/chat', async (req, res) => {
       isForcedRAG = true;
       sendEvent('routing', { strategy: 'USE_RAG', forced: true, message: 'Forced memory indexing mode activated via /RAG command.' });
     } else {
-      routingStrategy = await determineRoutingStrategy(cleanPrompt, apiKey);
+      routingStrategy = await determineRoutingStrategy(cleanPrompt, apiKey, provider, customBaseUrl, userId);
       sendEvent('routing', { strategy: routingStrategy, forced: false });
     }
 
@@ -438,11 +438,25 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
              }
           }
 
-          responseStream = await loopAiInstance.models.generateContentStream({
+          const initialStream = await loopAiInstance.models.generateContentStream({
             model: actualModel,
             contents: adjustedContents,
             config: Object.keys(finalConfig).length > 0 ? finalConfig : undefined
           });
+          
+          const iterator = initialStream[Symbol.asyncIterator]();
+          const firstResult = await iterator.next();
+          let firstChunk = null;
+          if (!firstResult.done) {
+             firstChunk = firstResult.value;
+          }
+          
+          async function* wrappedStream() {
+             if (firstChunk) yield firstChunk;
+             for await (const chunk of iterator) yield chunk;
+          }
+          
+          responseStream = wrappedStream();
           streamSuccess = true;
         } catch (streamError: any) {
           lastStreamError = streamError;
@@ -475,6 +489,8 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           let fb2 = loopProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct' : 'gemini-3-flash-preview';
           let fb3 = loopProvider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : 'gemini-2.0-flash';
           let fb4 = loopProvider === 'openrouter' ? 'google/gemini-2.0-pro-exp-02-05:free' : 'gemini-1.5-flash';
+          
+          console.log(`[DEBUG] fallback check: attempt=${attemptCount}, model=${finalModelUsed}, normalized=${normalizedModel}, reallyNeedsFallback=${reallyNeedsFallback}`);
 
           if (reallyNeedsFallback && normalizedModel !== fb1 && normalizedModel !== fb2 && normalizedModel !== fb3 && normalizedModel !== fb4) {
             console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Dynamic fallback to ${fb1}.`);
@@ -497,12 +513,14 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
             finalModelUsed = fb4;
             sendEvent('model_switch', { model: finalModelUsed });
           } else {
+            console.log(`[DEBUG] throwing streamError because no fallback matched`);
             throw streamError;
           }
         }
       }
 
       if (!streamSuccess) {
+        console.log(`[DEBUG] throwing lastStreamError after loops exhausted`);
         throw lastStreamError;
       }
 
@@ -796,9 +814,14 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       if (fullContextStr.length > 10) {
          {
             const Type = di.llmService.getTypeEnum();
-            const aiBackground = di.llmService.getClient(apiKey);
-            import('../agent/agent.config.js').then(({ EMBEDDING_MODEL }) => {
-               aiBackground.models.embedContent({
+            resolveGoogleApiKey(userId, undefined, 'google').then(googleKeyForAutoRAG => {
+               if (!googleKeyForAutoRAG) {
+                  console.log("[Auto-RAG] Skipped because Google API key is missing.");
+                  return;
+               }
+               const aiBackground = di.llmService.getClient(googleKeyForAutoRAG);
+               import('../agent/agent.config.js').then(({ EMBEDDING_MODEL }) => {
+                  aiBackground.models.embedContent({
                    model: EMBEDDING_MODEL,
                    contents: fullContextStr.substring(0, 9000),
                    config: { outputDimensionality: 768 }
@@ -820,6 +843,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
                    console.error("[Auto-RAG] Embed fails:", err.message);
                });
             });
+            }).catch(err => console.error("[Auto-RAG] key resolution fail:", err));
          }
       }
     } catch (err) {

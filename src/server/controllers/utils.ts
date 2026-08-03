@@ -51,9 +51,24 @@ export async function resolveGoogleApiKey(userId: string, customKey?: string, pr
   return process.env.GEMINI_API_KEY;
 }
 
-export async function determineRoutingStrategy(userQuery: string, apiKey: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {
+export async function determineRoutingStrategy(userQuery: string, apiKey: string, provider?: string, customBaseUrl?: string, userId?: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {
   try {
-    const aiInstance = di.llmService.getClient(apiKey);
+    let routeApiKey = apiKey;
+    let routeProvider = provider;
+    let routeBaseUrl = customBaseUrl;
+    
+    if (provider && provider !== 'google') {
+       const googleKey = userId ? await resolveGoogleApiKey(userId, undefined, 'google') : undefined;
+       if (googleKey) {
+          routeApiKey = googleKey;
+          routeProvider = 'google';
+          routeBaseUrl = undefined;
+       } else {
+          return 'DIRECT_CHAT';
+       }
+    }
+    
+    const aiInstance = di.llmService.getClient(routeApiKey, routeBaseUrl, routeProvider);
     const systemPrompt = `You are an elite AI Router designed to analyze developer queries and routing them accurately to either RAG or DIRECT chat paths.
 Determine whether the user query is specific to this codebase/repository context, or if it is a general coding question/normal conversation.
 - Classify as 'USE_RAG' if the query explicitly or implicitly mentions project source code, file paths, structural logic, database schemas, or verified solutions previously stored in the database. E.g., queries asking about "how is the login structured", "where are user accounts stored", "show me schema.ts implementation", "how to build/start the app", "db connections", "RAG function logic".
