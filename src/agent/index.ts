@@ -29,9 +29,6 @@ export * from './workspace/Workspace';
 export * from './workspace/WorkspaceFile';
 export * from './workspace/WorkspaceState';
 
-export * from './memory/AgentMemory';
-export * from './memory/MemoryRecord';
-export * from './memory/MemoryStore';
 
 export * from './artifacts/Artifact';
 export * from './artifacts/ArtifactCollection';
@@ -61,3 +58,9 @@ export * from './tools/ExecutionHooks';
 export * from './tools/ExecutionPolicy';
 export * from './tools/ToolExecutor';
 export * from './tools/ExecutionPipeline';
+export * from './memory';
+export * from './knowledge';
+export * from './retrieval';
+export * from './context';
+export * from './reflection';
+export * from './learning';

@@ -1,0 +1,8 @@
+export enum ToolProviderLifecycleState {
+  INITIALIZING = 'INITIALIZING',
+  ACTIVE = 'ACTIVE',
+  PAUSED = 'PAUSED',
+  ERROR = 'ERROR',
+  SHUTTING_DOWN = 'SHUTTING_DOWN',
+  STOPPED = 'STOPPED'
+}
