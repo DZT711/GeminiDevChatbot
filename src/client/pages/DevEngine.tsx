@@ -428,6 +428,54 @@ export default function DevEngine() {
     } finally { setIsKnowledgeActionLoading(prev => ({...prev, [nodeId]: false})); }
   };
 
+  const handleDeleteNodeAction = async (nodeId: string) => {
+    const token = storageService.getItem("session");
+    if (!token) return;
+    setIsKnowledgeActionLoading(prev => ({ ...prev, [nodeId]: true }));
+    try {
+      const isAdmin = user?.role === "ADMIN";
+      if (isAdmin) {
+        const res = await fetch(`/api/knowledge/${nodeId}`, {
+          method: "DELETE",
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          addNotification(errData.error || "Failed to delete knowledge node", "error");
+        } else {
+          addNotification("Knowledge record deleted successfully from vector index.", "success");
+          fetchKnowledgeData();
+        }
+      } else {
+        const res = await fetch("/api/knowledge/proposals", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            actionType: "DELETE",
+            targetNodeId: nodeId,
+            reason: "User requested deletion from UI dashboard.",
+          }),
+        });
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          addNotification(errData.error || "Failed to submit deletion proposal", "error");
+        } else {
+          addNotification("Deletion proposal submitted successfully! Pending administrator approval.", "success");
+          fetchKnowledgeData();
+        }
+      }
+    } catch (err: any) {
+      addNotification("Error deleting knowledge node: " + err.message, "error");
+    } finally {
+      setIsKnowledgeActionLoading(prev => ({ ...prev, [nodeId]: false }));
+    }
+  };
+
   const handleKSearch = async () => {
     if (!kSearchQuery.trim()) return;
     const token = storageService.getItem("session");
@@ -1002,7 +1050,7 @@ export default function DevEngine() {
     loadSession, createNewSession, saveCurrentSession, deleteSession, handleTogglePinSession, apiKeyWarning, setApiKeyWarning,
     knowledgeNodes, kSearchQuery, setKSearchQuery, newProposalContent, setNewProposalContent,
     newProposalReason, setNewProposalReason, fetchKnowledgeData, handleApproveProposal, handleRejectProposal, handleUpdateProposal,
-    handleDeleteNode, handleProposeDeleteNode, handleUpdateNode, handleProposeUpdateNode, executeKSearch, handleCreateProposal,
+    handleDeleteNode: handleDeleteNodeAction, handleProposeDeleteNode, handleUpdateNode, handleProposeUpdateNode, executeKSearch, handleCreateProposal,
     handleStop, handleEditMessage, handleRevertMessage, handleRateMessage, handleToggleRepoModal, handleStartEditingSession, handleSaveSessionTitle,
     handleImageGen, handleVideoGen, handlePaste, handleAddRepo, handleEnhancePrompt, handleSummarizeChat, handleSubmit,
     DEFAULT_SKILLS, PROVIDER_CONFIGS, ModelId, handleUploadSkillFile: () => {}, handleCreateCustomSkillManual: () => {}, handleEditSkill, handleGithubImport: () => {},
@@ -1118,7 +1166,7 @@ export default function DevEngine() {
                     : "■ SYSTEM MEMORY UPDATE"}
                 </span>
                 <span className="text-[8px] font-mono text-zinc-500">
-                  {notif.timestamp.toLocaleTimeString()}
+                  {notif.timestamp?.toLocaleTimeString()}
                 </span>
               </div>
               <p className="font-mono text-[10px] leading-relaxed break-words">

@@ -117,7 +117,7 @@ async function runPlayground() {
   
   await knowledge.createRecord({
     id: 'know-1',
-    content: { color: 'blue' },
+    content: 'blue', tags: [], relationships: [],
     metadata: { label: 'User favorite color is blue', userId: 'user-1' }
   });
 
@@ -153,8 +153,8 @@ async function runPlayground() {
   console.log('Learning generated promotions:', learningResult.knowledgePromotions.length);
   
   for (const promo of learningResult.knowledgePromotions) {
-    if (promo.proposedKnowledge) {
-      await knowledge.createRecord(promo.proposedKnowledge as any);
+    if (promo) {
+      await knowledge.createRecord(promo as any);
     }
   }
   
@@ -188,7 +188,7 @@ async function runPlayground() {
   const inputValidator = new InputValidator();
   const normalizer = new ResultNormalizer();
   const pipeline = new ExecutionPipeline(resolver, permissionValidator, inputValidator, normalizer, checkpointStore, restoreStrategy);
-  const context = createInitialContext({ runId: 'test-1', agentId: 'agent-1', sessionId: 'sess-1' });
+  const context = createInitialContext({ runId: 'test-1', agentId: 'agent-1', sessionId: 'sess-1' } as any);
 context.scope.allowedTools = ['*'];
 
   console.log('\n--- Scenario 4: Native Tool -> Execution Pipeline -> Success ---');

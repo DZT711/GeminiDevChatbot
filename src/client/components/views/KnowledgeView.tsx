@@ -1,5 +1,5 @@
 import React from 'react';
-import { Cpu, Search, Check, Sparkles, X, ChevronDown, Activity, Globe, Database, Settings2, Lock, Plus, Save, Clock, Bot, Terminal, BookOpen, Key, Link as LinkIcon, Trash2, Edit2, Download, LogOut, CheckCircle, XCircle, AlertTriangle, Shield, CheckSquare, Settings, RefreshCw, Eye, EyeOff, Zap, ShieldAlert, GitBranch, Github, Code, Play } from 'lucide-react';
+import { Cpu, Search, Check, Sparkles, X, ChevronDown, Activity, Globe, Database, Settings2, Lock, Plus, Save, Clock, Bot, Terminal, BookOpen, Key, Link as LinkIcon, Trash2, Edit2, Download, LogOut, CheckCircle, XCircle, AlertTriangle, Shield, CheckSquare, Settings, RefreshCw, Eye, EyeOff, Zap, ShieldAlert, GitBranch, Github, Code, Play, Loader2 } from 'lucide-react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 
@@ -564,14 +564,17 @@ export function KnowledgeView(props: any) {
                                 />
                                 <div className="flex gap-2">
                                   <button
+                                    disabled={Boolean(isKnowledgeActionLoading[node.id])}
                                     onClick={() => handleSaveNodeEdit(node.id)}
-                                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs uppercase font-bold transition-colors"
+                                    className="flex items-center gap-1.5 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white rounded-lg text-xs uppercase font-bold transition-colors"
                                   >
-                                    Update Node
+                                    {isKnowledgeActionLoading[node.id] && <Loader2 className="w-3 h-3 animate-spin" />}
+                                    {isKnowledgeActionLoading[node.id] ? "Saving..." : user?.role === "ADMIN" ? "Update Node" : "Submit Edit Proposal"}
                                   </button>
                                   <button
+                                    disabled={Boolean(isKnowledgeActionLoading[node.id])}
                                     onClick={() => setEditingNodeId(null)}
-                                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors"
+                                    className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 disabled:opacity-50 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors"
                                   >
                                     Cancel
                                   </button>
@@ -587,19 +590,27 @@ export function KnowledgeView(props: any) {
                           {editingNodeId !== node.id && (
                             <div className="flex justify-end gap-2 pt-2 border-t border-zinc-900/40">
                               <button
+                                disabled={Boolean(isKnowledgeActionLoading[node.id])}
                                 onClick={() => {
                                   setEditingNodeId(node.id);
                                   setEditingNodeContent(node.content);
                                 }}
-                                className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-705 text-zinc-400 text-[10px] font-bold uppercase rounded-lg transition-colors"
+                                className="flex items-center gap-1.5 px-3 py-1.5 border border-zinc-800 hover:border-zinc-700 disabled:opacity-50 text-zinc-400 text-[10px] font-bold uppercase rounded-lg transition-colors"
                               >
-                                Edit Node
+                                <Edit2 className="w-3 h-3" />
+                                {user?.role === "ADMIN" ? "Edit Node" : "Propose Edit"}
                               </button>
                               <button
+                                disabled={Boolean(isKnowledgeActionLoading[node.id])}
                                 onClick={() => handleDeleteNode(node.id)}
-                                className="px-3 py-1.5 border border-red-900/30 hover:bg-red-950/10 text-red-400 text-[10px] font-bold uppercase rounded-lg transition-colors"
+                                className="flex items-center gap-1.5 px-3 py-1.5 border border-red-900/30 hover:bg-red-900/20 hover:border-red-900/50 disabled:opacity-50 text-red-400 hover:text-red-300 text-[10px] font-bold uppercase rounded-lg transition-colors"
                               >
-                                Delete Node
+                                {isKnowledgeActionLoading[node.id] ? (
+                                  <Loader2 className="w-3 h-3 animate-spin" />
+                                ) : (
+                                  <Trash2 className="w-3 h-3" />
+                                )}
+                                {isKnowledgeActionLoading[node.id] ? "Deleting..." : user?.role === "ADMIN" ? "Delete Node" : "Propose Deletion"}
                               </button>
                             </div>
                           )}

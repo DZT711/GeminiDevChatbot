@@ -10,6 +10,14 @@ import { encryptKey, decryptKey } from '../lib/encryption.js';
 import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from '../agent/agent.config.js';
 import { di } from "../di.js";
 import { JWT_SECRET, getBaseUrl, txWithUser, resolveGoogleApiKey, determineRoutingStrategy } from './utils.js';
+import { AgentFeatureFlags } from '../services/agentIntegration/AgentFeatureFlags.js';
+import { AgentAdapter } from '../services/agentIntegration/AgentAdapter.js';
+import { AgentIntegrationService } from '../services/agentIntegration/AgentIntegrationService.js';
+import { RetrieverAdapter } from '../services/agentIntegration/retrieval/RetrieverAdapter.js';
+import { ContextIntegrationService } from '../services/agentIntegration/context/ContextIntegrationService.js';
+import { ContextBuilderAdapter } from '../services/agentIntegration/context/ContextBuilderAdapter.js';
+import { PromptContextMapper } from '../services/agentIntegration/context/PromptContextMapper.js';
+import { ExecutionIntegrationService } from '../services/agentIntegration/execution/ExecutionIntegrationService.js';
 
 export const router = express.Router();
 
@@ -236,78 +244,114 @@ router.post('/chat', async (req, res) => {
       sendEvent('routing', { strategy: routingStrategy, forced: false });
     }
 
+    // --- M04-01 AGENT INTEGRATION BOUNDARY ---
+    if (AgentFeatureFlags.USE_AGENT_RUNTIME) {
+        const agentRequest = AgentAdapter.toAgentRequest(req.body, cleanPrompt, routingStrategy, userId, apiKey);
+        const integrationService = new AgentIntegrationService();
+        await integrationService.handleRequest(agentRequest, res);
+        return;
+    }
+    // -----------------------------------------
+
     // 2. Conditional Branching Context Injection
-    let finalSystemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository.
+    let baseSystemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository.
 
 ### CORE OPERATING RULES
-1. Strict Grounding: Analyze and formulate responses using the codebase context if provided.
+1. Strict Grounding: Analyze and formulate responses using the codebase context or any attached repository context provided.
 2. File Path References: State full file paths wherever pertinent.
 3. TypeScript Excellence: Ensure any code provided is valid, strictly typed TypeScript.
+4. Repository Context: When the user attaches or links a repository (or asks about a repository/project), use the provided repository details and use the \`read_github_repo\` tool if you need to fetch specific file contents (such as README.md, package.json, or source code) or explore the file tree.
 
 Always provide runnable code blocks/examples with Markdown syntax.`;
 
+    let sandboxInstructions = '';
     if (isForcedSandbox) {
-      finalSystemPrompt += `\n\n### MANDATORY SANDBOX INSTRUCTION\nThe user has explicitly requested to run code in the sandbox for this query. You MUST use the \`execute_code\` tool to write and execute the code to solve the user's prompt. After receiving the output, present the results clearly to the user.`;
+      sandboxInstructions = `### MANDATORY SANDBOX INSTRUCTION\nThe user has explicitly requested to run code in the sandbox for this query. You MUST use the \`execute_code\` tool to write and execute the code to solve the user's prompt. After receiving the output, present the results clearly to the user.`;
       cleanPrompt = `Please write and execute the code to solve this, using the execute_code tool. Query: ${cleanPrompt}`;
     }
 
-    if (customInstructions) {
-      finalSystemPrompt += `\n\nUser Custom Personalization:\n${customInstructions}`;
+    let retrievedDocs: { id: string; content: string }[] | undefined = undefined;
+    let finalSystemPrompt = baseSystemPrompt;
+    
+    if (AgentFeatureFlags.USE_AGENT_RETRIEVER) {
+        if (routingStrategy === 'USE_RAG') {
+            const retriever = new RetrieverAdapter(userId, apiKey, provider, customBaseUrl);
+            retrievedDocs = await retriever.retrieveKnowledge(cleanPrompt, sendEvent);
+        }
+    } else {
+        // legacy RAG
+        if (customInstructions) {
+          finalSystemPrompt += `\n\nUser Custom Personalization:\n${customInstructions}`;
+        }
+        if (routingStrategy === 'USE_RAG') {
+          sendEvent('status', { message: 'Performing vector similarity search in repository context...' });
+          const aiInstance = di.llmService.getClient(apiKey, customBaseUrl, provider);
+          const embedResponse = await aiInstance.models.embedContent({
+            model: EMBEDDING_MODEL,
+            contents: cleanPrompt,
+            config: { outputDimensionality: 768 }
+          });
+          const embeddingVector = embedResponse.embeddings?.[0]?.values;
+          if (embeddingVector) {
+            const { knowledgeNodes } = await import('../db/schema.js');
+            const { cosineDistance } = await import('drizzle-orm');
+            const retrievedContexts = await txWithUser(userId, async (tx) => {
+              return await tx.select({
+                content: knowledgeNodes.content,
+                nodeType: knowledgeNodes.nodeType,
+                metadata: knowledgeNodes.metadata,
+                similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
+              }).from(knowledgeNodes).orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector)).limit(5);
+            });
+            if (retrievedContexts.length > 0) {
+              const formattedContext = retrievedContexts.map((node, i) => {
+                const pathInfo = (node.metadata as any)?.path || 'Unknown File';
+                return `[Node ${i + 1}] (${node.nodeType}) File: ${pathInfo}\nSimilarity: ${(1 - node.similarity).toFixed(4)}\nContent:\n${node.content}`;
+              }).join('\n\n---\n\n');
+              finalSystemPrompt += `\n\n### RETRIEVED REPOSITORY CONTEXT\nUse the following active codebase memory contexts to formulate your answer:\n\n${formattedContext}`;
+              sendEvent('status', { message: `Context retrieval completed. Loaded ${retrievedContexts.length} repository memory blocks.` });
+            } else {
+              sendEvent('status', { message: 'No codebase memory matched query context. Proceeding with standard instructions.' });
+            }
+          } else {
+            sendEvent('status', { message: 'Failed to generate search embeddings. Standard mode enabled.' });
+          }
+        }
     }
+    
+    // Map simplified history representation
+    let simpleHistory = history.map((h: any) => ({
+      role: h.role,
+      content: h.parts.map((p: any) => p.text || '').join('\n')
+    }));
 
-    if (routingStrategy === 'USE_RAG') {
-      sendEvent('status', { message: 'Performing vector similarity search in repository context...' });
-      
-      
-      const aiInstance = di.llmService.getClient(apiKey, customBaseUrl, provider);
-      
-      // Generate embedding using modern EMBEDDING_MODEL
-      const embedResponse = await aiInstance.models.embedContent({
-        model: EMBEDDING_MODEL,
-        contents: cleanPrompt,
-        config: {
-          outputDimensionality: 768
+    if (AgentFeatureFlags.USE_AGENT_CONTEXT_BUILDER) {
+        const reqContext = ContextBuilderAdapter.toContextBuilderRequest(
+            cleanPrompt,
+            baseSystemPrompt,
+            simpleHistory,
+            retrievedDocs,
+            customInstructions,
+            sandboxInstructions
+        );
+        const ctxIntegration = new ContextIntegrationService();
+        const m03Context = await ctxIntegration.buildContext(reqContext);
+        finalSystemPrompt = PromptContextMapper.toLegacySystemPrompt(m03Context);
+    } else {
+        // legacy context finalization
+        if (sandboxInstructions && !finalSystemPrompt.includes(sandboxInstructions)) {
+            finalSystemPrompt += `\n\n${sandboxInstructions}`;
         }
-      });
-      
-      const embeddingVector = embedResponse.embeddings?.[0]?.values;
-      if (embeddingVector) {
-        const { knowledgeNodes } = await import('../db/schema.js');
-        const { cosineDistance } = await import('drizzle-orm');
-        
-        const retrievedContexts = await txWithUser(userId, async (tx) => {
-          return await tx.select({
-            content: knowledgeNodes.content,
-            nodeType: knowledgeNodes.nodeType,
-            metadata: knowledgeNodes.metadata,
-            similarity: cosineDistance(knowledgeNodes.embedding, embeddingVector)
-          })
-          .from(knowledgeNodes)
-          .orderBy(cosineDistance(knowledgeNodes.embedding, embeddingVector))
-          .limit(5);
-        });
-
-        if (retrievedContexts.length > 0) {
-          const formattedContext = retrievedContexts.map((node, i) => {
-            const pathInfo = (node.metadata as any)?.path || 'Unknown File';
-            return `[Node ${i + 1}] (${node.nodeType}) File: ${pathInfo}\nSimilarity: ${(1 - node.similarity).toFixed(4)}\nContent:\n${node.content}`;
-          }).join('\n\n---\n\n');
-
-          finalSystemPrompt += `\n\n### RETRIEVED REPOSITORY CONTEXT\nUse the following active codebase memory contexts to formulate your answer:\n\n${formattedContext}`;
-          sendEvent('status', { message: `Context retrieval completed. Loaded ${retrievedContexts.length} repository memory blocks.` });
-        } else {
-          sendEvent('status', { message: 'No codebase memory matched query context. Proceeding with standard instructions.' });
+        if (customInstructions && !finalSystemPrompt.includes(customInstructions)) {
+            finalSystemPrompt += `\n\nUser Custom Personalization:\n${customInstructions}`;
         }
-      } else {
-        sendEvent('status', { message: 'Failed to generate search embeddings. Standard mode enabled.' });
-      }
     }
 
     // Convert history parts into the model input parts
     const formattedContents = history.map((h: any, idx: number) => {
       if (idx === history.length - 1 && h.role === 'user') {
-        const parts = h.parts.map((p: any) => {
-          if (p.text) return { text: cleanPrompt };
+        const parts = h.parts.map((p: any, pIdx: number) => {
+          if (pIdx === 0 && p.text) return { text: cleanPrompt };
           return p;
         });
         return { role: h.role, parts };
@@ -346,11 +390,11 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
         },
         {
           name: "read_github_repo",
-          description: "Read the file structure and contents of a public GitHub repository. This tool returns the repository file tree. You can optionally request the content of specific files by providing their paths. Use this when the user shares a GitHub link and asks you to read or analyze it.",
+          description: "Read the file structure and contents of a public GitHub repository. This tool returns the repository file tree. You can optionally request the content of specific files by providing their paths. Use this when the user shares a GitHub link, attaches a repository, or asks you to read or analyze a repository.",
           parameters: {
             type: Type.OBJECT,
             properties: {
-              repoUrl: { type: Type.STRING, description: "The public GitHub repository URL (e.g. https://github.com/DZT711/DZT711)" },
+              repoUrl: { type: Type.STRING, description: "The public GitHub repository URL (e.g. https://github.com/owner/repo)" },
               filesToRead: { 
                 type: Type.ARRAY, 
                 items: { type: Type.STRING },
@@ -535,11 +579,25 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
         
         if (chunk.functionCalls && chunk.functionCalls.length > 0) {
           hasFunctionCalls = true;
+          let execIntegration: any = null;
+          if (AgentFeatureFlags.USE_EXECUTION_PIPELINE) {
+              execIntegration = new ExecutionIntegrationService();
+              await execIntegration.registerProductionTools(payload, sendEvent);
+          }
           for (const fc of chunk.functionCalls) {
             allFunctionCallsInStream.push(fc);
             autoSave_allFunctionCalls.push({ name: fc.name });
             
-            if (fc.name === 'proposeKnowledge') {
+            if (AgentFeatureFlags.USE_EXECUTION_PIPELINE) {
+              try {
+                  const result = await execIntegration.executeTool(fc.name, fc.args);
+                  toolResponses.push({ functionResponse: { name: fc.name, response: result } });
+              } catch (err: any) {
+                  console.error(`[ExecutionPipeline] Error executing ${fc.name}:`, err);
+                  toolResponses.push({ functionResponse: { name: fc.name, response: { status: "failed", error: err.message } } });
+              }
+            } else {
+              if (fc.name === 'proposeKnowledge') {
               const { content, reason } = fc.args as any;
               try {
                 const { knowledgeProposals } = await import('../db/schema.js');
@@ -742,6 +800,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
             } else {
               toolResponses.push({ functionResponse: { name: fc.name, response: { status: "success" } } });
             }
+            }
           }
         }
 
@@ -762,7 +821,14 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
 
       if (hasFunctionCalls && allFunctionCallsInStream.length > 0) {
         autoSave_toolResponses.push(...toolResponses);
-        formattedContents.push({ role: 'model', parts: allFunctionCallsInStream.map(c => ({ functionCall: c })) });
+        const modelParts: any[] = [];
+        if (autoSave_aiOutputText.trim()) {
+          modelParts.push({ text: autoSave_aiOutputText });
+        }
+        for (const fc of allFunctionCallsInStream) {
+          modelParts.push({ functionCall: fc });
+        }
+        formattedContents.push({ role: 'model', parts: modelParts });
         formattedContents.push({ role: 'user', parts: toolResponses });
         toolLoops++;
         continue;
@@ -858,7 +924,8 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
     res.write('event: end\ndata: {}\n\n');
     res.end();
   } catch (e: any) {
-    const is503 = e?.message?.includes('503') || e?.message?.includes('UNAVAILABLE');
+    const errStr = e?.message || String(e) || '';
+    const is503 = (errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('RESOURCE_EXHAUSTED')) && !errStr.includes('No such file') && !errStr.includes('ENOENT');
     if (is503) {
       console.error('[AI Query Router ERROR]: AI Model cluster is currently experiencing high demand. Please try again shortly.');
       res.write(`data: ${JSON.stringify({ type: 'error', data: 'AI Model cluster is currently experiencing extremely high demand. We cascaded through all fallback models but they are currently unavailable. Please try again shortly.' })}\n\n`);

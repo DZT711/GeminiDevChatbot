@@ -19,14 +19,21 @@ class GithubService {
     const repo = repoRaw.replace(/\.git$/, '');
 
     const resolvedToken = token || (import.meta as any).env.VITE_GITHUB_TOKEN;
-    const headers = resolvedToken ? { Authorization: `token ${resolvedToken}` } : undefined;
+    let headers: any = resolvedToken ? { Authorization: `token ${resolvedToken}` } : undefined;
     
     // Fetch general repo info
-    const repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
-    if (repoRes.status === 403 || repoRes.status === 429) {
-      throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings or login with GitHub.");
+    let repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`, { headers });
+    
+    // If unauthorized, retry without token (token might be invalid)
+    if (repoRes.status === 401 && headers) {
+      headers = undefined;
+      repoRes = await fetch(`https://api.github.com/repos/${owner}/${repo}`);
     }
-    if (!repoRes.ok) throw new Error("Repo not found");
+
+    if (repoRes.status === 403 || repoRes.status === 429) {
+      throw new Error("GitHub API rate limit exceeded. Please add VITE_GITHUB_TOKEN in Settings.");
+    }
+    if (!repoRes.ok) throw new Error(`Repo not found (HTTP ${repoRes.status})`);
     const repoData = await repoRes.json();
 
     const defaultBranch = repoData.default_branch || 'main';
@@ -156,9 +163,11 @@ class GithubService {
     const languages = Object.keys(info.languages).join(', ');
     return `
 Repository: ${info.owner}/${info.name}
+URL: https://github.com/${info.owner}/${info.name}
 Description: ${info.description}
 Status: ⭐ ${info.stars} | 🍴 ${info.forks}
 Languages: ${languages}
+Default Branch: ${info.defaultBranch}
 Top-level files: ${info.topFiles.join(', ')}
     `.trim();
   }

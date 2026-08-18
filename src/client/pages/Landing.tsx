@@ -59,13 +59,10 @@ export default function Landing() {
       try {
         const token = storageService.getItem('session');
         if (!token) return;
-        const res = { ok: true };
-        const data = await apiClient.get<any>('/api/auth/me');;
-        if (res.ok) {
-          setUser(data);
-        }
-      } catch (e) {
-        console.error("Failed to fetch user context", e);
+        const data = await apiClient.get<any>('/api/auth/me');
+        setUser(data);
+      } catch (e: any) {
+        setUser(null);
       }
     };
     fetchUser();

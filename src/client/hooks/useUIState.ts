@@ -25,7 +25,7 @@ export function useUIState() {
     const [notifications, setNotifications] = useState<any[]>([]);
   const addNotification = (message: string, type: "success" | "error" | "info" | "warning" = "info") => {
     const id = Date.now().toString() + Math.random().toString(36).substring(7);
-    setNotifications((prev) => [...prev, { id, message, type }]);
+    setNotifications((prev) => [...prev, { id, message, type, timestamp: new Date() }]);
     setTimeout(() => {
       setNotifications((prev) => prev.filter((n) => n.id !== id));
     }, 5000);

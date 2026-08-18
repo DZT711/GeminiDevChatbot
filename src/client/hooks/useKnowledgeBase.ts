@@ -67,8 +67,7 @@ export function useKnowledgeBase() {
       await apiClient.post(`/api/knowledge/proposals/${proposalId}/approve`);
       await fetchKnowledgeData();
     } catch (e) {
-      console.error(e);
-      alert("Failed to approve proposal");
+      console.error("Failed to approve proposal:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
     }
@@ -80,8 +79,7 @@ export function useKnowledgeBase() {
       await apiClient.post(`/api/knowledge/proposals/${proposalId}/reject`);
       await fetchKnowledgeData();
     } catch (e) {
-      console.error(e);
-      alert("Failed to reject proposal");
+      console.error("Failed to reject proposal:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
     }
@@ -94,22 +92,19 @@ export function useKnowledgeBase() {
       await fetchKnowledgeData();
       setEditingProposalId(null);
     } catch (e) {
-      console.error(e);
-      alert("Failed to update proposal");
+      console.error("Failed to update proposal:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
     }
   };
 
   const handleDeleteNode = async (nodeId: string) => {
-    if (!confirm("Are you sure you want to delete this knowledge node directly from your vector index?")) return;
     setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
     try {
       await apiClient.delete(`/api/knowledge/${nodeId}`);
       await fetchKnowledgeData();
     } catch (e) {
-      console.error(e);
-      alert("Failed to delete node");
+      console.error("Failed to delete node:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
     }
@@ -119,14 +114,13 @@ export function useKnowledgeBase() {
     setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
     try {
       await apiClient.post("/api/knowledge/proposals", {
-        actionType: "delete",
+        actionType: "DELETE",
         targetNodeId: nodeId,
-        reasoning: "User manually requested deletion from dashboard",
+        reason: "User manually requested deletion from dashboard",
       });
       await fetchKnowledgeData();
     } catch (e) {
-      console.error(e);
-      alert("Failed to propose deletion");
+      console.error("Failed to propose deletion:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
     }
@@ -139,8 +133,7 @@ export function useKnowledgeBase() {
       await fetchKnowledgeData();
       setEditingNodeId(null);
     } catch (e) {
-      console.error(e);
-      alert("Failed to update node");
+      console.error("Failed to update node:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
     }
@@ -150,16 +143,15 @@ export function useKnowledgeBase() {
     setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
     try {
       await apiClient.post("/api/knowledge/proposals", {
-        actionType: "update",
+        actionType: "UPDATE",
         targetNodeId: nodeId,
-        content: content,
-        reasoning: "User manually requested edit from dashboard",
+        proposedContent: content,
+        reason: "User manually requested edit from dashboard",
       });
       await fetchKnowledgeData();
       setEditingNodeId(null);
     } catch (e) {
-      console.error(e);
-      alert("Failed to propose edit");
+      console.error("Failed to propose edit:", e);
     } finally {
       setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
     }
@@ -173,7 +165,7 @@ export function useKnowledgeBase() {
       const results = await apiClient.post<{ id: string; content: string; nodeType: string; similarity: number }[]>("/api/knowledge/search", { query: kSearchQuery, limit: 10 });
       setKSearchResults(results || []);
     } catch (e: any) {
-      console.error(e);
+      console.error("Search failed:", e);
       setKSearchError(e.message || "Search failed");
     } finally {
       setIsKSearching(false);
@@ -184,17 +176,16 @@ export function useKnowledgeBase() {
     setIsSubmittingProposal(true);
     try {
       await apiClient.post("/api/knowledge/proposals", {
-        actionType: "add",
-        content: content,
-        reasoning: reason,
+        actionType: "INSERT",
+        proposedContent: content,
+        reason: reason,
       });
       await fetchKnowledgeData();
       setNewProposalContent("");
       setNewProposalReason("");
       return true;
     } catch (e: any) {
-      console.error(e);
-      alert("Failed to submit proposal: " + e.message);
+      console.error("Failed to submit proposal:", e);
       return false;
     } finally {
       setIsSubmittingProposal(false);

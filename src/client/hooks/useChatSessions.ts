@@ -114,7 +114,7 @@ export const handleCopyFullChat = async (
   addNotification: (message: string, type?: "info" | "success" | "warning" | "error") => void
 ) => {
   const text = messages
-    .map((m) => `[\${m.role.toUpperCase()}]\n\${m.content}`)
+    .map((m) => `[${m.role.toUpperCase()}]\n${m.content}`)
     .join("\n\n");
   try {
     await navigator.clipboard.writeText(text);
@@ -722,16 +722,12 @@ export function useChatInteractions(options: any) {
         setCurrentSessionId(sessionId);
       }
 
-      const nonRepoAttachments = finalAttachments.filter(
-        (a) => a.type !== "repo",
-      );
-
       const userMessage: Message = {
         id: `msg-${Date.now()}`,
         role: "user",
         content: processedInput,
         attachments:
-          nonRepoAttachments.length > 0 ? nonRepoAttachments : undefined,
+          finalAttachments.length > 0 ? finalAttachments : undefined,
         editHistory: [],
       };
 
@@ -809,15 +805,17 @@ export function useChatInteractions(options: any) {
           .filter((m) => m && m.role && m.content)
           .map((m, index) => {
             const parts: any[] = [{ text: m.content }];
+            const existingAttachmentNames = new Set<string>();
             if (m.attachments) {
-              parts.push(
-                ...m.attachments.map((a) => geminiService.attachmentToPart(a)),
-              );
+              for (const a of m.attachments) {
+                existingAttachmentNames.add(a.name);
+                parts.push(geminiService.attachmentToPart(a));
+              }
             }
-            // Inject persistent repo sync into the current API interaction
+            // Inject persistent repo sync into the current API interaction if not already attached
             if (index === newMessages.length - 1 && m.role === "user") {
               const repoAttachments = finalAttachments.filter(
-                (a) => a.type === "repo",
+                (a) => a.type === "repo" && !existingAttachmentNames.has(a.name),
               );
               parts.push(
                 ...repoAttachments.map((a) =>
@@ -1206,15 +1204,11 @@ useEffect(() => {
       try {
         const token = storageService.getItem("session");
         if (!token) return;
-        const res = await fetch("/api/auth/me", {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setUser(data);
+        const data = await apiClient.get<any>("/api/auth/me");
+        setUser(data);
 
-          // Now fetch state
-          const stateData = await apiClient.get<any>("/api/user/state");
+        // Now fetch state
+        const stateData = await apiClient.get<any>("/api/user/state");
             if (stateData.preferences) {
               setTheme(stateData.preferences.theme || "midnight");
               setCurrentModel(
@@ -1255,17 +1249,17 @@ useEffect(() => {
                 });
               });
             }
-          }
 
           // Fetch model catalog
-          const modelsRes = await fetch("/api/models/info");
-          if (modelsRes.ok) {
-            const modelsData = await modelsRes.json();
+          try {
+            const modelsData = await apiClient.get<any[]>("/api/models/info");
             setModelCatalog(modelsData);
-
-        }
+          } catch (e) {
+            console.warn("Failed to fetch model catalog", e);
+          }
       } catch (e) {
         console.error("Failed to fetch user context", e);
+        setUser(null);
       } finally {
         setIsStateLoaded(true);
       }

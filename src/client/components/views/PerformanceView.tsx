@@ -255,7 +255,7 @@ export function PerformanceView(props: any) {
                             </div>
                             <span className="text-[10px] font-mono text-zinc-500 uppercase">
                               Last used:{" "}
-                              {new Date(data.lastUsed).toLocaleTimeString()}
+                              {data.lastUsed ? new Date(data.lastUsed).toLocaleTimeString() : 'N/A'}
                             </span>
                           </div>
 
