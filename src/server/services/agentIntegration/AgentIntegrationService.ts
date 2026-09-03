@@ -6,7 +6,25 @@ import { ContextIntegrationService } from './context/ContextIntegrationService.j
 import { ContextBuilderAdapter } from './context/ContextBuilderAdapter.js';
 import { PromptContextMapper } from './context/PromptContextMapper.js';
 import { ExecutionIntegrationService } from './execution/ExecutionIntegrationService.js';
+import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL } from '../../agent/agent.config.js';
 import { di } from '../../di.js';
+import { appendSystemLog } from '../../logInterceptor.js';
+
+export function sanitizeModel(model?: string, provider?: string): string {
+    if (provider === 'openrouter') {
+        return model || 'google/gemini-2.5-flash';
+    }
+    if (!model) return DEFAULT_CHAT_MODEL;
+
+    // 1. Remove leading provider / path prefixes (e.g., 'google/', 'models/')
+    let clean = model.replace(/^(google\/|models\/)/i, '').trim();
+
+    // 2. Remove batch / test / free / preview suffixes if present
+    clean = clean.replace(/:(batch|free)$/i, '');
+    clean = clean.replace(/\s*\((TEST|BETA|FREE)\)$/i, '');
+
+    return clean || DEFAULT_CHAT_MODEL;
+}
 
 export class AgentIntegrationService {
     /**
@@ -81,7 +99,18 @@ export class AgentIntegrationService {
             // 4. Set up LLM client
             const Type = di.llmService.getTypeEnum();
             const aiInstance = di.llmService.getClient(request.apiKey, request.customBaseUrl, request.provider);
-            const chatModel = request.model || 'gemini-3.5-flash';
+            const originalRequestedModel = request.rawModel || request.model || DEFAULT_CHAT_MODEL;
+            let activeModel = sanitizeModel(request.model || request.rawModel, request.provider);
+            let hasEmittedInitialNormalization = false;
+
+            if (activeModel !== originalRequestedModel) {
+                console.log(`[MODEL ROUTING] Normalized requested model '${originalRequestedModel}' to Studio format '${activeModel}'`);
+                appendSystemLog('AGENT_MODEL_NORM', `Normalized requested model '${originalRequestedModel}' to '${activeModel}'`);
+                sendEvent('model_switch', { model: activeModel, isFallback: false, previousModel: originalRequestedModel });
+                hasEmittedInitialNormalization = true;
+            }
+
+            appendSystemLog('AGENT_STREAM_INIT', `Starting agent response generation for model '${activeModel}' (userId: ${request.userId || 'anon'})`);
 
             const proposeKnowledgeTool = {
                 functionDeclarations: [
@@ -148,18 +177,72 @@ export class AgentIntegrationService {
                     tools: [proposeKnowledgeTool],
                 };
 
-                if (chatModel.includes('thinking') || chatModel === 'gemini-3.1-pro-preview') {
-                    config.thinkingConfig = {
-                        thinkingLevel: request.thinkingLevel || 'LOW',
-                        includeThoughts: true
-                    };
+                const modelsToTry = [
+                    activeModel,
+                    DEFAULT_CHAT_MODEL,
+                    FALLBACK_CHAT_MODEL,
+                    PRO_CHAT_MODEL
+                ];
+                const uniqueModels = Array.from(new Set(modelsToTry));
+                let responseStream: any = null;
+                let lastStreamError: any = null;
+
+                for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
+                    const candidateModel = uniqueModels[mIdx];
+                    try {
+                        const callConfig: any = { ...config };
+                        if (candidateModel.includes('thinking') || candidateModel === 'gemini-3.1-pro-preview') {
+                            callConfig.thinkingConfig = {
+                                thinkingLevel: request.thinkingLevel || 'LOW',
+                                includeThoughts: true
+                            };
+                        } else {
+                            delete callConfig.thinkingConfig;
+                        }
+
+                        responseStream = await aiInstance.models.generateContentStream({
+                            model: candidateModel,
+                            contents: formattedContents,
+                            config: callConfig
+                        });
+                        activeModel = candidateModel;
+
+                        if (activeModel !== originalRequestedModel) {
+                            if (!hasEmittedInitialNormalization || activeModel !== candidateModel) {
+                                console.log(`[MODEL FALLBACK SUCCESS] Successfully recovered and streaming with fallback model '${activeModel}' (requested: '${originalRequestedModel}')`);
+                                sendEvent('model_switch', { model: activeModel, isFallback: true, previousModel: originalRequestedModel });
+                                sendEvent('status', { message: `⚡ Model failover active: streaming response with '${activeModel}'.` });
+                            }
+                        }
+                        break;
+                    } catch (streamErr: any) {
+                        lastStreamError = streamErr;
+                        const errText = streamErr?.message || String(streamErr);
+                        const isRecoverable = errText.includes('404') || errText.includes('503') || errText.includes('429') || 
+                                              errText.includes('Not Found') || errText.includes('UNAVAILABLE') || 
+                                              errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded');
+                        const nextModel = uniqueModels[mIdx + 1];
+                        const failureReason = errText.includes('404') || errText.includes('Not Found')
+                            ? '404 Not Found'
+                            : errText.includes('503') || errText.includes('UNAVAILABLE')
+                            ? '503 High Demand'
+                            : errText.includes('429') || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded')
+                            ? '429 Quota Exceeded'
+                            : 'Service Error';
+
+                        if (isRecoverable && nextModel) {
+                            console.warn(`[MODEL FALLBACK] Model '${candidateModel}' encountered error (${failureReason}). Cascading to fallback model '${nextModel}'...`);
+                            continue;
+                        } else {
+                            console.error(`[AgentRuntime] generateContentStream failed for model ${candidateModel}:`, errText);
+                            throw streamErr;
+                        }
+                    }
                 }
 
-                const responseStream = await aiInstance.models.generateContentStream({
-                    model: chatModel,
-                    contents: formattedContents,
-                    config
-                });
+                if (!responseStream) {
+                    throw lastStreamError || new Error('Failed to obtain streaming response from model');
+                }
 
                 let loopNeedsToolExecution = false;
                 let currentFunctionCalls: any[] = [];
@@ -184,9 +267,11 @@ export class AgentIntegrationService {
                 if (loopNeedsToolExecution) {
                     const toolResponseParts: any[] = [];
                     for (const fc of currentFunctionCalls) {
+                        appendSystemLog('AGENT_TOOL_CALL', `Agent invoked tool '${fc.name}'`, fc.args);
                         if (execIntegration) {
                             try {
                                 const result = await execIntegration.executeTool(fc.name, fc.args);
+                                appendSystemLog('AGENT_TOOL_SUCCESS', `Tool '${fc.name}' completed execution`);
                                 toolResponseParts.push({
                                     functionResponse: {
                                         name: fc.name,
@@ -195,6 +280,7 @@ export class AgentIntegrationService {
                                 });
                             } catch (err: any) {
                                 const errorMessage = err?.message || String(err) || "Tool execution error";
+                                appendSystemLog('AGENT_TOOL_ERROR', `Tool '${fc.name}' failed: ${errorMessage}`);
                                 toolResponseParts.push({
                                     functionResponse: {
                                         name: fc.name,
@@ -242,7 +328,16 @@ export class AgentIntegrationService {
             }
 
             if (lastUsageMetadata) {
-                sendEvent('metadata', lastUsageMetadata);
+                sendEvent('metadata', {
+                    ...lastUsageMetadata,
+                    model: activeModel,
+                    isFallback: activeModel !== originalRequestedModel
+                });
+            } else {
+                sendEvent('metadata', {
+                    model: activeModel,
+                    isFallback: activeModel !== originalRequestedModel
+                });
             }
 
             AgentAdapter.handleAgentResponse(res, { type: 'end', data: {} });

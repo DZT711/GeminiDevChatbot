@@ -1,10 +1,10 @@
 export enum ModelId {
   PRO = "gemini-3.1-pro-preview",
-  FLASH_3_5 = "gemini-3.5-flash",
-  FLASH = "gemini-3-flash-preview",
-  LITE = "gemini-3.1-flash-lite-preview",
-  IMAGE = "gemini-2.5-flash-image",
-  VIDEO = "veo-2-flash-preview",
+  FLASH_3_5 = "gemini-3.7-flash",
+  FLASH = "gemini-3.7-flash",
+  LITE = "gemini-3.1-flash-lite",
+  IMAGE = "gemini-3.1-flash-image",
+  VIDEO = "veo-3.1-lite-generate-preview",
   HYBRID = "hybrid"
 }
 

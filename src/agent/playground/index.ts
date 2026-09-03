@@ -19,6 +19,10 @@ import { SimpleContextBuilder } from '../context/SimpleContextBuilder';
 import { RuleBasedReflection } from '../reflection/RuleBasedReflection';
 import { RuleBasedLearningEngine } from '../learning/RuleBasedLearningEngine';
 
+import { PlanningSimulator } from './PlanningSimulator.js';
+import { PLANNING_FIXTURES } from './PlanningFixtures.js';
+import { PlanningPlaygroundSerializer } from './PlanningPlaygroundSerializer.js';
+
 // Mock REST Tool Provider
 class MockRESTToolProvider extends NativeToolProvider {
   constructor(tools: Tool[]) {
@@ -250,7 +254,42 @@ context.scope.allowedTools = ['*'];
   console.log('Default resolve returns (highest priority / version) [should be mcp]:', defaultReadFile?.getDescriptor().metadata.tags);
 
   console.log('\n============================================================');
-  console.log('PLAYGROUND FINISHED');
+  console.log('M05 PLANNING PLAYGROUND SIMULATION HARNESS');
+  console.log('============================================================');
+
+  const planningSimulator = new PlanningSimulator();
+  const scenarioIds = [
+    'simple-linear',
+    'missing-dependency',
+    'cycle-detected',
+    'permission-violation',
+    'transient-failure',
+    'logical-failure',
+    'replan-after-partial-completion',
+    'repeated-failure-abort'
+  ];
+
+  for (const sId of scenarioIds) {
+    console.log(`\n>>> Running Scenario: [${sId}] ...`);
+    const simResult = await planningSimulator.runSimulation(sId);
+    console.log(`  - Goal: "${simResult.goal.title}"`);
+    console.log(`  - Timeline Stages: ${simResult.timeline.length}`);
+    console.log(`  - Validation Valid: ${simResult.validationResult?.isValid}`);
+    if (simResult.repairedPlan) {
+      console.log(`  - Repaired Plan Steps: ${simResult.repairedPlan.steps.length}`);
+      console.log(`  - Post-Repair Valid: ${simResult.postRepairValidation?.isValid}`);
+    }
+    if (simResult.simulatedFailure) {
+      console.log(`  - Failure Category: ${simResult.simulatedFailure.category}`);
+      console.log(`  - Replanning Decision: ${simResult.replanningDecision?.action} (${simResult.replanningDecision?.reason})`);
+    }
+    if (simResult.replanRevision) {
+      console.log(`  - Replan Revision Preserved Tasks: [${simResult.replanRevision.completedTasksPreserved.join(', ')}]`);
+    }
+  }
+
+  console.log('\n============================================================');
+  console.log('ALL PLAYGROUND SCENARIOS COMPLETED SUCCESSFULLY');
   console.log('============================================================');
 }
 

@@ -16,7 +16,7 @@ export function useUIState() {
   const [settingsTab, setSettingsTab] = useState<"general" | "profile" | "context" | "theme" | "performance" | "knowledge">("general");
   const [showInputBox, setShowInputBox] = useState(true);
   const [showTransparency, setShowTransparency] = useState(false);
-  const [view, setView] = useState<"chat" | "skills" | "knowledge" | "models" | "performance" | "admin-debug" | "keys">("chat");
+  const [view, setView] = useState<"chat" | "skills" | "knowledge" | "models" | "performance" | "admin-debug" | "keys" | "planning-playground" | "workspace">("chat");
   const [showHistory, setShowHistory] = useState(false);
   
           

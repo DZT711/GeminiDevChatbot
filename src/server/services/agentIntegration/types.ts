@@ -9,6 +9,7 @@ export interface AgentRequest {
     cleanPrompt: string;
     history: any[];
     model: string;
+    rawModel?: string;
     activeSkillIds: string[];
     useSearch: boolean;
     thinkingLevel: number;

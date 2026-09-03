@@ -31,15 +31,31 @@ export class OpenAICompatibleProvider implements ProviderInterface {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => "N/A");
-        console.error(`[checkKey] HTTP ${response.status} from proxy for ${this.name} models`, {
-          status: response.status,
-          statusText: response.statusText,
-          url: `${this.baseUrl}/models`,
-          body: errText
-        });
-        let errData;
-        try { errData = JSON.parse(errText); } catch(e) {}
-        throw new Error(errData?.error?.message || errData?.message || "Invalid API Key");
+        let errData: any;
+        try { errData = JSON.parse(errText); } catch {}
+
+        let errorMessage = errData?.error?.message || errData?.message;
+        if (!errorMessage) {
+          if (response.status === 429) {
+            errorMessage = "Rate limit reached (429). Please try again shortly.";
+          } else if (response.status === 401 || response.status === 403) {
+            errorMessage = "Invalid API Key or unauthorized.";
+          } else {
+            errorMessage = errText !== "N/A" && errText ? errText : `HTTP ${response.status}`;
+          }
+        }
+
+        if (response.status === 429) {
+          console.warn(`[checkKey] HTTP 429 Rate Limit from proxy for ${this.name} models`);
+        } else {
+          console.error(`[checkKey] HTTP ${response.status} from proxy for ${this.name} models`, {
+            status: response.status,
+            statusText: response.statusText,
+            url: `${this.baseUrl}/models`,
+            body: errText
+          });
+        }
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();

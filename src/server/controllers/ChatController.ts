@@ -7,7 +7,7 @@ import path from 'path';
 import { db } from '../db/index.js';
 import { users, accounts, userPreferences, apiKeys, customSkills, sessions, messages, modelInformation } from '../db/schema.js';
 import { encryptKey, decryptKey } from '../lib/encryption.js';
-import { CLASSIFICATION_MODEL, EMBEDDING_MODEL } from '../agent/agent.config.js';
+import { CLASSIFICATION_MODEL, EMBEDDING_MODEL, DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL } from '../agent/agent.config.js';
 import { di } from "../di.js";
 import { JWT_SECRET, getBaseUrl, txWithUser, resolveGoogleApiKey, determineRoutingStrategy } from './utils.js';
 import { AgentFeatureFlags } from '../services/agentIntegration/AgentFeatureFlags.js';
@@ -31,14 +31,19 @@ router.post('/summarize-memory', async (req, res) => {
 
     const { logs, existingSummary } = req.body;
     
-    // We strictly use gemini-2.0-flash as background compaction agent
-    const ai = di.llmService.getClient(process.env.GEMINI_API_KEY!);
+    const apiKey = await resolveGoogleApiKey(payload.id as string) || process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey.trim() === '') {
+      return res.status(400).json({ error: 'No API key configured for compaction agent. Please add an API key in settings.' });
+    }
+    
+    // We use DEFAULT_CHAT_MODEL as background compaction agent
+    const ai = di.llmService.getClient(apiKey);
     
     const instruction = 'Act as a memory compaction agent. Summarize the technical decisions, codebase changes, architecture paths, and fixed bugs from these logs into a single high-density paragraph. Preserve absolute pathnames and system configurations.' 
       + (existingSummary ? '\n\nPreviously summarized context:\n' + existingSummary : '');
       
     const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
+      model: DEFAULT_CHAT_MODEL,
       contents: [{ role: 'user', parts: [{ text: logs }] }],
       config: {
         systemInstruction: instruction
@@ -407,7 +412,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       ]
     };
 
-    const chatModel = model || 'gemini-3.5-flash';
+    const chatModel = model || DEFAULT_CHAT_MODEL;
     let finalModelUsed = chatModel;
     let toolLoops = 0;
     let lastUsageMetadata: any = null;
@@ -529,43 +534,46 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           const isOpenRouterUpstreamError = loopProvider === 'openrouter' && (errorMsg.includes('API key not valid') || errorMsg.includes('400') && errorMsg.includes('type.googleapis.com'));
           const reallyNeedsFallback = needsFallback || isOpenRouterUpstreamError;
           
-          let fb1 = loopProvider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gemini-3.5-flash';
-          let fb2 = loopProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct' : 'gemini-3-flash-preview';
-          let fb3 = loopProvider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : 'gemini-2.0-flash';
-          let fb4 = loopProvider === 'openrouter' ? 'google/gemini-2.0-pro-exp-02-05:free' : 'gemini-1.5-flash';
+          let fb1 = loopProvider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gemini-3.7-flash';
+          let fb2 = loopProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct' : 'gemini-3.1-flash-lite';
+          let fb3 = loopProvider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : 'gemini-3.1-pro-preview';
+          let fb4 = loopProvider === 'openrouter' ? 'google/gemini-2.0-pro-exp-02-05:free' : 'gemini-3.7-flash';
           
-          console.log(`[DEBUG] fallback check: attempt=${attemptCount}, model=${finalModelUsed}, normalized=${normalizedModel}, reallyNeedsFallback=${reallyNeedsFallback}`);
+          const failureReason = isModelNotFound ? '404 Not Found' : isQuotaExceeded ? '429 Quota Exceeded' : isUnavailable ? '503 High Demand' : 'Endpoint Error';
 
           if (reallyNeedsFallback && normalizedModel !== fb1 && normalizedModel !== fb2 && normalizedModel !== fb3 && normalizedModel !== fb4) {
-            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Dynamic fallback to ${fb1}.`);
-            sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit quota limits or is currently unavailable. Redirected to high-performance '${fb1}'.` });
+            console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb1}'...`);
+            sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit limits. Cascading to '${fb1}'.` });
             finalModelUsed = fb1;
-            sendEvent('model_switch', { model: finalModelUsed });
+            sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb1) {
-            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to ${fb2}.`);
-            sendEvent('status', { message: `⚠️ High demand on standard models. Connecting to alternative model...` });
+            console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb2}'...`);
+            sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb2}'...` });
             finalModelUsed = fb2;
-            sendEvent('model_switch', { model: finalModelUsed });
+            sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb2) {
-            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to ${fb3}.`);
-            sendEvent('status', { message: `⚠️ Extremely high demand on standard models. Connecting to alternative fallback...` });
+            console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb3}'...`);
+            sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb3}'...` });
             finalModelUsed = fb3;
-            sendEvent('model_switch', { model: finalModelUsed });
+            sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb3) {
-            console.warn(`[AI Query Router] Model ${finalModelUsed} triggered error. Extended fallback to ${fb4}.`);
-            sendEvent('status', { message: `⚠️ Extremely high demand on standard models. Connecting to alternative fallback...` });
+            console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb4}'...`);
+            sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb4}'...` });
             finalModelUsed = fb4;
-            sendEvent('model_switch', { model: finalModelUsed });
+            sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else {
-            console.log(`[DEBUG] throwing streamError because no fallback matched`);
+            console.error(`[MODEL FALLBACK] No further fallback candidates available for model '${finalModelUsed}'`);
             throw streamError;
           }
         }
       }
 
       if (!streamSuccess) {
-        console.log(`[DEBUG] throwing lastStreamError after loops exhausted`);
         throw lastStreamError;
+      }
+
+      if (finalModelUsed !== (model || DEFAULT_CHAT_MODEL)) {
+        console.log(`[MODEL FALLBACK SUCCESS] Successfully recovered and streaming with fallback model '${finalModelUsed}'`);
       }
 
       let hasFunctionCalls = false;

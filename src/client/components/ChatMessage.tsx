@@ -10,6 +10,7 @@ import { Attachment } from '@/services/chatSessionManager';
 
 import { CodePreview } from './CodePreview';
 import { ThinkingProcessDrawer } from './ThinkingProcessDrawer';
+import { PlanningResultCard } from './planning/PlanningResultCard';
 
 const FilePreview = ({ attachment }: { attachment: Attachment }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -210,25 +211,45 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
       let codeString = '';
       let language = 'text';
       let meta = '';
+      let childProps: any = null;
 
       if (React.isValidElement(children)) {
-        const props = children.props as any;
-        if (typeof props.children === 'string') {
-          codeString = props.children;
-        } else if (Array.isArray(props.children)) {
-          codeString = props.children.join('');
+        childProps = children.props as any;
+        if (typeof childProps.children === 'string') {
+          codeString = childProps.children;
+        } else if (Array.isArray(childProps.children)) {
+          codeString = childProps.children.join('');
         }
         
-        const className = props.className || '';
+        const className = childProps.className || '';
         const match = /language-(\w+)/.exec(className);
         if (match) {
           language = match[1];
         }
 
-        meta = props.node?.data?.meta || typeof props.meta === 'string' ? props.meta : '';
+        meta = childProps.node?.data?.meta || typeof childProps.meta === 'string' ? childProps.meta : '';
       }
 
       codeString = codeString.replace(/\n$/, '');
+
+      const isPlanningBlock =
+        language === 'planning-result' ||
+        language === 'planning' ||
+        meta.includes('planning-result') ||
+        (childProps?.className && String(childProps.className).includes('planning-result')) ||
+        (codeString.includes('"stagesPassed"') && codeString.includes('"topologicalOrder"')) ||
+        (codeString.includes('"goal"') && codeString.includes('"taskCount"') && codeString.includes('"stepCount"'));
+
+      if (isPlanningBlock) {
+        try {
+          const parsed = JSON.parse(codeString);
+          if (parsed && (parsed.goal || parsed.plan || parsed.status === 'success')) {
+            return <PlanningResultCard result={parsed} theme={theme} />;
+          }
+        } catch {
+          // fall through if not valid JSON
+        }
+      }
 
       if (language === 'ansi') {
         return (
@@ -324,13 +345,18 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
               <span className={cn(
                 "text-[9px] px-2 py-0.5 rounded border font-mono font-bold tracking-wider flex items-center gap-1.5 transition-colors duration-300", 
                 isFallback
-                  ? (theme === 'light' ? "bg-amber-100 text-amber-700 border-amber-300" : "bg-amber-950/40 text-amber-400 border-amber-800/50 shadow-[0_4px_12px_rgba(245,158,11,0.1)]")
+                  ? (theme === 'light' ? "bg-amber-100 text-amber-800 border-amber-300 shadow-sm" : "bg-amber-950/50 text-amber-400 border-amber-700/60 shadow-[0_2px_10px_rgba(245,158,11,0.15)]")
                   : theme === 'cyberpunk' ? "bg-[#00ffcc]/20 text-[#00ffcc] border-[#00ffcc]/40 shadow-[0_0_10px_rgba(0,255,204,0.1)]" :
                     theme === 'monochrome' ? "bg-white text-black border-white" :
                     "bg-cyan-950/40 text-cyan-400 border-cyan-800/50 shadow-[0_4px_12px_rgba(6,182,212,0.1)]"
               )}>
-                {isFallback && <AlertTriangle size={10} className="animate-pulse" />}
-                NODE: {modelName.toUpperCase()}
+                {isFallback && <AlertTriangle size={11} className="animate-pulse text-amber-400 shrink-0" />}
+                <span>NODE: {modelName.toUpperCase()}</span>
+                {isFallback && (
+                  <span className="text-[8px] px-1 py-0.2 rounded bg-amber-500/20 text-amber-300 font-mono font-bold uppercase tracking-normal ml-0.5">
+                    FALLBACK
+                  </span>
+                )}
               </span>
             )}
           </div>
@@ -508,12 +534,67 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                   <ThinkingProcessDrawer theme={theme} />
                 </div>
               )}
-              <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                components={markdownComponents as any}
-              >
-                {displayedContent + (isLoading && isLatest ? ' ▍' : '')}
-              </ReactMarkdown>
+              {isUser && /^\/[a-zA-Z0-9_-]+/.test(displayedContent.trim()) ? (() => {
+                const match = displayedContent.trim().match(/^(\/[a-zA-Z0-9_-]+)([\s\S]*)$/);
+                const cmd = match ? match[1].toLowerCase() : '';
+                const rest = match ? match[2].trim() : '';
+                const getBadgeStyle = (cmdName: string) => {
+                  switch (cmdName) {
+                    case '/goal':
+                      return theme === 'light'
+                        ? "bg-emerald-100 text-emerald-800 border-emerald-300 shadow-xs"
+                        : "bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.2)]";
+                    case '/plan':
+                      return theme === 'light'
+                        ? "bg-violet-100 text-violet-800 border-violet-300 shadow-xs"
+                        : "bg-violet-500/20 text-violet-300 border-violet-500/40 shadow-[0_0_12px_rgba(139,92,246,0.2)]";
+                    case '/rag':
+                      return theme === 'light'
+                        ? "bg-cyan-100 text-cyan-800 border-cyan-300 shadow-xs"
+                        : "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_12px_rgba(6,182,212,0.2)]";
+                    case '/image':
+                      return theme === 'light'
+                        ? "bg-pink-100 text-pink-800 border-pink-300 shadow-xs"
+                        : "bg-pink-500/20 text-pink-300 border-pink-500/40 shadow-[0_0_12px_rgba(236,72,153,0.2)]";
+                    case '/video':
+                      return theme === 'light'
+                        ? "bg-amber-100 text-amber-800 border-amber-300 shadow-xs"
+                        : "bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.2)]";
+                    default:
+                      return theme === 'light'
+                        ? "bg-cyan-100 text-cyan-800 border-cyan-300 shadow-xs"
+                        : "bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-[0_0_10px_rgba(6,182,212,0.2)]";
+                  }
+                };
+                return (
+                  <div className="space-y-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className={cn(
+                        "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono font-bold tracking-wider uppercase border",
+                        getBadgeStyle(cmd)
+                      )}>
+                        <span className="w-1.5 h-1.5 rounded-full bg-current animate-pulse" />
+                        <span>{cmd}</span>
+                      </span>
+                      <span className={cn("text-[10px] font-mono tracking-wider uppercase opacity-70", theme === 'light' ? "text-slate-600" : "text-zinc-400")}>
+                        {cmd === '/goal' ? 'Goal Decomposition' : cmd === '/plan' ? 'Architecture Plan' : cmd === '/rag' ? 'Memory Query' : 'Slash Command'}
+                      </span>
+                    </div>
+                    {rest && (
+                      <div className={cn("font-mono text-sm leading-relaxed whitespace-pre-wrap break-words", theme === 'light' ? "text-slate-800" : "text-zinc-200")}>
+                        {rest}
+                      </div>
+                    )}
+                  </div>
+                );
+              })() : (
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm]}
+                  components={markdownComponents as any}
+                >
+                  {displayedContent + (isLoading && isLatest ? ' ▍' : '')}
+                </ReactMarkdown>
+              )}
               {attachments && attachments.length > 0 && (
                 <div className="flex flex-col gap-2 pt-4 mt-2 border-t border-zinc-800/50">
                   <div className="flex flex-wrap gap-2">

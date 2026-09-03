@@ -5,11 +5,11 @@ import { ExecutionContext } from '../../../../agent/runtime/ExecutionContext.js'
 import { txWithUser } from '../../../controllers/utils.js';
 
 export class BaseToolAdapter implements Tool {
-    constructor(private descriptor: ToolDescriptor, private executor: (input: any) => Promise<any>) {}
+    constructor(private descriptor: ToolDescriptor, private executor: (input: any, context: ExecutionContext) => Promise<any>) {}
     getDescriptor(): ToolDescriptor { return this.descriptor; }
     getState(): ToolLifecycleState { return ToolLifecycleState.READY; }
     async initialize(): Promise<void> {}
-    async execute(context: ExecutionContext, input: unknown): Promise<unknown> { return this.executor(input); }
+    async execute(context: ExecutionContext, input: unknown): Promise<unknown> { return this.executor(input, context); }
     async cleanup(): Promise<void> {}
 }
 
@@ -57,6 +57,59 @@ export class ToolExecutionAdapter {
             this.sendEvent('text', `\n\n\`\`\`${langDisp}\n${code}\n\`\`\`\n\n\`\`\`ansi\n`);
             
             const targetLang = (langDisp || 'javascript').toLowerCase();
+
+            // Native execution for Python, Node/JS, and Shell
+            if (targetLang === 'python' || targetLang === 'py' || targetLang === 'javascript' || targetLang === 'js' || targetLang === 'bash' || targetLang === 'sh') {
+                try {
+                    const os = await import('os');
+                    const fs = await import('fs');
+                    const path = await import('path');
+                    const { exec } = await import('child_process');
+
+                    const tempDir = path.join(os.tmpdir(), `devgenie_exec_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`);
+                    fs.mkdirSync(tempDir, { recursive: true });
+
+                    let filename = 'script.js';
+                    let runCmd = `node "${filename}"`;
+                    if (targetLang === 'python' || targetLang === 'py') {
+                        filename = 'script.py';
+                        runCmd = `python3 "${filename}"`;
+                    } else if (targetLang === 'bash' || targetLang === 'sh') {
+                        filename = 'script.sh';
+                        runCmd = `bash "${filename}"`;
+                    }
+
+                    const scriptPath = path.join(tempDir, filename);
+                    fs.writeFileSync(scriptPath, code, 'utf-8');
+
+                    const execPromise = new Promise<{ stdout: string; stderr: string; exitCode: number }>((resolve) => {
+                        exec(runCmd, { cwd: tempDir, timeout: 20000, maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
+                            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch {}
+                            resolve({
+                                stdout: stdout || '',
+                                stderr: stderr || (error && !stdout ? `Error: ${error.message}\n` : ''),
+                                exitCode: error ? (error.code ?? 1) : 0
+                            });
+                        });
+                    });
+
+                    const res = await execPromise;
+                    let fullOutput = res.stdout;
+                    if (res.stderr) {
+                        fullOutput += (fullOutput ? '\n' : '') + res.stderr;
+                    }
+                    if (!fullOutput.trim()) {
+                        fullOutput = 'Code executed successfully with no output.';
+                    }
+
+                    this.sendEvent('text', fullOutput);
+                    this.sendEvent('text', `\n\`\`\`\n\n`);
+                    return { status: res.exitCode === 0 ? 'success' : 'error', output: fullOutput, exitCode: res.exitCode };
+                } catch (localErr: any) {
+                    console.warn('[ToolExecutionAdapter] Local execution error, attempting remote fallback:', localErr);
+                }
+            }
+
             const judge0Langs = ['c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'rust', 'rs', 'go', 'php', 'ruby', 'rb', 'java', 'typescript', 'ts'];
             const judge0Aliases: Record<string, number> = {
                 'c': 103, 'cpp': 105, 'c++': 105, 'csharp': 51, 'cs': 51, 'c#': 51,

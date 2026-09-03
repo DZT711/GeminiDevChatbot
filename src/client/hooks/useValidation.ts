@@ -37,31 +37,48 @@ export function useValidation(apiKeys: any[]) {
   const [apiKeyWarning, setApiKeyWarning] = useState<string | null>(null);
 
   useEffect(() => {
-    const checkKeysUsability = async () => {
-      if (apiKeys.length === 0) {
-        setApiKeyWarning(
-          "CAUTION: No API keys are currently configured. Connect a Google gateway key in settings to unlock custom capabilities.",
-        );
-        return;
-      }
+    let isMounted = true;
+    const activeKeys = (apiKeys || []).filter(
+      (k) => k && typeof k.key === 'string' && k.key.trim().length > 5 && !k.key.startsWith('dummy') && !k.key.startsWith('your_')
+    );
+
+    if (apiKeys && apiKeys.length > 0 && activeKeys.length === 0) {
+      // User has entries but none are validly configured keys
+      setApiKeyWarning(null);
+      return;
+    }
+
+    if (!apiKeys || apiKeys.length === 0) {
+      setApiKeyWarning(null);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
       try {
         const results = await Promise.all(
-          apiKeys.map(async (keyObj) => {
+          activeKeys.map(async (keyObj) => {
             try {
               const res = await geminiService.checkKey(
                 keyObj.key,
                 keyObj.provider as any,
               );
-              return { id: keyObj.id, valid: res.valid, name: keyObj.name };
-            } catch (err) {
-              return { id: keyObj.id, valid: false, name: keyObj.name };
+              return { id: keyObj.id, valid: res.valid, error: res.error, name: keyObj.name };
+            } catch (err: any) {
+              return { id: keyObj.id, valid: false, error: err?.message, name: keyObj.name };
             }
           }),
         );
-        const invalid = results.filter((r) => !r.valid);
+
+        if (!isMounted) return;
+
+        // Ignore 429 rate limits or temporary network issues from causing false invalid warnings
+        const invalid = results.filter(
+          (r) => !r.valid && !r.error?.toLowerCase().includes('rate limit') && !r.error?.includes('429')
+        );
+
         if (invalid.length > 0) {
           setApiKeyWarning(
-            `CAUTION: API Key "\${invalid[0].name}" failed verification probe! It may be invalid or expired. Update it in configurations.`,
+            `CAUTION: API Key "${invalid[0].name}" failed verification probe (${invalid[0].error || 'Invalid'}). Update it in configurations.`,
           );
         } else {
           setApiKeyWarning(null);
@@ -69,9 +86,13 @@ export function useValidation(apiKeys: any[]) {
       } catch (err) {
         console.warn("Telemetry key scan skipped", err);
       }
+    }, 1000);
+
+    return () => {
+      isMounted = false;
+      clearTimeout(timer);
     };
-    checkKeysUsability();
-  }, [apiKeys]);
+  }, [JSON.stringify(apiKeys?.map(k => ({ id: k.id, key: k.key, provider: k.provider })))]);
 
   return { apiKeyWarning, setApiKeyWarning };
 }

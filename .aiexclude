@@ -2,7 +2,6 @@
 .env.local
 .env.*.local
 node_modules/
-dist/
 *.key
 *.pem
 package-lock.json

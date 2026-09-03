@@ -286,7 +286,7 @@ class GeminiService {
       githubToken?: string;
       session?: ChatSession;
       isAutoCompact?: boolean;
-      onModelSwitch?: (model: string) => void;
+      onModelSwitch?: (model: string, isFallback?: boolean) => void;
       onTokenUpdate?: (tokens: number) => void;
       onEvent?: (event: any) => void;
     } = {},
@@ -391,14 +391,17 @@ class GeminiService {
                   if (config.onTokenUpdate && parsed.data?.totalTokenCount) {
                     config.onTokenUpdate(parsed.data.totalTokenCount);
                   }
+                  if (parsed.data?.model && config.onModelSwitch) {
+                    config.onModelSwitch(parsed.data.model, parsed.data.isFallback);
+                  }
                 } else if (parsed.type === 'system_event') {
                   if (parsed.data && parsed.data.type === 'knowledge_proposal_created') {
                     config.onEvent?.({ type: 'knowledge_update_needed' });
                   }
                 } else if (parsed.type === 'model_switch') {
-                  console.log('[geminiService] RECEIVED MODEL SWITCH', parsed.data?.model);
+                  console.log('[geminiService] RECEIVED MODEL SWITCH', parsed.data?.model, 'isFallback:', parsed.data?.isFallback);
                   if (config.onModelSwitch) {
-                    config.onModelSwitch(parsed.data?.model);
+                    config.onModelSwitch(parsed.data?.model, parsed.data?.isFallback !== false);
                   }
                 } else if (parsed.type === 'error') {
                   throw new Error(parsed.data);
@@ -480,44 +483,17 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
               // E2B Sandbox Tool Runner
               const runCodeInE2BSandbox = async (codeToRun: string): Promise<string> => {
-                let e2bModule;
                 try {
-                  e2bModule = await import('@e2b/code-interpreter');
-                } catch (e) {
-                  return `Error: Sandbox environment failed to load. \${(e as Error).message}`;
-                }
-                const { Sandbox } = e2bModule;
-                
-                // Allow fallback in frontend context via VITE_ variables if desired,
-                // but default to process.env
-                const apiKey = process.env.E2B_API_KEY || (import.meta as any).env?.VITE_E2B_API_KEY;
-                if (!apiKey) return "Error: E2B_API_KEY not configured.";
-
-                let sandbox;
-                try {
-                  sandbox = await Sandbox.create({ apiKey });
-                  const execution = await sandbox.runCode(codeToRun, { language: 'javascript' });
-                  
+                  const res = await apiClient.post<{ stdout?: string; stderr?: string; error?: string }>('/api/workspace/command', {
+                    command: `node -e ${JSON.stringify(codeToRun)}`
+                  });
                   let output = "";
-                  if (execution.results && execution.results.length > 0) {
-                     output += "Results:" + execution.results.map((r: any) => JSON.stringify(r)).join("") + "";
-                  }
-                  if (execution.logs.stdout.length > 0) {
-                     output += "Stdout:" + execution.logs.stdout.join("") + "";
-                  }
-                  if (execution.logs.stderr.length > 0) {
-                     output += "Stderr:" + execution.logs.stderr.join("") + "";
-                  }
-                  if (execution.error) {
-                     output += `Error: ${execution.error.name} - ${execution.error.value}${execution.error.traceback}`;
-                  }
+                  if (res.stdout) output += "Stdout:\n" + res.stdout + "\n";
+                  if (res.stderr) output += "Stderr:\n" + res.stderr + "\n";
+                  if (res.error) output += "Error:\n" + res.error + "\n";
                   return output || "Code executed successfully with no output.";
                 } catch (e: any) {
                   return `Sandbox execution error: ${e.message}`;
-                } finally {
-                  if (sandbox) {
-                    await sandbox.kill();
-                  }
                 }
               };
               

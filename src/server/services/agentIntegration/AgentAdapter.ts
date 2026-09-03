@@ -1,4 +1,6 @@
 import { AgentRequest, AgentExecutionMode, AgentResponse } from './types.js';
+import { DEFAULT_CHAT_MODEL } from '../../agent/agent.config.js';
+import { sanitizeModel } from './AgentIntegrationService.js';
 
 export class AgentAdapter {
     static toAgentRequest(
@@ -15,15 +17,19 @@ export class AgentAdapter {
             mode = AgentExecutionMode.USE_SANDBOX;
         }
 
+        const rawProvider = reqBody.provider || 'google';
+        const normalizedModel = sanitizeModel(reqBody.model, rawProvider);
+
         return {
             prompt: reqBody.prompt,
             cleanPrompt: cleanPrompt,
             history: reqBody.history || [],
-            model: reqBody.model || 'gemini-2.5-pro',
+            model: normalizedModel,
+            rawModel: reqBody.model,
             activeSkillIds: reqBody.activeSkillIds || [],
             useSearch: reqBody.useSearch || false,
             thinkingLevel: reqBody.thinkingLevel || 0,
-            provider: reqBody.provider || 'google',
+            provider: rawProvider,
             userId,
             apiKey,
             customBaseUrl: reqBody.customBaseUrl,

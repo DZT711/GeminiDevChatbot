@@ -197,6 +197,17 @@ export const userPreferences = pgTable('user_preferences', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
+// Experience Store Table (M05)
+export const experienceRecords = pgTable('experience_records', {
+  id: uuid('id').defaultRandom().primaryKey(),
+  sessionId: varchar('session_id', { length: 255 }).notNull(),
+  taskId: varchar('task_id', { length: 255 }),
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow().notNull(),
+  type: varchar('type', { length: 50 }).notNull(),
+  payload: jsonb('payload').notNull(),
+  metadata: jsonb('metadata').notNull(),
+});
+
 // Relations
 export const usersRelations = relations(users, ({ many, one }) => ({
   accounts: many(accounts),

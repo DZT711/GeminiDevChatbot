@@ -17,38 +17,93 @@ export async function resolveGoogleApiKey(userId: string, customKey?: string, pr
   if (customKey) return customKey;
 
   // Query database first for configured user-specific keys
-  const dbKey = await txWithUser(userId, async (tx) => {
-    const { userPreferences, apiKeys } = await import('../db/schema.js');
-    const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
-    if (prefs?.activeKeyId) {
-      const [userKey] = await tx.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
-      if (userKey && userKey.key) {
-        if (!provider || userKey.provider === provider || userKey.provider?.toLowerCase() === provider?.toLowerCase()) {
-           return decryptKey(userKey.key);
+  try {
+    const dbKey = await txWithUser(userId, async (tx) => {
+      const { userPreferences, apiKeys } = await import('../db/schema.js');
+      const [prefs] = await tx.select().from(userPreferences).where(eq(userPreferences.userId, userId));
+      if (prefs?.activeKeyId) {
+        const [userKey] = await tx.select().from(apiKeys).where(eq(apiKeys.id, prefs.activeKeyId));
+        if (userKey && userKey.key) {
+          if (!provider || userKey.provider === provider || userKey.provider?.toLowerCase() === provider?.toLowerCase()) {
+             return decryptKey(userKey.key);
+          }
         }
       }
-    }
-    
-    const userKeys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
-    if (provider) {
-       const matchingKey = userKeys.find(k => k.provider === provider || k.provider?.toLowerCase() === provider?.toLowerCase());
-       if (matchingKey && matchingKey.key) {
-         return decryptKey(matchingKey.key);
-       }
-    }
-    const anyKey = userKeys[0];
-    if (anyKey && anyKey.key) {
-      return decryptKey(anyKey.key);
-    }
-    return undefined;
-  });
+      
+      const userKeys = await tx.select().from(apiKeys).where(eq(apiKeys.userId, userId));
+      if (provider) {
+         const matchingKey = userKeys.find(k => k.provider === provider || k.provider?.toLowerCase() === provider?.toLowerCase());
+         if (matchingKey && matchingKey.key) {
+           return decryptKey(matchingKey.key);
+         }
+      }
+      const anyKey = userKeys[0];
+      if (anyKey && anyKey.key) {
+        return decryptKey(anyKey.key);
+      }
+      return undefined;
+    });
 
-  if (dbKey) {
-    return dbKey;
+    if (dbKey) {
+      return dbKey;
+    }
+  } catch {
+    // If user tx failed or RLS blocked, continue to system key resolution
+  }
+
+  // Query database for any active/admin configured key (fallback for guest/default users)
+  try {
+    const { apiKeys: apiKeysTable, users: usersTable, userPreferences: prefsTable } = await import('../db/schema.js');
+    // First try ADMIN users' active keys
+    const adminUsers = await db.select({ id: usersTable.id }).from(usersTable).where(eq(usersTable.role, 'ADMIN'));
+    for (const admin of adminUsers) {
+      const [adminPref] = await db.select().from(prefsTable).where(eq(prefsTable.userId, admin.id));
+      if (adminPref?.activeKeyId) {
+        const [k] = await db.select().from(apiKeysTable).where(eq(apiKeysTable.id, adminPref.activeKeyId));
+        if (k?.key && (!provider || k.provider === provider || k.provider?.toLowerCase() === provider?.toLowerCase())) {
+          const dec = decryptKey(k.key);
+          if (dec && dec.trim() !== '') return dec;
+        }
+      }
+      const adminKeys = await db.select().from(apiKeysTable).where(eq(apiKeysTable.userId, admin.id));
+      const match = adminKeys.find(k => !provider || k.provider === provider || k.provider?.toLowerCase() === provider?.toLowerCase());
+      if (match?.key) {
+        const dec = decryptKey(match.key);
+        if (dec && dec.trim() !== '') return dec;
+      }
+    }
+
+    // Next try any key in apiKeys matching the provider
+    const allKeys = await db.select().from(apiKeysTable);
+    const candidate = allKeys.find(k => !provider || k.provider === provider || k.provider?.toLowerCase() === provider?.toLowerCase());
+    if (candidate?.key) {
+      const dec = decryptKey(candidate.key);
+      if (dec && dec.trim() !== '') return dec;
+    }
+  } catch {
+    // Continue to env fallback
   }
 
   // Fallback to process.env if no DB credentials exist
   return process.env.GEMINI_API_KEY;
+}
+
+export async function resolveFallbackGoogleApiKey(failedKey?: string): Promise<string | undefined> {
+  try {
+    const { apiKeys: apiKeysTable } = await import('../db/schema.js');
+    const allKeys = await db.select().from(apiKeysTable);
+    for (const k of allKeys) {
+      if ((!k.provider || k.provider === 'google' || k.provider?.toLowerCase() === 'google') && k.key) {
+        const dec = decryptKey(k.key);
+        if (dec && dec !== failedKey && dec.length > 10 && !dec.startsWith('dummy') && !dec.startsWith('your_')) {
+          return dec;
+        }
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return undefined;
 }
 
 export async function determineRoutingStrategy(userQuery: string, apiKey: string, provider?: string, customBaseUrl?: string, userId?: string): Promise<'USE_RAG' | 'DIRECT_CHAT'> {

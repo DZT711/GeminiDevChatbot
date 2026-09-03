@@ -34,8 +34,23 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
   const [catalogSearch, setCatalogSearch] = useState("");
   const [catalogFilter, setCatalogFilter] = useState("");
   const [catalogPage, setCatalogPage] = useState(1);
-  const [currentModel, setCurrentModel] = useState<string>("");
+  const [currentModel, setCurrentModel] = useState<string>(() => {
+    try {
+      return localStorage.getItem("devengine_last_model") || "";
+    } catch {
+      return "";
+    }
+  });
   const [metrics, setMetrics] = useState<Record<string, ModelMetrics>>({});
+
+  // Automatically save last used model to localStorage whenever it changes
+  useEffect(() => {
+    if (currentModel) {
+      try {
+        localStorage.setItem("devengine_last_model", currentModel);
+      } catch (_) {}
+    }
+  }, [currentModel]);
 
   useEffect(() => {
     const fetchModels = async () => {
@@ -57,7 +72,7 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
       } else {
         const fallbackQueue =
           activeKey.provider === "google"
-            ? ["gemini-1.5-pro", "gemini-1.5-flash"]
+            ? ["gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.1-flash-lite"]
             : ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet-20241022"];
         modelQueueManager.setQueue(fallbackQueue);
       }
@@ -69,10 +84,25 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
       }
     }
     const currentQueue = modelQueueManager.getQueue();
-    if (currentModel && currentQueue.includes(currentModel)) {
-      setCurrentModel(currentModel);
+    let savedModel = currentModel;
+    if (!savedModel) {
+      try {
+        savedModel = localStorage.getItem("devengine_last_model") || "";
+      } catch (_) {}
+    }
+
+    if (savedModel && currentQueue.includes(savedModel)) {
+      setCurrentModel(savedModel);
+      modelQueueManager.promoteToCurrent(savedModel);
+    } else if (savedModel) {
+      // Retain custom or non-queue model
+      setCurrentModel(savedModel);
     } else {
-      setCurrentModel(modelQueueManager.getCurrentModel());
+      const defaultModel = modelQueueManager.getCurrentModel();
+      setCurrentModel(defaultModel);
+      try {
+        localStorage.setItem("devengine_last_model", defaultModel);
+      } catch (_) {}
     }
   }, [activeKeyId, apiKeys, globalEnabledModels]);
 

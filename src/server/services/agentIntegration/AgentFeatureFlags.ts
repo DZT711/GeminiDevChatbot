@@ -4,5 +4,7 @@ export const AgentFeatureFlags = {
     USE_AGENT_CONTEXT_BUILDER: true,
     USE_EXECUTION_PIPELINE: true,
     USE_REFLECTION: true,
-    USE_LEARNING: true
+    USE_LEARNING: true,
+    USE_KNOWLEDGE_PROMOTION: true,
+    USE_GOAL_PLANNING: true
 };

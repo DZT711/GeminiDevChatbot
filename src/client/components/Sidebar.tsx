@@ -1,4 +1,4 @@
-import { MessageSquare, Sparkles, Database, ChevronDown, Key, Activity, Terminal, Pin, History } from "lucide-react";
+import { MessageSquare, Sparkles, Database, ChevronDown, Key, Activity, Terminal, Pin, History, Compass, FolderCode } from "lucide-react";
 import React from 'react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
@@ -107,6 +107,48 @@ export function Sidebar(props: any) {
                 <span className="flex-1 text-left tracking-wide">Knowledge Index</span>
                 {view === "knowledge" && (
                   <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
+                )}
+              </button>
+
+              <button
+                id="sidebar-nav-planning-playground"
+                onClick={() => setView("planning-playground")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "planning-playground"
+                    ? theme === "light"
+                      ? "bg-white text-indigo-600 shadow-sm border-indigo-100"
+                      : "bg-indigo-500/10 text-indigo-400 border-indigo-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <Compass size={16} className={cn("transition-transform group-hover:scale-110", view === "planning-playground" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Planning Lab</span>
+                {view === "planning-playground" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />
+                )}
+              </button>
+
+              <button
+                id="sidebar-nav-workspace"
+                onClick={() => setView("workspace")}
+                className={cn(
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  view === "workspace"
+                    ? theme === "light"
+                      ? "bg-white text-emerald-600 shadow-sm border-emerald-100"
+                      : "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                    : theme === "light"
+                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
+                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                )}
+              >
+                <FolderCode size={16} className={cn("transition-transform group-hover:scale-110", view === "workspace" ? "opacity-100 scale-110" : "opacity-60")} />
+                <span className="flex-1 text-left tracking-wide">Workspace</span>
+                {view === "workspace" && (
+                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]" />
                 )}
               </button>
               

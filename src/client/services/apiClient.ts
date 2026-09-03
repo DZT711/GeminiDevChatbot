@@ -34,25 +34,32 @@ export const apiClient = {
 
     const response = await fetch(endpoint, config);
 
+    // Read the response stream exactly ONCE
+    const text = await response.text();
+
     if (!response.ok) {
       let errorMessage = 'An error occurred while fetching data';
       try {
-        const errorData = await response.json();
-        errorMessage = errorData.error || errorData.message || errorMessage;
+        if (text) {
+          const errorData = JSON.parse(text);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } else {
+          errorMessage = response.statusText || errorMessage;
+        }
       } catch {
-        errorMessage = await response.text();
+        errorMessage = text || response.statusText || errorMessage;
       }
       throw new ApiError(response.status, errorMessage);
     }
 
-    if (response.status === 204) {
+    if (response.status === 204 || !text || text.trim() === '') {
       return {} as T;
     }
 
     try {
-      return await response.json() as T;
+      return JSON.parse(text) as T;
     } catch {
-      return (await response.text()) as unknown as T;
+      return text as unknown as T;
     }
   },
 

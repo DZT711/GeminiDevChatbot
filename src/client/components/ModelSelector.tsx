@@ -40,16 +40,14 @@ export function ModelSelector({
         <span className="text-zinc-300 font-bold uppercase tracking-tight hidden xs:inline">
           {currentModel === ModelId.HYBRID
             ? "HYBRID AUTO"
-            : [ModelId.PRO, ModelId.FLASH, ModelId.FLASH_3_5, ModelId.LITE].includes(
+            : [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(
                   currentModel as any,
                 )
               ? currentModel === ModelId.PRO
-                ? "PRO"
-                : currentModel === ModelId.FLASH_3_5
-                  ? "FLASH 3.5"
-                  : currentModel === ModelId.FLASH
-                    ? "FLASH"
-                    : "LITE"
+                ? "PRO 3.1"
+                : currentModel === ModelId.LITE
+                  ? "LITE 3.1"
+                  : "FLASH 3.7"
               : (currentModel || "")
                   .split("/")
                   .pop()

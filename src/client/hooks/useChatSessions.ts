@@ -10,6 +10,7 @@ import JSZip from "jszip";
 import { useDropzone } from "react-dropzone";
 import { storageService } from "@/services/storageService";
 import { ModelId } from "@/services/types";
+import { GoalPlanningService } from "../../server/services/agentIntegration/planning/GoalPlanningService";
 
 
 
@@ -147,6 +148,7 @@ export function useChatInteractions(options: any) {
     isRepoModalOpen, setIsRepoModalOpen, repoUrl, setRepoUrl,
     editingSessionId, setEditingSessionId, editingSessionTitle, setEditingSessionTitle,
     setSessions, sessions, isEnhancingPrompt, setIsEnhancingPrompt, thinkingMode, user, setCurrentModel, isAutoCompact,
+    setView
 } = options;
 
   const handleStop = () => {
@@ -392,6 +394,143 @@ export function useChatInteractions(options: any) {
             : m,
         ),
       );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleGoalPlanning = async (goalObjective: string, sessionId?: string) => {
+    if (isLoading) return;
+    setIsLoading(true);
+
+    const targetSessionId = sessionId || currentSessionId || `session-${Date.now()}`;
+    if (!currentSessionId) {
+      setCurrentSessionId(targetSessionId);
+    }
+
+    if (!goalObjective || !goalObjective.trim()) {
+      const errorMsg: Message = {
+        id: `goal-err-${Date.now()}`,
+        role: "model",
+        content: `### ⚠️ Goal Objective Required\nPlease specify your engineering objective after \`/goal\`.\n\n**Example:** \`/goal make a 3d site with Three.js and React Three Fiber\`\n\nThis will trigger the **M05 Planning Intelligence pipeline** (Goal Validation → Goal Decomposition → TaskGraph DAG → Rule-Based Strategy → 7-Stage Pre-Flight Validation).`,
+        modelName: "M05 Planning Engine"
+      };
+      setMessages((prev) => {
+        const next = [...prev, errorMsg];
+        setTimeout(() => {
+          try {
+            saveCurrentSession(next, targetSessionId);
+          } catch (e) {
+            console.error("Session persistence failure", e);
+          }
+        }, 50);
+        return next;
+      });
+      setIsLoading(false);
+      return;
+    }
+
+    const tempId = `goal-temp-${Date.now()}`;
+    const initialMsg: Message = {
+      id: tempId,
+      role: "model",
+      content: `*Initializing M05 Planning Intelligence pipeline for: "${goalObjective}"...*`,
+      modelName: "M05 Planning Engine"
+    };
+
+    setMessages((prev) => [...prev, initialMsg]);
+
+    try {
+      transparencyLogger.log(
+        "Analysis",
+        `Executing M05 Planning Intelligence Pipeline: Goal → Decomposition → TaskGraph → Plan → 7-Stage Validation`,
+        { objective: goalObjective }
+      );
+
+      const planningService = new GoalPlanningService();
+      const planningResult = await planningService.createPlanFromGoal({
+        objective: goalObjective,
+        availableTools: [
+          'view_file',
+          'edit_file',
+          'create_file',
+          'delete_file',
+          'list_dir',
+          'lint_applet',
+          'compile_applet',
+          'run_command'
+        ]
+      });
+
+      // Cache active planning result for the Planning Lab transition
+      (window as any).__ACTIVE_PLANNING_FIXTURE__ = planningResult;
+
+      try {
+        const storedFixturesRaw = localStorage.getItem('devgenie_planning_fixtures');
+        const storedFixtures = storedFixturesRaw ? JSON.parse(storedFixturesRaw) : [];
+        const activeGoal = planningResult.goal;
+        const fixtureId = `custom-goal-${activeGoal?.id || Date.now()}`;
+        const newFixture = {
+          id: fixtureId,
+          name: `🎯 Goal: ${activeGoal?.title || activeGoal?.rawPrompt || 'Live Planning Goal'}`,
+          description: `Live planning scenario created via /goal: "${activeGoal?.rawPrompt || activeGoal?.title}"`,
+          goal: activeGoal,
+          initialTasks: planningResult.taskSpecs || [],
+          initialTaskGraph: planningResult.taskGraph,
+          initialPlan: planningResult.repairedPlan || planningResult.plan,
+          metadata: {
+            source: 'goal_command',
+            createdAt: Date.now(),
+            sessionId: targetSessionId
+          }
+        };
+
+        const updated = [newFixture, ...storedFixtures.filter((f: any) => f.goal?.id !== activeGoal?.id)].slice(0, 25);
+        localStorage.setItem('devgenie_planning_fixtures', JSON.stringify(updated));
+        window.dispatchEvent(new CustomEvent('custom:planning-fixture-added', { detail: newFixture }));
+      } catch (e) {
+        console.warn('Failed to persist planning fixture to local storage', e);
+      }
+
+      const formattedMarkdown = GoalPlanningService.formatPlanningMarkdown(planningResult);
+
+      const finalMsg: Message = {
+        id: `goal-plan-${Date.now()}`,
+        role: "model",
+        content: formattedMarkdown,
+        modelName: "M05 Planning Engine"
+      };
+
+      setMessages((prev) => {
+        const next = prev.map((m) => (m.id === tempId ? finalMsg : m));
+        setTimeout(() => {
+          try {
+            saveCurrentSession(next, targetSessionId);
+          } catch (e) {
+            console.error("Session persistence failure", e);
+          }
+        }, 50);
+        return next;
+      });
+
+      transparencyLogger.log(
+        "Task Execution",
+        `M05 Planning Complete: ${planningResult.status.toUpperCase()} (${planningResult.durationMs}ms)`,
+        {
+          taskCount: planningResult.taskSpecs?.length || 0,
+          stepCount: planningResult.plan?.steps.length || 0,
+          validationPassed: planningResult.validation?.isValid ?? false
+        }
+      );
+    } catch (err: any) {
+      console.error("M05 Goal Planning Error:", err);
+      const errMsg: Message = {
+        id: `goal-err-${Date.now()}`,
+        role: "model",
+        content: `**M05 Planning Pipeline Error:** ${err?.message || String(err)}`,
+        modelName: "M05 Planning Engine"
+      };
+      setMessages((prev) => prev.map((m) => (m.id === tempId ? errMsg : m)));
     } finally {
       setIsLoading(false);
     }
@@ -735,7 +874,21 @@ export function useChatInteractions(options: any) {
       setMessages(newMessages);
       saveCurrentSession(newMessages, sessionId);
 
-      // Simple Intent Detection for Image/Video Gen
+      // Simple Intent Detection for Image/Video Gen / Goal planning
+      let effectivePrompt = processedInput;
+      if (processedInput.toLowerCase().startsWith("/plan")) {
+        const planQuery = processedInput.replace(/^\/plan\s*/i, "").trim();
+        effectivePrompt = planQuery 
+          ? `[ENGINEERING PLAN REQUEST]\nPlease produce a comprehensive, structured technical implementation plan for: "${planQuery}".\n\nInclude:\n1. Architectural Decisions & Scope Boundaries\n2. Phased File-by-File Implementation Steps\n3. Edge Cases & Safety Invariants\n4. Verification & Automated Testing Strategy`
+          : `[ENGINEERING PLAN REQUEST]\nPlease analyze our ongoing project context and outline a prioritized technical implementation roadmap with concrete execution milestones and verification steps.`;
+      }
+
+      if (processedInput.toLowerCase().startsWith("/goal")) {
+        const goalQuery = processedInput.replace(/^\/goal\s*/i, "").trim();
+        await handleGoalPlanning(goalQuery, sessionId);
+        return;
+      }
+
       if (
         isImageMode ||
         processedInput.toLowerCase().startsWith("generate image")
@@ -830,7 +983,7 @@ export function useChatInteractions(options: any) {
           });
 
         await geminiService.generateResponse(
-          processedInput,
+          effectivePrompt,
           activeSkillIds,
           customSkills,
           history,
@@ -852,22 +1005,16 @@ export function useChatInteractions(options: any) {
             customBaseUrl: activeKey?.baseUrl,
             customInstructions: (user || {}).customInstructions,
             githubToken: (user || {}).githubToken,
-            onModelSwitch: (newModel) => {
+            onModelSwitch: (newModel, isFallback) => {
               try {
-                console.log('[useChatSessions] setCurrentModel called with', newModel);
+                console.log('[useChatSessions] onModelSwitch to:', newModel, 'isFallback:', isFallback);
                 setCurrentModel(newModel);
                 setMessages((prev) => {
                   const last = [...prev];
                   const msg = { ...last[last.length - 1] };
                   if (msg && msg.role === "model") {
                     msg.modelName = `${newModel}${activeKey ? ` (${activeKey.name})` : ""}`;
-                    msg.isFallback = true;
-                    const modelParts = (newModel || "").split("-");
-                    const modelSuffix =
-                      modelParts.length > 2
-                        ? modelParts[2]
-                        : modelParts[modelParts.length - 1];
-                    msg.content += `\n\n*(Auto-failover: Switched to ${modelSuffix} due to limits)*`;
+                    msg.isFallback = isFallback !== false;
                     last[last.length - 1] = msg;
                   }
                   return last;
@@ -889,11 +1036,6 @@ export function useChatInteractions(options: any) {
                       ? modelQueueManager.getCurrentModel()
                       : currentModel;
                   msg.modelName = `${currentEffective}${activeKey ? ` (${activeKey.name})` : ""}`;
-                } else {
-                  const newModel = (msg.modelName || "").split(" ")[0];
-                  const modelParts = newModel.split("-");
-                  const modelSuffix = modelParts.length > 2 ? modelParts[2] : modelParts[modelParts.length - 1] || "fallback";
-                  msg.content += `\n\n*(Auto-failover: Switched to ${modelSuffix} due to limits)*`;
                 }
                 last[last.length - 1] = msg;
               }
@@ -1017,21 +1159,16 @@ export function useChatInteractions(options: any) {
             customBaseUrl: activeKey?.baseUrl,
             customInstructions: (user || {}).customInstructions,
             githubToken: (user || {}).githubToken,
-            onModelSwitch: (newModel) => {
+            onModelSwitch: (newModel, isFallback) => {
               try {
+                console.log('[useChatSessions] retry onModelSwitch to:', newModel, 'isFallback:', isFallback);
                 setCurrentModel(newModel);
                 setMessages((prev) => {
                   const last = [...prev];
                   const msg = { ...last[last.length - 1] };
                   if (msg && msg.role === "model") {
                     msg.modelName = `${newModel}${activeKey ? ` (${activeKey.name})` : ""}`;
-                    msg.isFallback = true;
-                    const modelParts = (newModel || "").split("-");
-                    const modelSuffix =
-                      modelParts.length > 2
-                        ? modelParts[2]
-                        : modelParts[modelParts.length - 1];
-                    msg.content += `\n\n*(Auto-failover: Switched to ${modelSuffix} due to limits)*`;
+                    msg.isFallback = isFallback !== false;
                     last[last.length - 1] = msg;
                   }
                   return last;
@@ -1211,10 +1348,12 @@ useEffect(() => {
         const stateData = await apiClient.get<any>("/api/user/state");
             if (stateData.preferences) {
               setTheme(stateData.preferences.theme || "midnight");
-              setCurrentModel(
-                stateData.preferences.currentModel ||
-                  modelQueueManager.getCurrentModel(),
-              );
+              const savedModel = stateData.preferences.currentModel || storageService.getItem("devengine_last_model") || modelQueueManager.getCurrentModel();
+              if (savedModel) {
+                setCurrentModel(savedModel);
+                modelQueueManager.promoteToCurrent(savedModel);
+                storageService.setItem("devengine_last_model", savedModel);
+              }
               setActiveKeyId(stateData.preferences.activeKeyId || "");
               setShowSkillSuggestions(
                 stateData.preferences.showSkillSuggestions ?? true,

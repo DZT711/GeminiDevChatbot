@@ -44,8 +44,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const userData = await apiClient.get<UserContext>("/api/auth/me");
           setUser(userData);
           storageService.setItem("devengine_user", JSON.stringify(userData));
-        } catch (error) {
-          console.error("Auth context failed to fetch user:", error);
+        } catch (error: any) {
+          if (error?.status !== 401 && error?.message !== 'Unauthorized') {
+            console.error("Auth context failed to fetch user:", error);
+          }
           setUser(null);
           storageService.removeItem("devengine_user");
           storageService.removeSessionToken();

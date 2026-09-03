@@ -2,11 +2,14 @@ import { Plan, Planner, PlanningContext, PlanningResult, TaskGraph, ExecutionCon
 import { ToolExecutor } from '../tools/ToolExecutor';
 
 export class MockPlanningStrategy implements PlanningStrategy {
+  readonly name = 'MockPlanningStrategy';
+
   async generatePlan(context: PlanningContext): Promise<PlanningResult> {
     const plan: Plan = {
       id: 'mock-plan-1',
       goal: context.userGoal || 'Mock goal',
       taskGraph: {} as TaskGraph,
+      steps: [],
       executionOrder: ['step-1', 'step-2'],
       approvalPoints: [],
       estimatedComplexity: 'LOW',

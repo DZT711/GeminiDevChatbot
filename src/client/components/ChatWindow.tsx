@@ -38,6 +38,73 @@ export function ChatWindow(props: any) {
     setView, ICON_MAP, scrollRef, showInputBox, handleSubmit, setAutocompleteSuggestion
   } = props;
   const [previewImage, setPreviewImage] = React.useState<string | null>(null);
+  const selectedCommandRef = React.useRef<HTMLDivElement | null>(null);
+
+  const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const backdropRef = React.useRef<HTMLDivElement | null>(null);
+
+  const getSlashCommandHighlightClass = (cmd: string): string => {
+    switch (cmd.toLowerCase()) {
+      case '/goal':
+        return theme === 'light'
+          ? "text-emerald-700 font-bold bg-emerald-100/90 rounded-xs"
+          : "text-emerald-400 font-bold bg-emerald-500/20 rounded-xs";
+      case '/plan':
+        return theme === 'light'
+          ? "text-violet-700 font-bold bg-violet-100/90 rounded-xs"
+          : "text-violet-400 font-bold bg-violet-500/20 rounded-xs";
+      case '/rag':
+        return theme === 'light'
+          ? "text-cyan-700 font-bold bg-cyan-100/90 rounded-xs"
+          : "text-cyan-400 font-bold bg-cyan-500/20 rounded-xs";
+      case '/image':
+        return theme === 'light'
+          ? "text-pink-700 font-bold bg-pink-100/90 rounded-xs"
+          : "text-pink-400 font-bold bg-pink-500/20 rounded-xs";
+      case '/video':
+        return theme === 'light'
+          ? "text-amber-700 font-bold bg-amber-100/90 rounded-xs"
+          : "text-amber-400 font-bold bg-amber-500/20 rounded-xs";
+      case '/skills':
+      case '/search':
+      case '/deep':
+      case '/compact':
+      case '/clear':
+      case '/help':
+      default:
+        return theme === 'light'
+          ? "text-cyan-700 font-bold bg-cyan-100/90 rounded-xs"
+          : "text-cyan-400 font-bold bg-cyan-500/20 rounded-xs";
+    }
+  };
+
+  const renderHighlightedContent = (text: string) => {
+    if (!text) return null;
+    const tokens = text.split(/(\/[a-zA-Z0-9_-]+)/g);
+    return tokens.map((part, index) => {
+      if (part.startsWith('/') && part.length > 1) {
+        return (
+          <span key={index} className={getSlashCommandHighlightClass(part)}>
+            {part}
+          </span>
+        );
+      }
+      return (
+        <span key={index} className={theme === 'light' ? "text-slate-800" : "text-zinc-200"}>
+          {part}
+        </span>
+      );
+    });
+  };
+
+  React.useEffect(() => {
+    if (showCommands && selectedCommandRef.current) {
+      selectedCommandRef.current.scrollIntoView({
+        block: "nearest",
+        behavior: "smooth"
+      });
+    }
+  }, [selectedCommandIndex, showCommands]);
 
   return (
     <>
@@ -434,6 +501,64 @@ export function ChatWindow(props: any) {
                             </div>
                           )}
 
+                          {/* Skill Suggestions Bar */}
+                          {showSkillSuggestions && suggestedSkills && suggestedSkills.length > 0 && !showCommands && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 6 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: 6 }}
+                              className={cn(
+                                "flex items-center gap-2 px-3 py-2 mx-2 mb-1 rounded-xl border text-xs font-mono backdrop-blur-md transition-all shadow-sm",
+                                theme === "light"
+                                  ? "bg-cyan-50/90 border-cyan-200/80 text-cyan-900"
+                                  : "bg-cyan-950/25 border-cyan-500/20 text-cyan-300 shadow-cyan-950/20"
+                              )}
+                            >
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <Sparkles size={13} className="text-cyan-500 animate-pulse" />
+                                <span className={cn("text-[10px] font-bold uppercase tracking-wider", theme === "light" ? "text-cyan-800" : "text-cyan-400")}>
+                                  Suggested Skills:
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar no-scrollbar flex-1 py-0.5">
+                                {suggestedSkills.map((skill: any) => (
+                                  <button
+                                    key={skill.id}
+                                    type="button"
+                                    onClick={() => toggleSkill(skill.id)}
+                                    className={cn(
+                                      "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-medium border transition-all cursor-pointer group active:scale-95 shrink-0",
+                                      theme === "light"
+                                        ? "bg-white/95 border-cyan-200 text-slate-700 hover:bg-cyan-100 hover:border-cyan-300 hover:text-cyan-900 shadow-2xs"
+                                        : "bg-black/40 border-cyan-500/30 text-zinc-300 hover:bg-cyan-500/20 hover:border-cyan-400/50 hover:text-cyan-200"
+                                    )}
+                                    title={skill.description}
+                                  >
+                                    <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 group-hover:scale-125 transition-transform shrink-0" />
+                                    <span className="font-semibold">{skill.name}</span>
+                                    <span className={cn(
+                                      "text-[9px] px-1 py-0.2 rounded font-mono uppercase tracking-tighter",
+                                      theme === "light" ? "bg-cyan-100 text-cyan-800" : "bg-cyan-900/60 text-cyan-300"
+                                    )}>
+                                      + Add
+                                    </span>
+                                  </button>
+                                ))}
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => setSuggestedSkills([])}
+                                className={cn(
+                                  "p-1 rounded-md transition-colors shrink-0 cursor-pointer",
+                                  theme === "light" ? "hover:bg-cyan-100 text-cyan-700" : "hover:bg-cyan-500/20 text-cyan-400"
+                                )}
+                                title="Dismiss Suggestions"
+                              >
+                                <X size={12} />
+                              </button>
+                            </motion.div>
+                          )}
+
                           {/* Clean Input Area */}
                           <div className={cn(
                             "flex flex-col mx-2 mt-1 rounded-2xl relative transition-all",
@@ -441,77 +566,212 @@ export function ChatWindow(props: any) {
                               ? "bg-slate-50/50"
                               : "bg-black/20"
                           )}>
-                            <textarea
-                              value={input}
-                              onChange={(e) => setInput(e.target.value)}
-                              onPaste={handlePaste}
-                              placeholder={isImageMode ? "Describe the image you want to generate..." : isVideoMode ? "Describe the video you want to generate..." : "Inject system commands..."}
-                              className={cn(
-                                "w-full bg-transparent resize-none font-mono text-sm leading-relaxed outline-none custom-scrollbar px-4 py-3 relative z-10 transition-all",
-                                theme === "light"
-                                  ? "placeholder:text-slate-400 text-slate-800"
-                                  : "placeholder:text-zinc-600 text-zinc-200",
-                                isInputMaximized
-                                  ? "min-h-[50vh] max-h-[80vh]"
-                                  : "min-h-[140px] max-h-64"
-                              )}
-                              onKeyDown={(e) => {
-                                if (showCommands) {
-                                  if (e.key === "ArrowDown") { e.preventDefault(); setSelectedCommandIndex((prev) => (prev + 1) % filteredCommands.length); return; }
-                                  if (e.key === "ArrowUp") { e.preventDefault(); setSelectedCommandIndex((prev) => (prev - 1 + filteredCommands.length) % filteredCommands.length); return; }
-                                  if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); const cmdItem = filteredCommands[selectedCommandIndex]; if (cmdItem) { executeCommand(cmdItem.cmd); setIsCommandListDismissed(true); } return; }
-                                  if (e.key === "Escape") { e.preventDefault(); setIsCommandListDismissed(true); return; }
-                                }
-                                if (e.key === "Tab" && autocompleteSuggestion) { e.preventDefault(); setInput(input + autocompleteSuggestion); setAutocompleteSuggestion("");
-                                } else if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSubmit(); }
-                              }}
-                            />
-                            {/* Autocomplete Ghost */}
-                            {autocompleteSuggestion && (
-                              <div className="absolute left-4 top-3 flex items-baseline gap-0 pointer-events-none overflow-hidden">
-                                <span className="font-mono text-sm leading-relaxed opacity-0 whitespace-pre select-none">{input}</span>
-                                <span className={cn("font-mono text-sm leading-relaxed truncate", theme === 'light' ? "text-slate-300" : "text-zinc-700")}>{autocompleteSuggestion}</span>
-                                <kbd className={cn("text-[8px] font-mono px-1.5 py-0.5 rounded border ml-1.5 shrink-0 self-center", theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-zinc-900 border-zinc-800 text-zinc-600")}>Tab</kbd>
-                              </div>
-                            )}
-
-                            {/* Slash command picker */}
-                            {showCommands && (
-                              <motion.div
-                                initial={{ opacity: 0, y: 4 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                exit={{ opacity: 0, y: 4 }}
+                            <div className="relative w-full">
+                              {/* Syntax Highlighting Backdrop Layer */}
+                              <div
+                                ref={backdropRef}
+                                aria-hidden="true"
                                 className={cn(
-                                  "absolute bottom-full left-0 mb-2 w-full rounded-xl border shadow-2xl z-50 backdrop-blur-xl overflow-hidden",
-                                  theme === 'light' ? "bg-white/98 border-slate-200 shadow-slate-200/50" : "bg-[#0b0b0e]/98 border-zinc-800/80 shadow-black"
+                                  "w-full bg-transparent resize-none font-mono text-sm leading-relaxed px-4 py-3 absolute inset-0 pointer-events-none select-none overflow-hidden whitespace-pre-wrap break-words transition-all z-0",
+                                  isInputMaximized
+                                    ? "min-h-[50vh] max-h-[80vh]"
+                                    : "min-h-[140px] max-h-64"
                                 )}
                               >
-                                <div className={cn("flex items-center justify-between px-3 py-2 border-b", theme === 'light' ? "border-slate-100" : "border-white/[0.04]")}>
-                                  <div className="flex items-center gap-2">
-                                    <span className="font-mono font-black text-sm text-cyan-500">/</span>
-                                    <span className={cn("text-[9px] font-mono font-bold uppercase tracking-[0.15em]", theme === 'light' ? "text-slate-400" : "text-zinc-600")}>Commands</span>
-                                  </div>
-                                  <span className={cn("text-[9px] font-mono", theme === 'light' ? "text-slate-300" : "text-zinc-800")}>↑↓ · Tab</span>
+                                {renderHighlightedContent(input)}
+                                {input.endsWith('\n') && <br />}
+                              </div>
+
+                              <textarea
+                                ref={textareaRef}
+                                value={input}
+                                spellCheck={false}
+                                autoCorrect="off"
+                                autoCapitalize="off"
+                                onChange={(e) => {
+                                  setInput(e.target.value);
+                                  if (e.target.value.startsWith("/")) {
+                                    setIsCommandListDismissed(false);
+                                  }
+                                }}
+                                onScroll={(e) => {
+                                  if (backdropRef.current) {
+                                    backdropRef.current.scrollTop = e.currentTarget.scrollTop;
+                                    backdropRef.current.scrollLeft = e.currentTarget.scrollLeft;
+                                  }
+                                }}
+                                onPaste={handlePaste}
+                                placeholder={isImageMode ? "Describe the image you want to generate..." : isVideoMode ? "Describe the video you want to generate..." : "Type a prompt or '/' for commands..."}
+                                className={cn(
+                                  "w-full bg-transparent resize-none font-mono text-sm leading-relaxed outline-none custom-scrollbar px-4 py-3 relative z-10 transition-all",
+                                  input
+                                    ? cn(
+                                        "text-transparent selection:bg-cyan-500/30 selection:text-transparent",
+                                        theme === "light" ? "caret-slate-900" : "caret-zinc-100"
+                                      )
+                                    : (theme === "light"
+                                        ? "placeholder:text-slate-400 text-slate-800 caret-slate-900"
+                                        : "placeholder:text-zinc-600 text-zinc-200 caret-zinc-100"),
+                                  isInputMaximized
+                                    ? "min-h-[50vh] max-h-[80vh]"
+                                    : "min-h-[140px] max-h-64"
+                                )}
+                                onKeyDown={(e) => {
+                                  if (showCommands && filteredCommands.length > 0) {
+                                    if (e.key === "ArrowDown") {
+                                      e.preventDefault();
+                                      setSelectedCommandIndex((prev: number) => (prev + 1) % filteredCommands.length);
+                                      return;
+                                    }
+                                    if (e.key === "ArrowUp") {
+                                      e.preventDefault();
+                                      setSelectedCommandIndex((prev: number) => (prev - 1 + filteredCommands.length) % filteredCommands.length);
+                                      return;
+                                    }
+                                    if (e.key === "Enter" || e.key === "Tab") {
+                                      e.preventDefault();
+                                      const cmdItem = filteredCommands[selectedCommandIndex];
+                                      if (cmdItem) {
+                                        executeCommand(cmdItem.cmd);
+                                        setIsCommandListDismissed(true);
+                                      }
+                                      return;
+                                    }
+                                    if (e.key === "Escape") {
+                                      e.preventDefault();
+                                      setIsCommandListDismissed(true);
+                                      return;
+                                    }
+                                  }
+                                  if (e.key === "Tab" && autocompleteSuggestion) {
+                                    e.preventDefault();
+                                    setInput(input + autocompleteSuggestion);
+                                    setAutocompleteSuggestion("");
+                                  } else if (e.key === "Enter" && !e.shiftKey) {
+                                    e.preventDefault();
+                                    handleSubmit();
+                                  }
+                                }}
+                              />
+
+                              {/* Autocomplete Ghost - positioned strictly over textarea */}
+                              {autocompleteSuggestion && !showCommands && (
+                                <div className="absolute left-4 top-3 flex items-baseline gap-0 pointer-events-none overflow-hidden z-20">
+                                  <span className="font-mono text-sm leading-relaxed opacity-0 whitespace-pre select-none">{input}</span>
+                                  <span className={cn("font-mono text-sm leading-relaxed truncate", theme === 'light' ? "text-slate-400 font-medium" : "text-zinc-600 font-medium")}>{autocompleteSuggestion}</span>
+                                  <kbd className={cn("text-[8px] font-mono px-1.5 py-0.5 rounded border ml-1.5 shrink-0 self-center", theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-500" : "bg-zinc-900 border-zinc-800 text-zinc-500")}>Tab</kbd>
                                 </div>
-                                <div className="py-1 max-h-52 overflow-y-auto custom-scrollbar">
-                                  {filteredCommands.map((cmdItem, idx) => {
-                                    const isSelected = idx === selectedCommandIndex;
-                                    return (
-                                      <div
-                                        key={cmdItem.cmd}
-                                        onMouseDown={(e) => { e.preventDefault(); executeCommand(cmdItem.cmd); setIsCommandListDismissed(true); }}
-                                        onMouseEnter={() => setSelectedCommandIndex(idx)}
-                                        className={cn("flex items-center px-3 py-2 cursor-pointer transition-all duration-100", isSelected ? (theme === 'light' ? "bg-slate-50" : "bg-white/[0.035]") : (theme === 'light' ? "hover:bg-slate-50/60" : "hover:bg-white/[0.02]"))}
-                                      >
-                                        <span className={cn("w-20 text-[11px] font-mono font-bold shrink-0 transition-colors", isSelected ? (theme === 'light' ? "text-cyan-600" : "text-cyan-400") : (theme === 'light' ? "text-slate-400" : "text-zinc-600"))}>{cmdItem.syntax || cmdItem.cmd}</span>
-                                        <span className={cn("flex-1 text-[10px] font-mono truncate transition-colors", isSelected ? (theme === 'light' ? "text-slate-600" : "text-zinc-400") : (theme === 'light' ? "text-slate-300" : "text-zinc-700"))}>{cmdItem.description}</span>
-                                        {isSelected && <span className={cn("text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ml-2", theme === 'light' ? "bg-white border-slate-200 text-slate-500" : "bg-zinc-900 border-zinc-800 text-zinc-600")}>↵</span>}
+                              )}
+                            </div>
+
+                            {/* Slash command picker */}
+                            <AnimatePresence>
+                              {showCommands && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 6, scale: 0.98 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  exit={{ opacity: 0, y: 6, scale: 0.98 }}
+                                  transition={{ duration: 0.12 }}
+                                  className={cn(
+                                    "absolute bottom-full left-0 mb-2 w-full rounded-2xl border shadow-2xl z-50 backdrop-blur-xl overflow-hidden",
+                                    theme === 'light'
+                                      ? "bg-white/95 border-slate-200/90 shadow-slate-200/60"
+                                      : "bg-[#0c0d12]/95 border-zinc-800/90 shadow-black/80"
+                                  )}
+                                >
+                                  <div className={cn(
+                                    "flex items-center justify-between px-3.5 py-2.5 border-b select-none",
+                                    theme === 'light' ? "border-slate-100 bg-slate-50/50" : "border-white/[0.04] bg-white/[0.02]"
+                                  )}>
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-5 h-5 rounded-md flex items-center justify-center bg-cyan-500/10 border border-cyan-500/20 text-cyan-500 font-mono font-black text-xs">
+                                        /
                                       </div>
-                                    );
-                                  })}
-                                </div>
-                              </motion.div>
-                            )}
+                                      <span className={cn(
+                                        "text-[10px] font-mono font-bold uppercase tracking-[0.15em]",
+                                        theme === 'light' ? "text-slate-500" : "text-zinc-400"
+                                      )}>
+                                        Command Palette
+                                      </span>
+                                      <span className={cn(
+                                        "text-[9px] font-mono px-1.5 py-0.2 rounded-full border",
+                                        theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-zinc-900 border-zinc-800 text-zinc-500"
+                                      )}>
+                                        {filteredCommands.length} available
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center gap-1 text-[9px] font-mono text-zinc-500">
+                                      <kbd className={cn("px-1.5 py-0.5 rounded border text-[8px]", theme === 'light' ? "bg-white border-slate-200 text-slate-500" : "bg-zinc-900 border-zinc-800 text-zinc-400")}>↑↓</kbd>
+                                      <span>navigate</span>
+                                      <span className="mx-0.5 opacity-40">·</span>
+                                      <kbd className={cn("px-1.5 py-0.5 rounded border text-[8px]", theme === 'light' ? "bg-white border-slate-200 text-slate-500" : "bg-zinc-900 border-zinc-800 text-zinc-400")}>↵ / Tab</kbd>
+                                      <span>select</span>
+                                      <span className="mx-0.5 opacity-40">·</span>
+                                      <kbd className={cn("px-1.5 py-0.5 rounded border text-[8px]", theme === 'light' ? "bg-white border-slate-200 text-slate-500" : "bg-zinc-900 border-zinc-800 text-zinc-400")}>Esc</kbd>
+                                      <span>dismiss</span>
+                                    </div>
+                                  </div>
+                                  <div className="p-1.5 max-h-60 overflow-y-auto custom-scrollbar flex flex-col gap-0.5">
+                                    {filteredCommands.map((cmdItem: any, idx: number) => {
+                                      const isSelected = idx === selectedCommandIndex;
+                                      return (
+                                        <div
+                                          key={cmdItem.cmd}
+                                          ref={isSelected ? selectedCommandRef : null}
+                                          onMouseDown={(e) => {
+                                            e.preventDefault();
+                                            executeCommand(cmdItem.cmd);
+                                            setIsCommandListDismissed(true);
+                                          }}
+                                          onMouseEnter={() => setSelectedCommandIndex(idx)}
+                                          className={cn(
+                                            "flex items-center gap-2.5 px-3 py-2 rounded-xl cursor-pointer transition-all duration-100",
+                                            isSelected
+                                              ? (theme === 'light' ? "bg-cyan-50/80 border border-cyan-200/80 text-slate-900" : "bg-cyan-500/10 border border-cyan-500/25 text-white")
+                                              : (theme === 'light' ? "hover:bg-slate-50 border border-transparent" : "hover:bg-white/[0.03] border border-transparent")
+                                          )}
+                                        >
+                                          <div className={cn(
+                                            "w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors",
+                                            isSelected
+                                              ? (theme === 'light' ? "bg-white text-cyan-600 shadow-sm" : "bg-cyan-500/20 text-cyan-300")
+                                              : (theme === 'light' ? "bg-slate-100 text-slate-400" : "bg-white/[0.04] text-zinc-500")
+                                          )}>
+                                            {cmdItem.icon || <Sparkles size={13} />}
+                                          </div>
+                                          <span className={cn(
+                                            "text-[11px] font-mono font-bold shrink-0 transition-colors",
+                                            isSelected
+                                              ? (theme === 'light' ? "text-cyan-700" : "text-cyan-400")
+                                              : (theme === 'light' ? "text-slate-700" : "text-zinc-300")
+                                          )}>
+                                            {cmdItem.syntax || cmdItem.cmd}
+                                          </span>
+                                          <span className={cn(
+                                            "flex-1 text-[11px] font-mono truncate transition-colors",
+                                            isSelected
+                                              ? (theme === 'light' ? "text-slate-600" : "text-zinc-300")
+                                              : (theme === 'light' ? "text-slate-400" : "text-zinc-500")
+                                          )}>
+                                            {cmdItem.description}
+                                          </span>
+                                          {isSelected && (
+                                            <span className={cn(
+                                              "text-[9px] font-mono font-bold px-2 py-0.5 rounded-md border shrink-0 flex items-center gap-1 shadow-sm",
+                                              theme === 'light'
+                                                ? "bg-white border-cyan-200 text-cyan-700"
+                                                : "bg-cyan-950/80 border-cyan-500/30 text-cyan-300"
+                                            )}>
+                                              Apply ↵
+                                            </span>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </motion.div>
+                              )}
+                            </AnimatePresence>
 
                             <div className="flex items-center justify-between px-2 pt-1 pb-2">
                                <div className="flex items-center gap-1">

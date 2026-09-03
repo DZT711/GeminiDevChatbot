@@ -1,4 +1,4 @@
-import { ToolMetadata } from '../tools/ToolMetadata';
+import type { ToolMetadata } from '../tools/ToolMetadata.js';
 
 export enum RiskLevel {
   LOW = 'LOW',
@@ -9,14 +9,17 @@ export enum RiskLevel {
 
 export interface PlanStep {
   id: string;
+  taskId?: string;
   title: string;
   description: string;
   dependencies: string[];
   expectedInputs: string[];
   expectedOutputs: string[];
-  requiredTools: ToolMetadata[];
+  requiredTools: (ToolMetadata | string)[];
   estimatedDurationMs?: number;
   riskLevel: RiskLevel;
   approvalRequired: boolean;
   validationRules: string[];
+  metadata?: Record<string, unknown>;
 }
+

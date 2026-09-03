@@ -14,16 +14,35 @@ import { ReflectionRecord } from '../../../../agent/reflection/ReflectionTypes.j
 import { ExecutionState } from '../../../../agent/runtime/ExecutionState.js';
 import { RuleBasedLearningEngine } from '../../../../agent/learning/RuleBasedLearningEngine.js';
 import { LearningResult } from '../../../../agent/learning/LearningTypes.js';
+import { DurableExperienceStore } from '../../experience/DurableExperienceStore.js';
+import { ExperienceStore } from '../../../../agent/experience/ExperienceStore.js';
+import { DefaultPromotionService, PromotionService } from '../../../../agent/promotion/index.js';
+import { InMemoryKnowledgeStore } from '../../../../agent/knowledge/InMemoryKnowledgeStore.js';
+import { KnowledgeStore } from '../../../../agent/knowledge/KnowledgeStore.js';
 
 export class ExecutionIntegrationService {
     private pipeline: ExecutionPipeline;
     private registry: DefaultToolRegistry;
     private reflectionEngine = new RuleBasedReflection();
     private learningEngine = new RuleBasedLearningEngine();
+    private knowledgeStore: KnowledgeStore = new InMemoryKnowledgeStore();
+    private promotionService: PromotionService;
+    
+    // M05 Durable Store replacing in-memory arrays (imported dynamically or require later)
+    public static experienceStore: ExperienceStore = new DurableExperienceStore();
+
     public static reflectionLogs: ReflectionRecord[] = []; // In-memory store
     public static learningLogs: LearningResult[] = []; // In-memory store
     
-    constructor() {
+    constructor(knowledgeStore?: KnowledgeStore) {
+        if (knowledgeStore) {
+            this.knowledgeStore = knowledgeStore;
+        }
+        this.promotionService = new DefaultPromotionService(
+            this.knowledgeStore,
+            undefined,
+            ExecutionIntegrationService.experienceStore
+        );
         this.registry = new DefaultToolRegistry();
         const resolver = new ToolResolver(this.registry);
         const permissionValidator = new PermissionValidator();
@@ -81,7 +100,18 @@ export class ExecutionIntegrationService {
                 const reflectionRecord = await this.reflectionEngine.reflect(reflectionReq);
                 ExecutionIntegrationService.reflectionLogs.push(reflectionRecord);
                 console.log(`[Reflection] Generated record for ${name}: Score ${reflectionRecord.summary.overallScore}`);
-                
+
+                // M05: Append to durable store
+                await ExecutionIntegrationService.experienceStore.append({
+                    sessionId: context.workspaceId || 'unknown_session',
+                    taskId: context.executionId,
+                    type: 'REFLECTION',
+                    payload: reflectionRecord as unknown as Record<string, unknown>,
+                    metadata: {
+                        success: true, // reflection generation succeeded
+                    }
+                }).catch(e => console.error("[Reflection] ExperienceStore error:", e));
+
                 if (AgentFeatureFlags.USE_LEARNING) {
                     try {
                         const learningReq = {
@@ -90,6 +120,36 @@ export class ExecutionIntegrationService {
                         const learningResult = await this.learningEngine.learn(learningReq);
                         ExecutionIntegrationService.learningLogs.push(learningResult);
                         console.log(`[Learning] Generated decision for ${name}: ${learningResult.decision}`);
+
+                        // M05: Append to durable store
+                        await ExecutionIntegrationService.experienceStore.append({
+                            sessionId: context.workspaceId || 'unknown_session',
+                            taskId: context.executionId,
+                            type: 'LEARNING',
+                            payload: learningResult as unknown as Record<string, unknown>,
+                            metadata: {
+                                success: true
+                            }
+                        }).catch(e => console.error("[Learning] ExperienceStore error:", e));
+
+                        // M05-02: Knowledge Promotion Boundary
+                        if (AgentFeatureFlags.USE_KNOWLEDGE_PROMOTION) {
+                            try {
+                                const promotionResults = await this.promotionService.processLearningResult(learningResult, {
+                                    sessionId: context.workspaceId || 'unknown_session',
+                                    taskId: context.taskId || context.executionId,
+                                    executionId: context.executionId,
+                                    toolName: name,
+                                    overallScore: reflectionRecord.summary.overallScore,
+                                    detectedMistakes: reflectionRecord.summary.detectedMistakes,
+                                    potentialImprovements: reflectionRecord.summary.potentialImprovements,
+                                    durationMs: typeof result.metadata?.durationMs === 'number' ? result.metadata.durationMs : undefined
+                                });
+                                console.log(`[Promotion] Processed ${promotionResults.length} promotion candidates for ${name}`);
+                            } catch (promoErr) {
+                                console.error("[Promotion] Failed to process promotion:", promoErr);
+                            }
+                        }
                     } catch (err) {
                         console.error("[Learning] Failed to generate learning result:", err);
                     }

@@ -5,6 +5,8 @@ import { PerformanceView } from "../components/views/PerformanceView";
 import { KnowledgeView } from "../components/views/KnowledgeView";
 import { KeysView } from "../components/views/KeysView";
 import { AdminDebugView } from "../components/views/AdminDebugView";
+import { PlanningPlaygroundView } from "../components/views/PlanningPlaygroundView";
+import { WorkspaceTab } from "../components/WorkspaceTab";
 
 import { ChatWindow } from "../components/ChatWindow";
 import { Sidebar } from "../components/Sidebar";
@@ -68,6 +70,8 @@ import {
   Edit2,
   Check,
   Key,
+  Compass,
+  Target,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { geminiService, DEFAULT_SKILLS, Skill, PROVIDER_CONFIGS, ModelMetrics } from "@/services/geminiService";
@@ -239,6 +243,18 @@ export default function DevEngine() {
     view, setView,
     showHistory, setShowHistory,
   } = useUIState();
+  const [activeWorkspacePlan, setActiveWorkspacePlan] = useState<any>(null);
+
+  useEffect(() => {
+    const handleOpenWorkspace = (e: any) => {
+      if (e?.detail?.planResult) {
+        setActiveWorkspacePlan(e.detail.planResult);
+      }
+      setView("workspace");
+    };
+    window.addEventListener("open-workspace", handleOpenWorkspace);
+    return () => window.removeEventListener("open-workspace", handleOpenWorkspace);
+  }, [setView]);
   const {
     input, setInput,
     isInputMaximized, setIsInputMaximized,
@@ -569,6 +585,17 @@ export default function DevEngine() {
     Record<string, { status?: string; description?: string }>
   >({});
 
+  // Navigation event listeners for external triggers (e.g. PlanningResultCard -> Planning Lab)
+  useEffect(() => {
+    const handleNavPlanningLab = () => {
+      setView("planning-playground");
+    };
+    window.addEventListener("nav:planning-playground", handleNavPlanningLab);
+    return () => {
+      window.removeEventListener("nav:planning-playground", handleNavPlanningLab);
+    };
+  }, [setView]);
+
   // Synchronize transparency actions and output failures with administrative CLI console logs
   
   // Persistence Sync
@@ -685,7 +712,8 @@ export default function DevEngine() {
     autoScroll, scrollRef,
     useSearch, repoUrl, setIsRepoModalOpen, setRepoUrl, isEnhancingPrompt, setIsEnhancingPrompt,
     editingSessionId, setEditingSessionId, editingSessionTitle, setEditingSessionTitle,
-    user, setSessions, sessions, setCurrentModel, isRepoModalOpen, isAutoCompact
+    user, setSessions, sessions, setCurrentModel, isRepoModalOpen, isAutoCompact,
+    setView
   });
 
   const handleEditSkill = (skill: Skill) => {
@@ -793,6 +821,18 @@ export default function DevEngine() {
   const commandListItems: CommandItem[] = useMemo(
     () => [
       {
+        cmd: "/plan",
+        syntax: "/plan <objective or architecture>",
+        description: "Generate structured implementation plan, phases, and milestones.",
+        icon: <Target size={14} className="text-violet-400" />,
+      },
+      {
+        cmd: "/goal",
+        syntax: "/goal <objective>",
+        description: "Trigger autonomous goal decomposition and task graph planning.",
+        icon: <Compass size={14} className="text-emerald-400" />,
+      },
+      {
         cmd: "/rag",
         syntax: "/rag <query>",
         description: "Trigger semantic vector retrieval of codebase memories.",
@@ -803,7 +843,7 @@ export default function DevEngine() {
         syntax: "/image <prompt>",
         description:
           "Generate high-fidelity UI visual mockups or custom graphics.",
-        icon: <ImageIcon size={14} className="text-purple-400" />,
+        icon: <ImageIcon size={14} className="text-pink-400" />,
       },
       {
         cmd: "/video",
@@ -817,6 +857,30 @@ export default function DevEngine() {
         syntax: "/refine",
         description: "Polishes and optimizes current prompt using LLM logic.",
         icon: <Sparkles size={14} className="text-amber-400" />,
+      },
+      {
+        cmd: "/skills",
+        syntax: "/skills",
+        description: "Open and browse neural developer skills list.",
+        icon: <Sparkles size={14} className="text-cyan-400" />,
+      },
+      {
+        cmd: "/search",
+        syntax: "/search",
+        description: "Toggle Google web search grounding for live docs.",
+        icon: <Search size={14} className="text-blue-400" />,
+      },
+      {
+        cmd: "/deep",
+        syntax: "/deep",
+        description: "Toggle deep reasoning mode with reasoning tokens.",
+        icon: <Brain size={14} className="text-amber-400" />,
+      },
+      {
+        cmd: "/compact",
+        syntax: "/compact",
+        description: "Toggle automatic context memory compaction.",
+        icon: <Database size={14} className="text-purple-400" />,
       },
       {
         cmd: "/clear",
@@ -837,14 +901,38 @@ export default function DevEngine() {
   );
 
   const executeCommand = (cmd: string): void => {
-    if (cmd === "/rag") {
+    if (cmd === "/plan") {
+      setInput("/plan ");
+    } else if (cmd === "/goal") {
+      setInput("/goal ");
+    } else if (cmd === "/rag") {
       setInput("/rag ");
     } else if (cmd === "/image") {
-      setInput("/image ");
+      setIsImageMode(true);
+      setIsVideoMode(false);
+      setInput("");
+      setValidationStatus({ type: "success", message: "VISION MODE ACTIVE" });
+      setTimeout(() => setValidationStatus(null), 2000);
     } else if (cmd === "/video") {
-      setInput("/video ");
+      setIsVideoMode(true);
+      setIsImageMode(false);
+      setInput("");
+      setValidationStatus({ type: "success", message: "MOTION MODE ACTIVE" });
+      setTimeout(() => setValidationStatus(null), 2000);
     } else if (cmd === "/refine") {
       handleEnhancePrompt();
+    } else if (cmd === "/skills") {
+      setIsSkillsExpanded((prev) => !prev);
+      setInput("");
+    } else if (cmd === "/search") {
+      setUseSearch((prev) => !prev);
+      setInput("");
+    } else if (cmd === "/deep") {
+      setThinkingMode((prev) => (prev === "none" ? "low" : "none"));
+      setInput("");
+    } else if (cmd === "/compact") {
+      setIsAutoCompact?.((prev) => !prev);
+      setInput("");
     } else if (cmd === "/clear") {
       createNewSession();
       setInput("");
@@ -854,7 +942,7 @@ export default function DevEngine() {
         {
           id: `help-${Date.now()}`,
           role: "model",
-          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/sandbox <query>\` — Forces the model to execute any requested code securely inside the remote E2B Node.js Sandbox Sandbox environment and return the output.\n- \`/image <prompt>\` — Invokes stable generation of developer-focused vector images.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
+          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/plan <objective>\` — Generates structured implementation plans, phased execution strategies, and verification milestones.\n- \`/goal <objective>\` — Decomposes complex engineering objectives into validated Directed Task Graphs.\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/image <prompt>\` — Invokes generation of developer-focused visual mockups.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/skills\` — Expands the neural skills drawer.\n- \`/search\` — Toggles real-time Google search grounding.\n- \`/deep\` — Toggles deep reasoning mode.\n- \`/compact\` — Toggles automatic context compaction.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
         },
       ]);
       setInput("");
@@ -1012,10 +1100,10 @@ export default function DevEngine() {
     autocompleteSuggestion, showSkillSuggestions, suggestedSkills, setSuggestedSkills,
     selectedCommandIndex, setSelectedCommandIndex, uploadedFileName,
     handleStopGeneration: handleStop, autoScroll, setAutoScroll, isAutoCompact, setIsAutoCompact,
-    isSidebarCollapsed, createNewSession, activeKey, activeApiKey: null,
+    isSidebarCollapsed, createNewSession, activeKey, activeApiKey,
     isModelSelectorOpen, setIsModelSelectorOpen, currentModel, setCurrentModel, ModelId: (window as any).ModelId || {},
     modelSearch, setModelSearch, activeKeyId, apiKeys, globalEnabledModels, modelQueueManager, modelCatalog,
-    setSettingsTab, setShowSettings, removeAttachment, handlePaste, showCommands: false,
+    setSettingsTab, setShowSettings, removeAttachment, handlePaste, showCommands,
     filteredCommands, executeCommand, handleEnhancePrompt,
     isImageMode, setIsImageMode, isVideoMode, setIsVideoMode,
     activeSkillIds, setActiveSkillIds, DEFAULT_SKILLS, customSkills,
@@ -1120,6 +1208,14 @@ export default function DevEngine() {
           <KnowledgeView {...propsToPass} />
         ) : view === "keys" ? (
           <KeysView {...propsToPass} />
+        ) : view === "planning-playground" ? (
+          <PlanningPlaygroundView theme={theme} />
+        ) : view === "workspace" ? (
+          <WorkspaceTab
+            theme={theme === "light" ? "light" : "dark"}
+            user={user}
+            currentPlanResult={activeWorkspacePlan}
+          />
         ) : view === "admin-debug" && user?.role === "ADMIN" ? (
           <AdminDebugView {...propsToPass} />
         ) : null}

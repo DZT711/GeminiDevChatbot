@@ -2,12 +2,14 @@ import { ExecutionState } from './ExecutionState';
 import { ExecutionVariable } from './ExecutionVariable';
 import { ExecutionArtifact } from './ExecutionArtifact';
 import type { ExecutionMetadata, ExecutionEnvironment, ExecutionScope } from './ExecutionContext';
+import type { WorkspaceRef } from '../workspace/WorkspaceTypes';
 
 export interface ExecutionSnapshot {
   readonly executionId: string;
   readonly taskId?: string;
   readonly parentTaskId?: string;
   readonly workspaceId?: string;
+  readonly workspaceRef?: WorkspaceRef;
   
   readonly currentStep?: string;
   readonly currentStateReference: ExecutionState;

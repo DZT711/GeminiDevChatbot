@@ -1,7 +1,7 @@
 import { ModelId } from './types';
 
 export class ModelQueueManager {
-  private queue: string[] = [ModelId.PRO, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE];
+  private queue: string[] = [ModelId.FLASH, ModelId.PRO, ModelId.LITE];
   private currentIndex: number = 0;
 
   setQueue(models: string[]) {
@@ -12,7 +12,7 @@ export class ModelQueueManager {
   }
 
   resetQueue() {
-    this.queue = [ModelId.PRO, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE];
+    this.queue = [ModelId.FLASH, ModelId.PRO, ModelId.LITE];
     this.currentIndex = 0;
   }
 

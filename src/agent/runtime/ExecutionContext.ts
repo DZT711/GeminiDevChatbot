@@ -2,6 +2,7 @@ import { ExecutionState } from './ExecutionState';
 import { ExecutionVariable } from './ExecutionVariable';
 import { ExecutionArtifact } from './ExecutionArtifact';
 import { ExecutionSnapshot } from './ExecutionSnapshot';
+import { WorkspaceRef } from '../workspace/WorkspaceTypes';
 
 export interface ExecutionMetadata {
   [key: string]: unknown;
@@ -26,6 +27,7 @@ export interface ExecutionContext {
   taskId?: string;
   parentTaskId?: string;
   workspaceId?: string;
+  workspaceRef?: WorkspaceRef;
   
   currentStep?: string;
   currentStateReference: ExecutionState;
@@ -85,6 +87,7 @@ export function createInitialContext(
         taskId: this.taskId,
         parentTaskId: this.parentTaskId,
         workspaceId: this.workspaceId,
+        workspaceRef: this.workspaceRef ? structuredClone(this.workspaceRef) : undefined,
         
         currentStep: this.currentStep,
         currentStateReference: this.currentStateReference,

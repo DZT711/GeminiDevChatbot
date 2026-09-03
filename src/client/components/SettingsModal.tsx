@@ -885,7 +885,7 @@ export function SettingsModal(props: any) {
                                         }
                                         className="px-3 py-1 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-[10px] uppercase font-bold"
                                       >
-                                        Update Node
+                                        {user?.role === "ADMIN" ? "Update Node" : "Propose Update"}
                                       </button>
                                       <button
                                         onClick={() => setEditingNodeId(null)}
@@ -908,7 +908,7 @@ export function SettingsModal(props: any) {
                                     onClick={() => handleDeleteNode(node.id)}
                                     className="px-2.5 py-1 text-red-500 hover:text-red-400 text-[10px] font-bold uppercase flex items-center gap-1 transition-all cursor-pointer"
                                   >
-                                    <Trash2 size={12} /> Delete Node
+                                    <Trash2 size={12} /> {user?.role === "ADMIN" ? "Delete Node" : "Propose Deletion"}
                                   </button>
                                   <button
                                     onClick={() => {

@@ -8,12 +8,7 @@ export * from './runtime/ExecutionState';
 export * from './runtime/RuntimeEvents';
 export * from './runtime/ExecutionResult';
 
-export * from './planner/Planner';
-export * from './planner/Plan';
-export * from './planner/PlanStep';
-export * from './planner/TaskGraph';
-export * from './planner/PlanningTypes';
-export * from './planner/PlanningValidator';
+export * from './planner/index.js';
 
 export * from './tools/Tool';
 export * from './tools/ToolRegistry';
@@ -25,9 +20,7 @@ export * from './checkpoint/CheckpointStore';
 export * from './checkpoint/Serializer';
 export * from './checkpoint/Restore';
 
-export * from './workspace/Workspace';
-export * from './workspace/WorkspaceFile';
-export * from './workspace/WorkspaceState';
+export * from './workspace/index';
 
 
 export * from './artifacts/Artifact';
@@ -64,3 +57,9 @@ export * from './retrieval';
 export * from './context';
 export * from './reflection';
 export * from './learning';
+export * from './experience';
+export * from './promotion';
+export * from './goal';
+export * from './decomposition';
+export * from './replanning';
+export * from './playground/planning.js';

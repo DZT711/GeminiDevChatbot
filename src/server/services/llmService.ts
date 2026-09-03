@@ -18,6 +18,34 @@ export class LLMService {
       });
       return {
         models: {
+          generateContent: async function (params: any) {
+            const messages = [];
+            if (params.config?.systemInstruction) {
+              messages.push({ role: 'system', content: params.config.systemInstruction });
+            }
+            if (params.contents) {
+              for (const part of params.contents) {
+                const role = part.role === 'model' ? 'assistant' : 'user';
+                let content = '';
+                if (part.parts && Array.isArray(part.parts)) {
+                  content = part.parts.map((p: any) => p.text || '').join('');
+                } else {
+                  content = part.text || '';
+                }
+                messages.push({ role, content });
+              }
+            }
+            const res = await openai.chat.completions.create({
+              model: params.model,
+              messages: messages as any,
+              stream: false
+            });
+            const text = res.choices[0]?.message?.content || '';
+            return {
+              text,
+              candidates: [{ content: { parts: [{ text }] } }]
+            };
+          },
           generateContentStream: async function* (params: any) {
             let messages = [];
             if (params.config?.systemInstruction) {
@@ -56,9 +84,13 @@ export class LLMService {
       };
     }
     
-    const httpOptions: any = { apiVersion: 'v1beta' };
-    if (baseUrl) {
-      httpOptions.baseUrl = baseUrl;
+    const httpOptions: any = {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    };
+    if (baseUrl && baseUrl.trim() !== '' && !baseUrl.includes('googleapis.com')) {
+      httpOptions.baseUrl = baseUrl.trim();
     }
     return new GoogleGenAI({
       apiKey,
