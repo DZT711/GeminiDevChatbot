@@ -1,7 +1,10 @@
 import type { PlanningSimulationState } from './PlanningPlaygroundTypes.js';
 
 export class PlanningPlaygroundSerializer {
-  public static exportSimulationJson(state: PlanningSimulationState): string {
+  public static exportSimulationJson(state?: PlanningSimulationState | null): string {
+    if (!state) {
+      return JSON.stringify({ status: 'no_state', exportedAt: Date.now() }, null, 2);
+    }
     // Sanitized state export without sensitive variables
     const sanitized = {
       exportedAt: Date.now(),

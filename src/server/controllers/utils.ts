@@ -4,7 +4,7 @@ import { eq, sql } from 'drizzle-orm';
 import { decryptKey } from '../lib/encryption.js';
 import { Type } from '@google/genai';
 import { di } from '../di.js';
-import { CLASSIFICATION_MODEL } from '../agent/agent.config.js';
+import { CLASSIFICATION_MODEL, DEFAULT_CHAT_MODEL } from '../agent/agent.config.js';
 
 export async function txWithUser<T>(userId: string, callback: (tx: any) => Promise<T>): Promise<T> {
   return await db.transaction(async (tx) => {
@@ -132,25 +132,46 @@ You MUST follow these rules strictly:
 1. Return ONLY the string literal 'USE_RAG' or 'DIRECT_CHAT' in plain text.
 2. Absolutely NO markdown block (such as \`\`\`), no punctuation, and no conversational padding.
 3. Be highly decisive and favor 'USE_RAG' if there is any doubt or context clues pointing to the local repository files/structure.`;
-    const response = await aiInstance.models.generateContent({
-      model: CLASSIFICATION_MODEL,
-      contents: userQuery,
-      config: {
-        systemInstruction: systemPrompt,
-        temperature: 0.0,
+    let responseText: string | undefined;
+    const modelsToTry: string[] = Array.from(new Set([CLASSIFICATION_MODEL, DEFAULT_CHAT_MODEL]));
+    for (let i = 0; i < modelsToTry.length; i++) {
+      const modelCandidate = modelsToTry[i];
+      try {
+        const response = await aiInstance.models.generateContent({
+          model: modelCandidate,
+          contents: userQuery,
+          config: {
+            systemInstruction: systemPrompt,
+            temperature: 0.0,
+          }
+        });
+        if (response?.text) {
+          responseText = response.text;
+          break;
+        }
+      } catch (classifyErr: unknown) {
+        if (i < modelsToTry.length - 1) {
+          console.warn(`[AI Query Router] Classifier model '${modelCandidate}' hit limits, trying fallback '${modelsToTry[i + 1]}'`);
+          continue;
+        }
+        throw classifyErr;
       }
-    });
-    const result = response.text?.trim() || 'DIRECT_CHAT';
+    }
+
+    const result = responseText?.trim() || 'DIRECT_CHAT';
     console.log(`[AI Query Router] Query classified as: "${result}" for query: "${userQuery}"`);
     if (result.includes('USE_RAG')) {
       return 'USE_RAG';
     }
     return 'DIRECT_CHAT';
-  } catch (e: any) {
-    if (e?.message?.includes('503') || e?.message?.includes('UNAVAILABLE')) {
-      console.info('[AI Query Router] Classifier hit 503 high demand, silent fallback to DIRECT_CHAT');
+  } catch (e: unknown) {
+    const errorMsg = (e as Error)?.message || String(e);
+    const isRateLimitOrQuota = errorMsg.includes('429') || errorMsg.includes('RESOURCE_EXHAUSTED') || errorMsg.toLowerCase().includes('quota');
+    const is503 = errorMsg.includes('503') || errorMsg.includes('UNAVAILABLE');
+    if (is503 || isRateLimitOrQuota) {
+      console.info(`[AI Query Router] Classifier temporarily rate-limited or congested, clean fallback to DIRECT_CHAT`);
     } else {
-      console.error('[AI Query Router] Failure executing classifier, fallback to DIRECT_CHAT', e.message || e);
+      console.warn('[AI Query Router] Classifier fallback to DIRECT_CHAT:', errorMsg.slice(0, 120));
     }
     return 'DIRECT_CHAT';
   }
@@ -159,8 +180,14 @@ You MUST follow these rules strictly:
 import express from 'express';
 export const JWT_SECRET = new TextEncoder().encode(process.env.JWT_SECRET || 'fallback-secret-for-dev-123456');
 
-export const getBaseUrl = (req: express.Request) => {
-  const host = req.get('host');
-  const protocol = req.protocol;
-  return `${protocol}://${host}`;
+export const getBaseUrl = (req: express.Request): string => {
+  if (process.env.APP_URL) {
+    return process.env.APP_URL.replace(/\/+$/, '');
+  }
+  const forwardedProto = req.headers['x-forwarded-proto'];
+  const proto = typeof forwardedProto === 'string'
+    ? forwardedProto.split(',')[0].trim()
+    : (req.secure ? 'https' : req.protocol);
+  const host = req.get('x-forwarded-host') || req.get('host') || 'localhost:3000';
+  return `${proto}://${host}`;
 };

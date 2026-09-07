@@ -856,7 +856,7 @@ export function ChatWindow(props: any) {
                               <div className="relative shrink-0">
                                 <button type="button" onClick={() => setIsModelSelectorOpen(!isModelSelectorOpen)} className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all text-[10px] font-bold uppercase tracking-widest", isModelSelectorOpen ? (theme === 'light' ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200/50" : "bg-zinc-800/80 text-white shadow-md border border-white/5") : (theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50" : "text-zinc-500 hover:text-white hover:bg-white/5"))}>
                                   <Cpu size={12} className={isModelSelectorOpen ? (theme === 'light' ? "text-slate-800" : "text-zinc-300") : "opacity-70"} />
-                                  {currentModel === ModelId.HYBRID ? "Hybrid" : [ModelId.PRO, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) ? currentModel === ModelId.PRO ? "Pro" : currentModel === ModelId.FLASH_3_5 ? "Flash 3.5" : currentModel === ModelId.FLASH ? "Flash" : "Lite" : (currentModel || "").split("/").pop()?.replace("gemini-", "").toUpperCase() || "UNKNOWN"}
+                                  {currentModel === ModelId.HYBRID ? "Hybrid" : [ModelId.PRO, ModelId.FLASH_3_8, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) ? currentModel === ModelId.PRO ? "Pro" : currentModel === ModelId.FLASH_3_8 ? "Flash 3.8" : currentModel === ModelId.FLASH_3_5 ? "Flash 3.5" : currentModel === ModelId.FLASH ? "Flash" : "Lite" : (currentModel || "").split("/").pop()?.replace("gemini-", "").toUpperCase() || "UNKNOWN"}
                                 </button>
                               </div>
 
@@ -876,8 +876,6 @@ export function ChatWindow(props: any) {
                                   </div>
                                 )}
                               </div>
-                              
-                              <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
                               
                               <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
                               <button

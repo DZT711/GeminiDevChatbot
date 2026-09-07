@@ -11,6 +11,7 @@ import { WorkspaceTab } from "../components/WorkspaceTab";
 import { ChatWindow } from "../components/ChatWindow";
 import { Sidebar } from "../components/Sidebar";
 import { SettingsModal } from "../components/SettingsModal";
+import { WorkspaceLoadingSkeleton } from "../components/WorkspaceLoadingSkeleton";
 import { apiClient } from '../services/apiClient.js';
 import { storageService } from '../services/storageService.js';
 import React, { useState, useRef, useEffect, useMemo } from "react";
@@ -92,6 +93,7 @@ import { useAuth } from "../contexts/AuthProvider";
 import { useSettings } from "../contexts/SettingsProvider";
 import { useChatContext } from "../contexts/ChatProvider";
 import { ChatMessage } from "@/components/ChatMessage";
+import { NotificationToast } from "../components/NotificationToast";
 import { cn } from "@/lib/utils";
 import { ThinkingLevel } from "@google/genai";
 import { useDropzone } from "react-dropzone";
@@ -1163,6 +1165,15 @@ export default function DevEngine() {
     setModelCatalog, theme, showCommands, filteredCommands,
   });
 
+  if (!isStateLoaded) {
+    return (
+      <WorkspaceLoadingSkeleton
+        theme={theme}
+        onSkip={() => setIsStateLoaded(true)}
+      />
+    );
+  }
+
   return (
     <div
       {...getRootProps()}
@@ -1230,89 +1241,12 @@ export default function DevEngine() {
 
       <SettingsModal {...settingsModalProps} />
 
-      {/* Floating System & Neural Activity Notifications */}
-      <div className="fixed top-6 right-6 z-[210] flex flex-col gap-3 max-w-sm pointer-events-none">
-        {notifications.map((notif) => (
-          <div
-            key={notif.id}
-            className={cn(
-              "p-4 rounded-xl shadow-lg border flex gap-3 items-start pointer-events-auto transition-all duration-300",
-              notif.type === "success" &&
-                "bg-emerald-950/90 border-emerald-500/20 text-emerald-200 shadow-[0_0_15px_rgba(16,185,129,0.1)]",
-              notif.type === "error" &&
-                "bg-red-955/90 border-red-500/20 text-red-200 shadow-[0_0_15px_rgba(239,68,68,0.1)]",
-              notif.type === "warning" &&
-                "bg-amber-955/90 border-amber-500/20 text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.1)]",
-              notif.type === "info" &&
-                "bg-zinc-950/95 border-cyan-500/35 text-zinc-100 shadow-[0_0_20px_rgba(6,182,212,0.15)]",
-            )}
-          >
-            <div className="flex-1 text-xs font-sans">
-              <div className="font-semibold text-[9px] uppercase tracking-widest mb-1.5 opacity-80 flex justify-between items-center gap-4">
-                <span
-                  className={cn(
-                    notif.type === "info" && "text-cyan-400 font-mono",
-                    notif.type === "success" && "text-emerald-400 font-mono",
-                    notif.type === "error" && "text-red-400 font-mono",
-                    notif.type === "warning" && "text-amber-400 font-mono",
-                  )}
-                >
-                  {notif.type === "info"
-                    ? "✦ NEURAL SYNC MEMORY"
-                    : "■ SYSTEM MEMORY UPDATE"}
-                </span>
-                <span className="text-[8px] font-mono text-zinc-500">
-                  {notif.timestamp?.toLocaleTimeString()}
-                </span>
-              </div>
-              <p className="font-mono text-[10px] leading-relaxed break-words">
-                {notif.message}
-              </p>
-            </div>
-            <button
-              onClick={() =>
-                setNotifications((prev) =>
-                  prev.filter((n) => n.id !== notif.id),
-                )
-              }
-              className="text-zinc-500 hover:text-zinc-300 transition-colors pointer-events-auto text-xs ml-1"
-            >
-              &times;
-            </button>
-          </div>
-        ))}
-      </div>
-
-      {/* Global Validation Toast */}
-      <AnimatePresence>
-        {validationStatus && (
-          <motion.div
-            initial={{ opacity: 0, y: 20, x: 20 }}
-            animate={{ opacity: 1, y: 0, x: 0 }}
-            exit={{ opacity: 0, y: 20, x: 20 }}
-            className={cn(
-              "fixed bottom-6 right-6 z-[200] max-w-xs p-4 rounded-xl border shadow-2xl backdrop-blur-xl animate-in fade-in zoom-in-95 duration-300 pointer-events-none",
-              validationStatus.type === "error"
-                ? "bg-red-500/10 border-red-500/20 text-red-400"
-                : "bg-cyan-500/10 border-cyan-500/20 text-cyan-400",
-            )}
-          >
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  "w-1.5 h-1.5 rounded-full animate-pulse",
-                  validationStatus.type === "error"
-                    ? "bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.5)]"
-                    : "bg-cyan-500 shadow-[0_0_8px_rgba(6,182,212,0.5)]",
-                )}
-              />
-              <span className="text-[10px] font-mono font-bold uppercase tracking-widest">
-                {validationStatus.message}
-              </span>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Unified Prettier Toast Notification System (replaces legacy overlapping toasts) */}
+      <NotificationToast
+        notifications={notifications}
+        onDismiss={(id) => setNotifications((prev) => prev.filter((n) => n.id !== id))}
+        theme={theme}
+      />
     </div>
   );
 }

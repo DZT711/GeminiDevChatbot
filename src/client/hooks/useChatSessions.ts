@@ -11,6 +11,7 @@ import { useDropzone } from "react-dropzone";
 import { storageService } from "@/services/storageService";
 import { ModelId } from "@/services/types";
 import { GoalPlanningService } from "../../server/services/agentIntegration/planning/GoalPlanningService";
+import { diagnoseAgentError } from "../utils/agentErrorDiagnostics";
 
 
 
@@ -150,6 +151,64 @@ export function useChatInteractions(options: any) {
     setSessions, sessions, isEnhancingPrompt, setIsEnhancingPrompt, thinkingMode, user, setCurrentModel, isAutoCompact,
     setView
 } = options;
+
+  // Listen for agent execution events and notify chat thread with specific situational reports
+  useEffect(() => {
+    const handleAgentExecutionResult = (e: Event) => {
+      const customEvent = e as CustomEvent<{
+        success: boolean;
+        planResult?: any;
+        summary?: any;
+        diagnosis?: any;
+      }>;
+      const { success, planResult, summary, diagnosis } = customEvent.detail || {};
+      const goalIntent = planResult?.goal?.intent || 'Agent task execution';
+
+      if (success) {
+        const completedCount = summary?.completedTasks?.length ?? 0;
+        const totalCount = summary?.totalTasks ?? (planResult?.plan?.steps?.length || 0);
+        const durationStr = summary?.durationMs ? ` (${(summary.durationMs / 1000).toFixed(1)}s)` : '';
+
+        const successMsg: Message = {
+          id: `exec-success-${Date.now()}`,
+          role: 'model',
+          content: `✅ **Agent Execution Succeeded**${durationStr}\n\nAll planned tasks completed for: **${goalIntent}**\n- **Tasks Executed:** ${completedCount} / ${totalCount}\n- **Workspace Status:** All file modifications and tools completed with verified outputs.`
+        };
+        setMessages((prev: Message[]) => {
+          const next = [...prev, successMsg];
+          if (saveCurrentSession) {
+            setTimeout(() => saveCurrentSession(next), 0);
+          }
+          return next;
+        });
+        if (addNotification) {
+          addNotification(`Agent executed successfully: ${goalIntent}`, 'success');
+        }
+      } else {
+        const diag = diagnosis || diagnoseAgentError(summary?.error || 'Execution stopped with failures');
+        const failMsg: Message = {
+          id: `exec-fail-${Date.now()}`,
+          role: 'model',
+          content: `⚠️ **Agent Execution Unsuccessful**\n\n**Situation:** ${diag.title} \`[${diag.badge}]\`\n${diag.description}\n\n💡 **Recommended Action:** ${diag.suggestion}\n\n*Target Goal:* ${goalIntent}`
+        };
+        setMessages((prev: Message[]) => {
+          const next = [...prev, failMsg];
+          if (saveCurrentSession) {
+            setTimeout(() => saveCurrentSession(next), 0);
+          }
+          return next;
+        });
+        if (addNotification) {
+          addNotification(`Agent execution unsuccessful: ${diag.title}`, 'error');
+        }
+      }
+    };
+
+    window.addEventListener('agent:execution-result', handleAgentExecutionResult);
+    return () => {
+      window.removeEventListener('agent:execution-result', handleAgentExecutionResult);
+    };
+  }, [setMessages, saveCurrentSession, addNotification]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -1008,7 +1067,9 @@ export function useChatInteractions(options: any) {
             onModelSwitch: (newModel, isFallback) => {
               try {
                 console.log('[useChatSessions] onModelSwitch to:', newModel, 'isFallback:', isFallback);
-                setCurrentModel(newModel);
+                if (!isFallback) {
+                  setCurrentModel(newModel);
+                }
                 setMessages((prev) => {
                   const last = [...prev];
                   const msg = { ...last[last.length - 1] };
@@ -1062,14 +1123,18 @@ export function useChatInteractions(options: any) {
             },
           ]);
         } else {
+          const diag = diagnoseAgentError(error);
           setMessages((prev) => [
             ...prev,
             {
               id: `err-${Date.now()}`,
               role: "model",
-              content: `**Error:** ${error.message || "An unexpected error occurred."}`,
+              content: `⚠️ **AI Service Notice: ${diag.title}** \`[${diag.badge}]\`\n\n${diag.description}\n\n💡 **Action:** ${diag.suggestion}`,
             },
           ]);
+          if (addNotification) {
+            addNotification(`[${diag.badge}] ${diag.title}`, "error");
+          }
         }
       } finally {
         if (mainActionId)
@@ -1162,7 +1227,9 @@ export function useChatInteractions(options: any) {
             onModelSwitch: (newModel, isFallback) => {
               try {
                 console.log('[useChatSessions] retry onModelSwitch to:', newModel, 'isFallback:', isFallback);
-                setCurrentModel(newModel);
+                if (!isFallback) {
+                  setCurrentModel(newModel);
+                }
                 setMessages((prev) => {
                   const last = [...prev];
                   const msg = { ...last[last.length - 1] };
@@ -1207,14 +1274,18 @@ export function useChatInteractions(options: any) {
           transparencyLogger.updateAction(mainRetryActionId, {
             status: "failed",
           });
+        const diag = diagnoseAgentError(error);
         setMessages((prev) => [
           ...prev,
           {
             id: `err-${Date.now()}`,
             role: "model",
-            content: `**Error:** ${error.message || "An unexpected error occurred."}`,
+            content: `⚠️ **AI Service Notice: ${diag.title}** \`[${diag.badge}]\`\n\n${diag.description}\n\n💡 **Action:** ${diag.suggestion}`,
           },
         ]);
+        if (addNotification) {
+          addNotification(`[${diag.badge}] ${diag.title}`, "error");
+        }
       } finally {
         if (mainRetryActionId)
           transparencyLogger.updateAction(mainRetryActionId, {
@@ -1392,7 +1463,10 @@ useEffect(() => {
           // Fetch model catalog
           try {
             const modelsData = await apiClient.get<any[]>("/api/models/info");
-            setModelCatalog(modelsData);
+            if (Array.isArray(modelsData) && modelsData.length > 0) {
+              setModelCatalog(modelsData);
+              setGlobalModelCatalog(modelsData);
+            }
           } catch (e) {
             console.warn("Failed to fetch model catalog", e);
           }

@@ -10,7 +10,8 @@ import {
   Copy,
   Check,
   Code,
-  Play
+  Play,
+  Loader2
 } from 'lucide-react';
 import { DiffViewer } from './DiffViewer.js';
 import type { WorkspaceFileMeta, FileProvenanceRecord } from '../../services/workspaceService.js';
@@ -23,6 +24,8 @@ interface CodeEditorProps {
   onSaveFile: (path: string, content: string) => Promise<void>;
   onRunCode?: (file: WorkspaceFileMeta) => void;
   theme?: 'light' | 'dark';
+  isAgentCoding?: boolean;
+  isRunningCode?: boolean;
 }
 
 export const CodeEditor: React.FC<CodeEditorProps> = ({
@@ -32,7 +35,9 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   onCloseFile,
   onSaveFile,
   onRunCode,
-  theme = 'dark'
+  theme = 'dark',
+  isAgentCoding = false,
+  isRunningCode = false
 }) => {
   const [content, setContent] = useState<string>('');
   const [initialContent, setInitialContent] = useState<string>('');
@@ -77,7 +82,7 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   };
 
   const handleRun = async () => {
-    if (!activeFile) return;
+    if (!activeFile || isAgentCoding || isRunningCode) return;
     if (isDirty) {
       await handleSave();
     }
@@ -89,17 +94,27 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
   // Keyboard shortcut Ctrl+S / Cmd+S and Ctrl+Enter / Cmd+Enter
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Do not intercept shortcuts when typing in terminal inputs or other text areas
+      const target = e.target as HTMLElement | null;
+      const isExternalInput =
+        target &&
+        (target.tagName === 'INPUT' ||
+          (target.tagName === 'TEXTAREA' && target !== textareaRef.current));
+      if (isExternalInput) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === 's') {
         e.preventDefault();
         handleSave();
       } else if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        handleRun();
+        if (!isAgentCoding && !isRunningCode) {
+          handleRun();
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeFile, content, isSaving, isDirty, onRunCode]);
+  }, [activeFile, content, isSaving, isDirty, onRunCode, isAgentCoding, isRunningCode]);
 
   const handleCopy = async () => {
     if (!content) return;
@@ -265,15 +280,35 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
 
           {/* Run Code Button */}
           {onRunCode && (
-            <button
-              type="button"
-              onClick={handleRun}
-              className="px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 shadow-sm bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer transition-all active:scale-95"
-              title="Run / Execute File (Ctrl+Enter)"
-            >
-              <Play className="w-3.5 h-3.5 fill-current" />
-              <span>Run (Ctrl+Enter)</span>
-            </button>
+            isAgentCoding ? (
+              <div
+                className="px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 shadow-sm bg-purple-950/80 border border-purple-600/40 text-purple-300 select-none animate-pulse"
+                title="Agent is actively modifying files and executing tasks. Execution locked to prevent conflicts."
+              >
+                <span className="w-2 h-2 rounded-full bg-purple-400 animate-ping shrink-0" />
+                <span>Agent Coding...</span>
+              </div>
+            ) : isRunningCode ? (
+              <button
+                type="button"
+                disabled
+                className="px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 shadow-sm bg-zinc-800 text-zinc-400 border border-zinc-700 cursor-not-allowed opacity-80"
+                title="Executing code in sandbox..."
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-400 shrink-0" />
+                <span>Running...</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleRun}
+                className="px-3 py-1 rounded text-xs font-medium flex items-center gap-1.5 shadow-sm bg-emerald-600 hover:bg-emerald-500 text-white cursor-pointer transition-all active:scale-95"
+                title="Run / Execute File (Ctrl+Enter)"
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Run (Ctrl+Enter)</span>
+              </button>
+            )
           )}
         </div>
       </div>

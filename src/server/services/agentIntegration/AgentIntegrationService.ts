@@ -6,7 +6,7 @@ import { ContextIntegrationService } from './context/ContextIntegrationService.j
 import { ContextBuilderAdapter } from './context/ContextBuilderAdapter.js';
 import { PromptContextMapper } from './context/PromptContextMapper.js';
 import { ExecutionIntegrationService } from './execution/ExecutionIntegrationService.js';
-import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL } from '../../agent/agent.config.js';
+import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL, FLASH_3_8_CHAT_MODEL, isThoughtSignatureModel, getThinkingConfigForModel } from '../../agent/agent.config.js';
 import { di } from '../../di.js';
 import { appendSystemLog } from '../../logInterceptor.js';
 
@@ -24,6 +24,99 @@ export function sanitizeModel(model?: string, provider?: string): string {
     clean = clean.replace(/\s*\((TEST|BETA|FREE)\)$/i, '');
 
     return clean || DEFAULT_CHAT_MODEL;
+}
+
+/**
+ * Automatically adapts multi-turn contents when changing or switching models.
+ * If previous turns contain tool calls that lack a cryptographic thoughtSignature,
+ * or when switching across model architectures, converts them into contextual narrative
+ * transcripts so that models requiring thought signatures (e.g. Gemini 3.8 Flash, 3.7 Flash,
+ * 3.1 Flash Lite, 2.5 Pro) can parse the full context without throwing INVALID_ARGUMENT (missing thought_signature).
+ */
+export function adaptContentsForModelSwitch(contents: any[], targetModel?: string): any[] {
+    if (!Array.isArray(contents)) return contents;
+    const isTargetNonGoogle = targetModel && targetModel.includes('/') && !targetModel.startsWith('google/');
+
+    return contents.map((turn: any) => {
+        if (!turn.parts || !Array.isArray(turn.parts)) return turn;
+        const turnModel = turn.modelUsed || turn.modelName || turn.model;
+        const isModelDifferent = targetModel && turnModel && (turnModel !== targetModel);
+
+        if (turn.role === 'model') {
+            const newParts: any[] = [];
+            for (const part of turn.parts) {
+                if (part.functionCall) {
+                    const sig = part.thoughtSignature || part.thought_signature || part.functionCall?.thoughtSignature || part.functionCall?.thought_signature;
+                    if (isTargetNonGoogle || isModelDifferent || !sig) {
+                        const argsStr = JSON.stringify(part.functionCall.args || {});
+                        newParts.push({ text: `[Action: Executed tool '${part.functionCall.name}' with parameters: ${argsStr}]` });
+                    } else {
+                        newParts.push(part);
+                    }
+                } else if (part.thought) {
+                    if (isTargetNonGoogle) {
+                        continue;
+                    }
+                    newParts.push(part);
+                } else {
+                    newParts.push(part);
+                }
+            }
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+        } else if (turn.role === 'user') {
+            const newParts: any[] = [];
+            for (const part of turn.parts) {
+                if (part.functionResponse) {
+                    if (isTargetNonGoogle || isModelDifferent) {
+                        const respStr = typeof part.functionResponse.response === 'object'
+                            ? JSON.stringify(part.functionResponse.response)
+                            : String(part.functionResponse.response);
+                        newParts.push({ text: `[Tool Result for '${part.functionResponse.name}': ${respStr}]` });
+                    } else {
+                        newParts.push(part);
+                    }
+                } else {
+                    newParts.push(part);
+                }
+            }
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+        }
+        return turn;
+    });
+}
+
+export function sanitizeAllToolTurnsToText(contents: any[]): any[] {
+    return contents.map((turn: any) => {
+        if (!turn.parts || !Array.isArray(turn.parts)) return turn;
+        if (turn.role === 'model') {
+            const newParts: any[] = [];
+            for (const part of turn.parts) {
+                if (part.functionCall) {
+                    const argsStr = JSON.stringify(part.functionCall.args || {});
+                    newParts.push({ text: `[Action: Executed tool '${part.functionCall.name}' with parameters: ${argsStr}]` });
+                } else if (part.thought) {
+                    continue;
+                } else {
+                    newParts.push(part);
+                }
+            }
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+        } else if (turn.role === 'user') {
+            const newParts: any[] = [];
+            for (const part of turn.parts) {
+                if (part.functionResponse) {
+                    const respStr = typeof part.functionResponse.response === 'object'
+                        ? JSON.stringify(part.functionResponse.response)
+                        : String(part.functionResponse.response);
+                    newParts.push({ text: `[Tool Result for '${part.functionResponse.name}': ${respStr}]` });
+                } else {
+                    newParts.push(part);
+                }
+            }
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+        }
+        return turn;
+    });
 }
 
 export class AgentIntegrationService {
@@ -157,16 +250,19 @@ export class AgentIntegrationService {
                 ]
             };
 
-            const formattedContents = request.history.map((h: any, idx: number) => {
-                if (idx === request.history.length - 1 && h.role === 'user') {
-                    const parts = h.parts.map((p: any, pIdx: number) => {
-                        if (pIdx === 0 && p.text) return { text: cleanPrompt };
-                        return p;
-                    });
-                    return { role: h.role, parts };
-                }
-                return h;
-            });
+            let formattedContents = adaptContentsForModelSwitch(
+                request.history.map((h: any, idx: number) => {
+                    if (idx === request.history.length - 1 && h.role === 'user') {
+                        const parts = h.parts.map((p: any, pIdx: number) => {
+                            if (pIdx === 0 && p.text) return { text: cleanPrompt };
+                            return p;
+                        });
+                        return { role: h.role, parts, modelUsed: h.modelUsed || h.modelName };
+                    }
+                    return h;
+                }),
+                activeModel
+            );
 
             let toolLoops = 0;
             let lastUsageMetadata: any = null;
@@ -179,6 +275,7 @@ export class AgentIntegrationService {
 
                 const modelsToTry = [
                     activeModel,
+                    FLASH_3_8_CHAT_MODEL,
                     DEFAULT_CHAT_MODEL,
                     FALLBACK_CHAT_MODEL,
                     PRO_CHAT_MODEL
@@ -191,11 +288,9 @@ export class AgentIntegrationService {
                     const candidateModel = uniqueModels[mIdx];
                     try {
                         const callConfig: any = { ...config };
-                        if (candidateModel.includes('thinking') || candidateModel === 'gemini-3.1-pro-preview') {
-                            callConfig.thinkingConfig = {
-                                thinkingLevel: request.thinkingLevel || 'LOW',
-                                includeThoughts: true
-                            };
+                        const thinkingConfig = getThinkingConfigForModel(candidateModel, typeof request.thinkingLevel === 'string' ? request.thinkingLevel : undefined);
+                        if (thinkingConfig) {
+                            callConfig.thinkingConfig = thinkingConfig;
                         } else {
                             delete callConfig.thinkingConfig;
                         }
@@ -218,9 +313,46 @@ export class AgentIntegrationService {
                     } catch (streamErr: any) {
                         lastStreamError = streamErr;
                         const errText = streamErr?.message || String(streamErr);
+                        const errLower = errText.toLowerCase();
+                        const isThoughtSigError =
+                            errLower.includes('thought_signature') ||
+                            errLower.includes('thoughtsignature') ||
+                            errLower.includes('thought signature') ||
+                            errLower.includes('missing thought') ||
+                            errLower.includes('invalid thought') ||
+                            errLower.includes('thought_context');
+
+                        // If user switched models and hits a thought signature mismatch from earlier turns,
+                        // adapt previous tool turns into narrative context transcripts and retry immediately
+                        // on the exact same model selected by the user!
+                        if (isThoughtSigError) {
+                            console.warn(`[AgentRuntime] Detected thought_signature mismatch on model '${candidateModel}'. Converting history tool turns into context transcripts and retrying '${candidateModel}'...`);
+                            formattedContents = sanitizeAllToolTurnsToText(formattedContents);
+                            try {
+                                const callConfig: any = { ...config };
+                                const retryThinkingConfig = getThinkingConfigForModel(candidateModel, typeof request.thinkingLevel === 'string' ? request.thinkingLevel : undefined);
+                                if (retryThinkingConfig) {
+                                    callConfig.thinkingConfig = retryThinkingConfig;
+                                } else {
+                                    delete callConfig.thinkingConfig;
+                                }
+
+                                responseStream = await aiInstance.models.generateContentStream({
+                                    model: candidateModel,
+                                    contents: formattedContents,
+                                    config: callConfig
+                                });
+                                activeModel = candidateModel;
+                                break;
+                            } catch (retryErr: any) {
+                                console.warn(`[AgentRuntime] Retry with sanitized transcripts on '${candidateModel}' also failed:`, retryErr?.message || retryErr);
+                            }
+                        }
+
                         const isRecoverable = errText.includes('404') || errText.includes('503') || errText.includes('429') || 
                                               errText.includes('Not Found') || errText.includes('UNAVAILABLE') || 
-                                              errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded');
+                                              errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded') ||
+                                              isThoughtSigError;
                         const nextModel = uniqueModels[mIdx + 1];
                         const failureReason = errText.includes('404') || errText.includes('Not Found')
                             ? '404 Not Found'
@@ -228,6 +360,8 @@ export class AgentIntegrationService {
                             ? '503 High Demand'
                             : errText.includes('429') || errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded')
                             ? '429 Quota Exceeded'
+                            : isThoughtSigError
+                            ? 'Thought Signature Mismatch'
                             : 'Service Error';
 
                         if (isRecoverable && nextModel) {
@@ -245,17 +379,71 @@ export class AgentIntegrationService {
                 }
 
                 let loopNeedsToolExecution = false;
-                let currentFunctionCalls: any[] = [];
+                const currentFunctionCalls: Array<{ name: string; args?: Record<string, unknown> }> = [];
+                const currentFunctionCallParts: Array<{
+                    functionCall: { name: string; args?: Record<string, unknown> };
+                    thoughtSignature?: string;
+                    thought_signature?: string;
+                }> = [];
                 let currentModelText = '';
+                let currentThoughtText = '';
+                let latestThoughtSignature: string | undefined = undefined;
 
                 for await (const chunk of responseStream) {
                     if (chunk.usageMetadata) {
                         lastUsageMetadata = chunk.usageMetadata;
                     }
+
+                    const candidate = chunk.candidates?.[0];
+                    const rawParts = (candidate?.content?.parts as Array<Record<string, unknown>> | undefined) || [];
+
+                    for (const part of rawParts) {
+                        const sig = (part.thoughtSignature as string | undefined) ||
+                                    (part.thought_signature as string | undefined) ||
+                                    ((part.functionCall as Record<string, unknown> | undefined)?.thoughtSignature as string | undefined) ||
+                                    ((part.functionCall as Record<string, unknown> | undefined)?.thought_signature as string | undefined);
+                        if (sig) {
+                            latestThoughtSignature = sig;
+                        }
+
+                        if (part.thought === true && typeof part.text === 'string') {
+                            currentThoughtText += part.text;
+                            sendEvent('thinking', part.text);
+                        }
+
+                        if (part.functionCall && typeof (part.functionCall as { name?: string }).name === 'string') {
+                            loopNeedsToolExecution = true;
+                            const fc = part.functionCall as { name: string; args?: Record<string, unknown> };
+                            currentFunctionCalls.push(fc);
+
+                            const partSig = sig || latestThoughtSignature;
+                            const preservedPart = {
+                                functionCall: fc,
+                                ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
+                            };
+                            currentFunctionCallParts.push(preservedPart);
+                        }
+                    }
+
+                    // Fallback to chunk.functionCalls helper getter if parts array didn't capture it
                     if (chunk.functionCalls && chunk.functionCalls.length > 0) {
                         loopNeedsToolExecution = true;
-                        currentFunctionCalls = chunk.functionCalls;
-                        break;
+                        for (const fc of chunk.functionCalls as Array<{ name: string; args?: Record<string, unknown> }>) {
+                            const alreadyCaptured = currentFunctionCalls.some(
+                                existing => existing.name === fc.name && JSON.stringify(existing.args) === JSON.stringify(fc.args)
+                            );
+                            if (!alreadyCaptured) {
+                                currentFunctionCalls.push(fc);
+                                const sig = ((fc as Record<string, unknown>).thoughtSignature as string | undefined) ||
+                                            ((fc as Record<string, unknown>).thought_signature as string | undefined) ||
+                                            latestThoughtSignature;
+                                const preservedPart = {
+                                    functionCall: fc,
+                                    ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+                                };
+                                currentFunctionCallParts.push(preservedPart);
+                            }
+                        }
                     }
 
                     if (chunk.text) {
@@ -298,13 +486,28 @@ export class AgentIntegrationService {
                         }
                     }
 
-                    // Ensure single model turn combining text and function calls
-                    const modelTurnParts: any[] = [];
+                    // Ensure single model turn combining thoughts, text and function calls with thought signatures intact
+                    const modelTurnParts: Array<Record<string, unknown>> = [];
+                    if (currentThoughtText) {
+                        modelTurnParts.push({
+                            thought: true,
+                            text: currentThoughtText,
+                            ...(latestThoughtSignature ? { thoughtSignature: latestThoughtSignature, thought_signature: latestThoughtSignature } : {})
+                        });
+                    }
                     if (currentModelText) {
                         modelTurnParts.push({ text: currentModelText });
                     }
-                    for (const fc of currentFunctionCalls) {
-                        modelTurnParts.push({ functionCall: fc });
+                    for (const fcp of currentFunctionCallParts) {
+                        const sig = fcp.thoughtSignature || fcp.thought_signature || latestThoughtSignature;
+                        const partObj: Record<string, unknown> = {
+                            functionCall: fcp.functionCall
+                        };
+                        if (sig) {
+                            partObj.thoughtSignature = sig;
+                            partObj.thought_signature = sig;
+                        }
+                        modelTurnParts.push(partObj);
                     }
 
                     formattedContents.push({

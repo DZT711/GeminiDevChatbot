@@ -12,7 +12,7 @@ export default function AuthCallback() {
     const error = params.get('error')
 
     if (error || !token) {
-      navigate('/login?error=' + (error || 'unknown'), { replace: true })
+      navigate('/login?error=' + encodeURIComponent(error || 'default'), { replace: true })
       return
     }
 

@@ -8,14 +8,19 @@ import {
   Plus,
   Server,
   Layers,
-  CheckCircle2,
-  AlertCircle
+  Maximize2,
+  Minimize2,
+  ChevronUp,
+  ChevronDown,
+  RotateCcw,
+  GripHorizontal
 } from 'lucide-react';
 import { FileExplorer } from './workspace/FileExplorer.js';
 import { CodeEditor } from './workspace/CodeEditor.js';
 import { AgentTimeline } from './workspace/AgentTimeline.js';
 import { WorkspaceTerminal } from './workspace/WorkspaceTerminal.js';
 import { AuditLogViewer } from './workspace/AuditLogViewer.js';
+import { WorkspaceConnectingScreen } from './workspace/WorkspaceConnectingScreen.js';
 import { workspaceService } from '../services/workspaceService.js';
 import type { 
   WorkspaceSummary, 
@@ -26,6 +31,7 @@ import type {
   CommandExecutionResult
 } from '../services/workspaceService.js';
 import type { GoalPlanningResult } from '../../server/services/agentIntegration/planning/GoalPlanningTypes.js';
+import { diagnoseAgentError } from '../utils/agentErrorDiagnostics.js';
 
 interface WorkspaceTabProps {
   theme?: 'light' | 'dark';
@@ -47,12 +53,89 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   const [planningResult, setPlanningResult] = useState<GoalPlanningResult | null>(currentPlanResult);
   const [executionEvents, setExecutionEvents] = useState<PlanExecutionProgressEvent[]>([]);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
+  const [isRunningCode, setIsRunningCode] = useState<boolean>(false);
+  const [terminalExternalCmd, setTerminalExternalCmd] = useState<string | null>(null);
   const [auditLogs, setAuditLogs] = useState<FileProvenanceRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [errorNotification, setErrorNotification] = useState<string | null>(null);
-  const [successNotification, setSuccessNotification] = useState<string | null>(null);
+  const [isInitialConnecting, setIsInitialConnecting] = useState<boolean>(true);
+
+  // Dynamic Terminal / Bottom Panel Height & Resizing
+  const [bottomHeight, setBottomHeight] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('devgenie_workspace_bottom_height');
+      if (saved) {
+        const val = Number(saved);
+        if (!isNaN(val) && val >= 120 && val <= 900) return val;
+      }
+    } catch {}
+    return 280;
+  });
+  const [isDraggingBottom, setIsDraggingBottom] = useState<boolean>(false);
+  const [isBottomCollapsed, setIsBottomCollapsed] = useState<boolean>(false);
+  const [isBottomMaximized, setIsBottomMaximized] = useState<boolean>(false);
+  const preMaximizeHeightRef = useRef<number>(280);
 
   const eventSourceUnsub = useRef<(() => void) | null>(null);
+
+  const handleSplitterMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDraggingBottom(true);
+    if (isBottomCollapsed) {
+      setIsBottomCollapsed(false);
+    }
+    const startY = e.clientY;
+    const startHeight = bottomHeight;
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      // Moving up increases bottom panel height
+      const deltaY = startY - moveEvent.clientY;
+      const newHeight = Math.max(120, Math.min(window.innerHeight - 180, startHeight + deltaY));
+      setBottomHeight(newHeight);
+      setIsBottomMaximized(false);
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+      setIsDraggingBottom(false);
+      setBottomHeight((current) => {
+        try {
+          localStorage.setItem('devgenie_workspace_bottom_height', String(current));
+        } catch {}
+        return current;
+      });
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  };
+
+  const handleToggleMaximizeBottom = () => {
+    if (isBottomMaximized) {
+      setIsBottomMaximized(false);
+      setBottomHeight(preMaximizeHeightRef.current || 280);
+    } else {
+      preMaximizeHeightRef.current = bottomHeight;
+      setIsBottomMaximized(true);
+      setIsBottomCollapsed(false);
+      const target = Math.max(480, Math.min(window.innerHeight - 180, Math.floor(window.innerHeight * 0.65)));
+      setBottomHeight(target);
+    }
+  };
+
+  const handleToggleCollapseBottom = () => {
+    setIsBottomCollapsed((prev) => !prev);
+    setIsBottomMaximized(false);
+  };
+
+  const handleResetBottomHeight = () => {
+    setIsBottomCollapsed(false);
+    setIsBottomMaximized(false);
+    setBottomHeight(280);
+    try {
+      localStorage.setItem('devgenie_workspace_bottom_height', '280');
+    } catch {}
+  };
 
   // Sync incoming planning result prop
   useEffect(() => {
@@ -63,13 +146,16 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   }, [currentPlanResult]);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
-    if (type === 'success') {
-      setSuccessNotification(message);
-      setTimeout(() => setSuccessNotification(null), 3000);
-    } else {
-      setErrorNotification(message);
-      setTimeout(() => setErrorNotification(null), 5000);
-    }
+    window.dispatchEvent(
+      new CustomEvent('app:notify', {
+        detail: {
+          message,
+          type,
+          title: type === 'success' ? 'WORKSPACE' : 'WORKSPACE ERROR',
+          duration: type === 'success' ? 3500 : 5000,
+        },
+      })
+    );
   };
 
   const loadWorkspaceData = useCallback(async () => {
@@ -103,6 +189,9 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       showNotification('error', err.message || 'Failed to load workspace');
     } finally {
       setIsLoading(false);
+      setTimeout(() => {
+        setIsInitialConnecting(false);
+      }, 1200);
     }
   }, []);
 
@@ -259,21 +348,67 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     }
   };
 
-  const handleRunCommand = async (command: string): Promise<CommandExecutionResult> => {
+  const handleRunCommand = async (
+    command: string,
+    options?: {
+      input?: string;
+      sessionId?: string;
+      signal?: AbortSignal;
+      onStdout?: (chunk: string) => void;
+      onStderr?: (chunk: string) => void;
+    }
+  ): Promise<CommandExecutionResult> => {
     try {
-      const res = await workspaceService.runCommand(command, { workspaceId: workspace?.id });
+      let res: CommandExecutionResult;
+      if (options?.onStdout || options?.onStderr || options?.sessionId) {
+        try {
+          res = await workspaceService.runCommandStream(command, {
+            workspaceId: workspace?.id,
+            input: options?.input,
+            sessionId: options?.sessionId,
+            signal: options?.signal,
+            onStdout: options?.onStdout,
+            onStderr: options?.onStderr
+          });
+        } catch (streamErr: any) {
+          if (options?.signal?.aborted) throw streamErr;
+          // Graceful fallback to regular runCommand
+          res = await workspaceService.runCommand(command, {
+            workspaceId: workspace?.id,
+            input: options?.input,
+            sessionId: options?.sessionId,
+            signal: options?.signal
+          });
+        }
+      } else {
+        res = await workspaceService.runCommand(command, {
+          workspaceId: workspace?.id,
+          input: options?.input,
+          sessionId: options?.sessionId,
+          signal: options?.signal
+        });
+      }
       // Refresh files in case command created or modified files
       const filesData = await workspaceService.listFiles(workspace?.id);
       setEntries(filesData.entries);
+      if (res.workingDirectory && workspace && res.workingDirectory !== workspace.workingDirectory) {
+        setWorkspace((prev) => (prev ? { ...prev, workingDirectory: res.workingDirectory! } : prev));
+      }
       return res;
     } catch (err: any) {
-      showNotification('error', `Command failed: ${err.message}`);
+      if (err?.name !== 'AbortError') {
+        showNotification('error', `Command failed: ${err.message}`);
+      }
       throw err;
     }
   };
 
   const handleRunFile = async (file: WorkspaceFileMeta) => {
-    if (!file || !file.path) return;
+    if (!file || !file.path || isExecuting || isRunningCode) return;
+    setIsRunningCode(true);
+    if (isBottomCollapsed) {
+      setIsBottomCollapsed(false);
+    }
     const pathLower = file.path.toLowerCase();
     let cmd = `python3 "${file.path}"`;
     if (pathLower.endsWith('.js') || pathLower.endsWith('.mjs')) {
@@ -284,15 +419,17 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
       cmd = `bash "${file.path}"`;
     }
     setBottomTab('terminal');
-    try {
-      await handleRunCommand(cmd);
-    } catch {
-      // Command failure already notified
-    }
+    setTerminalExternalCmd(cmd);
+    setTimeout(() => {
+      setIsRunningCode(false);
+    }, 300);
   };
 
   const handleExecutePlan = async (planToExecute: GoalPlanningResult) => {
-    if (!planToExecute || !planToExecute.plan) return;
+    if (!planToExecute || !planToExecute.plan || isExecuting) return;
+    if (isBottomCollapsed) {
+      setIsBottomCollapsed(false);
+    }
     setIsExecuting(true);
     setExecutionEvents([]);
     setBottomTab('timeline');
@@ -308,7 +445,20 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
       const result = await workspaceService.executePlan(planToExecute, approval, workspace?.id);
 
-      showNotification('success', 'Plan execution completed successfully!');
+      const isSuccess = Boolean(result.success && result.summary?.success);
+      if (isSuccess) {
+        showNotification('success', 'Plan execution completed successfully!');
+        window.dispatchEvent(new CustomEvent('agent:execution-result', {
+          detail: { success: true, planResult: planToExecute, summary: result.summary }
+        }));
+      } else {
+        const errorReason = result.summary?.error || 'Execution halted with incomplete tasks';
+        const diag = (result.diagnosis ? diagnoseAgentError(result) : null) || diagnoseAgentError(errorReason);
+        showNotification('error', `[${diag.badge}] ${diag.title}: ${diag.description}`);
+        window.dispatchEvent(new CustomEvent('agent:execution-result', {
+          detail: { success: false, planResult: planToExecute, summary: result.summary, diagnosis: diag }
+        }));
+      }
       
       // Refresh files and audit logs
       const filesData = await workspaceService.listFiles(workspace?.id);
@@ -337,8 +487,12 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
           }
         }
       }
-    } catch (err: any) {
-      showNotification('error', `Plan execution error: ${err.message}`);
+    } catch (err: unknown) {
+      const diag = diagnoseAgentError(err);
+      showNotification('error', `[${diag.badge}] ${diag.title}: ${diag.description}`);
+      window.dispatchEvent(new CustomEvent('agent:execution-result', {
+        detail: { success: false, planResult: planToExecute, diagnosis: diag }
+      }));
     } finally {
       setIsExecuting(false);
     }
@@ -355,6 +509,16 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   };
 
   const isDark = theme === 'dark';
+
+  if (isInitialConnecting) {
+    return (
+      <WorkspaceConnectingScreen
+        theme={theme}
+        isLoaded={!isLoading}
+        onSkip={() => setIsInitialConnecting(false)}
+      />
+    );
+  }
 
   return (
     <div className={`h-full flex flex-col ${isDark ? 'bg-zinc-950 text-zinc-100' : 'bg-slate-100 text-slate-900'}`}>
@@ -409,20 +573,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         </div>
       </div>
 
-      {/* Notifications Toast */}
-      {successNotification && (
-        <div className="absolute top-14 right-6 z-50 flex items-center gap-2 p-3 text-xs bg-emerald-950 border border-emerald-700 text-emerald-200 rounded-lg shadow-lg animate-in fade-in">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>{successNotification}</span>
-        </div>
-      )}
-      {errorNotification && (
-        <div className="absolute top-14 right-6 z-50 flex items-center gap-2 p-3 text-xs bg-rose-950 border border-rose-700 text-rose-200 rounded-lg shadow-lg animate-in fade-in">
-          <AlertCircle className="w-4 h-4 text-rose-400" />
-          <span>{errorNotification}</span>
-        </div>
-      )}
-
       {/* Main Multi-Pane Layout */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
         {/* Left: File Explorer (240px wide) */}
@@ -445,7 +595,7 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         {/* Right Area: Code Editor (Top) + Bottom Pane (Timeline / Terminal / Audit) */}
         <div className="flex-1 flex flex-col overflow-hidden min-w-0">
           {/* Top Half: Code Editor */}
-          <div className="flex-1 overflow-hidden min-h-[300px]">
+          <div className="flex-1 overflow-hidden min-h-[160px]">
             <CodeEditor
               activeFile={activeFile}
               openFiles={openFiles}
@@ -453,19 +603,51 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
               onCloseFile={handleCloseFile}
               onSaveFile={handleSaveFile}
               onRunCode={handleRunFile}
+              isAgentCoding={isExecuting}
+              isRunningCode={isRunningCode}
               theme={theme}
             />
           </div>
 
-          {/* Bottom Half: Tabs for Timeline, Terminal, Audit Log (Height ~260px) */}
-          <div className={`h-64 border-t flex flex-col shrink-0 ${isDark ? 'border-zinc-800 bg-zinc-950' : 'border-slate-200 bg-white'}`}>
-            {/* Bottom Tabs Switcher */}
-            <div className={`flex items-center justify-between border-b px-2 ${isDark ? 'border-zinc-800 bg-zinc-900/60' : 'border-slate-200 bg-slate-100'}`}>
-              <div className="flex items-center">
+          {/* Draggable Splitter Handle between Code Editor and Bottom Panel */}
+          <div
+            onMouseDown={handleSplitterMouseDown}
+            onDoubleClick={handleToggleMaximizeBottom}
+            title="Drag up or down to resize bottom panel. Double-click to toggle maximize."
+            className={`h-2.5 flex items-center justify-center cursor-row-resize select-none transition-colors group relative shrink-0 ${
+              isDraggingBottom
+                ? 'bg-indigo-600/40'
+                : isDark
+                ? 'bg-zinc-900 hover:bg-indigo-500/25 border-t border-b border-zinc-800'
+                : 'bg-slate-200 hover:bg-indigo-500/25 border-t border-b border-slate-300'
+            }`}
+          >
+            <div
+              className={`w-12 h-1 rounded-full transition-colors flex items-center justify-center ${
+                isDraggingBottom
+                  ? 'bg-indigo-400'
+                  : 'bg-zinc-600 group-hover:bg-indigo-400'
+              }`}
+            />
+          </div>
+
+          {/* Bottom Half: Tabs for Timeline, Terminal, Audit Log (Draggable Height) */}
+          <div
+            style={{ height: isBottomCollapsed ? 36 : bottomHeight }}
+            className={`border-t flex flex-col shrink-0 overflow-hidden ${
+              isDark ? 'border-zinc-800 bg-zinc-950' : 'border-slate-200 bg-white'
+            }`}
+          >
+            {/* Bottom Tabs Switcher Header */}
+            <div className={`flex items-center justify-between border-b px-2 h-9 shrink-0 ${isDark ? 'border-zinc-800 bg-zinc-900/60' : 'border-slate-200 bg-slate-100'}`}>
+              <div className="flex items-center h-full">
                 <button
                   type="button"
-                  onClick={() => setBottomTab('timeline')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+                  onClick={() => {
+                    setBottomTab('timeline');
+                    if (isBottomCollapsed) setIsBottomCollapsed(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 h-full text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
                     bottomTab === 'timeline'
                       ? 'border-purple-500 text-purple-400 bg-zinc-950/60'
                       : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -478,8 +660,11 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setBottomTab('terminal')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+                  onClick={() => {
+                    setBottomTab('terminal');
+                    if (isBottomCollapsed) setIsBottomCollapsed(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 h-full text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
                     bottomTab === 'terminal'
                       ? 'border-indigo-500 text-indigo-400 bg-zinc-950/60'
                       : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -491,8 +676,11 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setBottomTab('audit')}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+                  onClick={() => {
+                    setBottomTab('audit');
+                    if (isBottomCollapsed) setIsBottomCollapsed(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 h-full text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
                     bottomTab === 'audit'
                       ? 'border-sky-500 text-sky-400 bg-zinc-950/60'
                       : 'border-transparent text-zinc-400 hover:text-zinc-200'
@@ -507,38 +695,90 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
                   )}
                 </button>
               </div>
+
+              {/* Right: Height Controls & Preset Buttons */}
+              <div className="flex items-center gap-1">
+                <span
+                  onDoubleClick={handleToggleMaximizeBottom}
+                  title="Drag bar to resize or double-click to toggle maximize"
+                  className="hidden sm:inline-block text-[10px] font-mono text-zinc-400 hover:text-zinc-200 px-1.5 py-0.5 rounded bg-zinc-800/80 cursor-pointer select-none"
+                >
+                  {isBottomCollapsed ? 'Collapsed' : `${bottomHeight}px`}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={handleResetBottomHeight}
+                  title="Reset height to default (280px)"
+                  className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleMaximizeBottom}
+                  title={isBottomMaximized ? 'Restore normal height' : 'Expand / Maximize panel'}
+                  className={`p-1 rounded transition-colors ${
+                    isBottomMaximized
+                      ? 'bg-indigo-600/30 text-indigo-300'
+                      : 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  {isBottomMaximized ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleCollapseBottom}
+                  title={isBottomCollapsed ? 'Expand panel' : 'Collapse panel to header'}
+                  className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition-colors"
+                >
+                  {isBottomCollapsed ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                </button>
+              </div>
             </div>
 
             {/* Bottom Tab Content */}
-            <div className="flex-1 overflow-hidden">
-              {bottomTab === 'timeline' && (
-                <AgentTimeline
-                  planningResult={planningResult}
-                  activeExecutionId={workspace?.activeExecutionId}
-                  isExecuting={isExecuting}
-                  events={executionEvents}
-                  onExecutePlan={handleExecutePlan}
-                  onStopExecution={handleStopExecution}
-                  theme={theme}
-                />
-              )}
+            {!isBottomCollapsed && (
+              <div className="flex-1 overflow-hidden">
+                {bottomTab === 'timeline' && (
+                  <AgentTimeline
+                    planningResult={planningResult}
+                    activeExecutionId={workspace?.activeExecutionId}
+                    isExecuting={isExecuting}
+                    events={executionEvents}
+                    onExecutePlan={handleExecutePlan}
+                    onStopExecution={handleStopExecution}
+                    theme={theme}
+                  />
+                )}
 
-              {bottomTab === 'terminal' && (
-                <WorkspaceTerminal
-                  workingDirectory={workspace?.workingDirectory || '/workspace'}
-                  onRunCommand={handleRunCommand}
-                  theme={theme}
-                />
-              )}
+                {bottomTab === 'terminal' && (
+                  <WorkspaceTerminal
+                    workingDirectory={workspace?.workingDirectory || '/workspace'}
+                    onRunCommand={handleRunCommand}
+                    onSendCommandInput={(sessionId, input) => workspaceService.sendCommandInput(sessionId, input)}
+                    onAbortCommand={(sessionId) => workspaceService.abortCommand(sessionId)}
+                    files={entries}
+                    theme={theme}
+                    isAgentCoding={isExecuting}
+                    onToggleMaximize={handleToggleMaximizeBottom}
+                    isMaximized={isBottomMaximized}
+                    externalCommand={terminalExternalCmd}
+                    onClearExternalCommand={() => setTerminalExternalCmd(null)}
+                  />
+                )}
 
-              {bottomTab === 'audit' && (
-                <AuditLogViewer
-                  logs={auditLogs}
-                  onSelectFileDiff={(filePath) => handleSelectFile(filePath)}
-                  theme={theme}
-                />
-              )}
-            </div>
+                {bottomTab === 'audit' && (
+                  <AuditLogViewer
+                    logs={auditLogs}
+                    onSelectFileDiff={(filePath) => handleSelectFile(filePath)}
+                    theme={theme}
+                  />
+                )}
+              </div>
+            )}
           </div>
         </div>
       </div>

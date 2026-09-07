@@ -1,8 +1,8 @@
 import { apiClient } from '../services/apiClient.js';
 import { storageService } from '../services/storageService.js';
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, RefreshCw, X } from 'lucide-react'
 
 /* ── Provider icons ─────────────────────────────────────── */
 const GitHubIcon = () => (
@@ -29,22 +29,62 @@ const ERROR_MESSAGES: Record<string, string> = {
 }
 
 export default function Login() {
-  const [loading, setLoading] = useState<string | null>(null)   // 'github' | 'google' | 'login' | 'register' | null
+  const [loading, setLoading] = useState<string | null>(null)   // 'github' | 'google' | 'login' | 'register' | 'guest' | null
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [appError, setAppError] = useState<string | null>(null)
   
+  const popupRef = useRef<Window | null>(null)
+  const popupIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastProviderRef = useRef<string | null>(null)
+
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
   const errorKey  = params.get('error')
-  const errorMsg  = appError || (errorKey ? (ERROR_MESSAGES[errorKey] ?? ERROR_MESSAGES.default) : null)
+  const errorMsg  = appError || (errorKey ? (ERROR_MESSAGES[errorKey] ?? decodeURIComponent(errorKey)) : null)
+
+  const cleanupOAuthTracking = (): void => {
+    if (popupIntervalRef.current) {
+      clearInterval(popupIntervalRef.current)
+      popupIntervalRef.current = null
+    }
+    if (timeoutRef.current) {
+      clearTimeout(timeoutRef.current)
+      timeoutRef.current = null
+    }
+  }
+
+  const clearErrors = (): void => {
+    setAppError(null)
+    if (errorKey) {
+      navigate('/login', { replace: true })
+    }
+  }
+
+  const handleCancelOAuth = (): void => {
+    cleanupOAuthTracking()
+    if (popupRef.current && !popupRef.current.closed) {
+      try {
+        popupRef.current.close()
+      } catch {
+        // Ignore cross-origin close restriction
+      }
+    }
+    popupRef.current = null
+    setLoading(null)
+  }
 
   useEffect(() => {
     document.title = "Sign in to DevEngine";
   }, []);
 
-  const handleOAuth = async (provider: string) => {
+  const handleOAuth = async (provider: string): Promise<void> => {
+    clearErrors()
+    cleanupOAuthTracking()
     setLoading(provider)
+    lastProviderRef.current = provider
+
     try {
       const res = await fetch(`/api/auth/${provider}/url`)
       const data = await res.json()
@@ -57,34 +97,83 @@ export default function Login() {
       )
       
       if (!authWindow) {
-        setAppError('Please allow popups for this site to connect your account.')
+        setAppError('Please allow popups for this site to connect your account, then try again.')
         setLoading(null)
+        return
       }
-    } catch(e: any) {
-      setAppError(e.message)
+
+      popupRef.current = authWindow
+
+      // Poll periodically to detect if user closes popup window
+      popupIntervalRef.current = setInterval(() => {
+        try {
+          if (!popupRef.current || popupRef.current.closed) {
+            cleanupOAuthTracking()
+            popupRef.current = null
+            setLoading(current => {
+              if (current === provider) {
+                return null
+              }
+              return current
+            })
+          }
+        } catch {
+          // Ignore cross-origin access exceptions
+        }
+      }, 500)
+
+      // Timeout safeguard to prevent UI hanging forever
+      timeoutRef.current = setTimeout(() => {
+        cleanupOAuthTracking()
+        setLoading(current => {
+          if (current === provider) {
+            setAppError('Authentication took too long or was interrupted. You can retry now.')
+            return null
+          }
+          return current
+        })
+      }, 90000)
+    } catch(e: unknown) {
+      cleanupOAuthTracking()
+      const msg = e instanceof Error ? e.message : 'Authentication failed'
+      setAppError(msg)
       setLoading(null)
     }
   }
 
   useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
+    const handleMessage = (event: MessageEvent): void => {
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+        cleanupOAuthTracking()
+        if (popupRef.current && !popupRef.current.closed) {
+          try { popupRef.current.close() } catch {}
+        }
+        popupRef.current = null
         const token = event.data.token
         storageService.removeItem('session')
         storageService.setItem('session', token)
         navigate('/app')
       } else if (event.data?.type === 'OAUTH_AUTH_ERROR') {
-        setAppError(decodeURIComponent(event.data.error || 'OAuth error'))
+        cleanupOAuthTracking()
+        if (popupRef.current && !popupRef.current.closed) {
+          try { popupRef.current.close() } catch {}
+        }
+        popupRef.current = null
+        const rawErr = event.data.error || 'OAuth authentication failed'
+        setAppError(decodeURIComponent(rawErr))
         setLoading(null)
       }
     }
     window.addEventListener('message', handleMessage)
-    return () => window.removeEventListener('message', handleMessage)
-  }, [])
+    return () => {
+      window.removeEventListener('message', handleMessage)
+      cleanupOAuthTracking()
+    }
+  }, [navigate])
 
-  const handleLogin = async () => {
+  const handleLogin = async (): Promise<void> => {
+    clearErrors()
     setLoading('login')
-    setAppError(null)
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -97,15 +186,16 @@ export default function Login() {
       storageService.removeItem('session')
       storageService.setItem('session', data.token)
       navigate('/app')
-    } catch(e: any) {
-      setAppError(e.message)
+    } catch(e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to login'
+      setAppError(msg)
       setLoading(null)
     }
   }
 
-  const handleRegister = async () => {
+  const handleRegister = async (): Promise<void> => {
+    clearErrors()
     setLoading('register')
-    setAppError(null)
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
@@ -118,15 +208,16 @@ export default function Login() {
       storageService.removeItem('session')
       storageService.setItem('session', data.token)
       navigate('/app')
-    } catch(e: any) {
-      setAppError(e.message)
+    } catch(e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to register'
+      setAppError(msg)
       setLoading(null)
     }
   }
 
-  const handleGuest = async () => {
+  const handleGuest = async (): Promise<void> => {
+    clearErrors()
     setLoading('guest')
-    setAppError(null)
     try {
       const res = await fetch('/api/auth/guest', {
         method: 'POST'
@@ -137,8 +228,9 @@ export default function Login() {
       storageService.removeItem('session')
       storageService.setItem('session', data.token)
       navigate('/app')
-    } catch(e: any) {
-      setAppError(e.message)
+    } catch(e: unknown) {
+      const msg = e instanceof Error ? e.message : 'Failed to create guest session'
+      setAppError(msg)
       setLoading(null)
     }
   }
@@ -170,13 +262,47 @@ export default function Login() {
           </p>
         </div>
 
-        {/* ── Error banner ── */}
+        {/* ── Error banner with retry option ── */}
         {errorMsg && (
-          <div className="mb-5 flex items-start gap-3 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-3 text-sm text-red-400">
-            <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            {errorMsg}
+          <div className="mb-5 flex flex-col gap-2.5 bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-sm text-red-400">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2.5">
+                <svg className="w-4 h-4 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <div>
+                  <p className="font-medium text-red-300">Sign-in issue</p>
+                  <p className="text-xs text-red-400/90 mt-0.5 leading-relaxed">{errorMsg}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={clearErrors}
+                className="text-red-400 hover:text-red-200 p-1 rounded hover:bg-red-500/20 transition-colors"
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="flex items-center gap-2 pt-2 border-t border-red-500/20">
+              {lastProviderRef.current && (
+                <button
+                  type="button"
+                  onClick={() => handleOAuth(lastProviderRef.current!)}
+                  className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-200 transition-colors"
+                >
+                  <RefreshCw size={12} />
+                  Retry with {lastProviderRef.current === 'google' ? 'Google' : lastProviderRef.current === 'github' ? 'GitHub' : lastProviderRef.current}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearErrors}
+                className="text-xs text-red-400 hover:text-red-200 underline"
+              >
+                Clear
+              </button>
+            </div>
           </div>
         )}
 
@@ -216,6 +342,23 @@ export default function Login() {
               }
               {loading === 'google' ? 'Redirecting to Google…' : 'Continue with Google'}
             </button>
+
+            {/* In-progress helper & cancel button */}
+            {(loading === 'google' || loading === 'github') && (
+              <div className="flex items-center justify-between px-3 py-2 bg-slate-900/80 border border-accent-blue/30 rounded-xl text-xs text-text-secondary animate-fade-in">
+                <span className="flex items-center gap-2 text-text-primary">
+                  <span className="w-2.5 h-2.5 border-2 border-accent-blue border-t-transparent rounded-full animate-spin" />
+                  Window open for {loading === 'google' ? 'Google' : 'GitHub'}…
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCancelOAuth}
+                  className="text-accent-blue hover:text-white font-medium underline transition-colors cursor-pointer"
+                >
+                  Cancel / Retry
+                </button>
+              </div>
+            )}
             
             <button
               onClick={handleGuest}

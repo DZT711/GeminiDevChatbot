@@ -40,14 +40,16 @@ export function ModelSelector({
         <span className="text-zinc-300 font-bold uppercase tracking-tight hidden xs:inline">
           {currentModel === ModelId.HYBRID
             ? "HYBRID AUTO"
-            : [ModelId.PRO, ModelId.FLASH, ModelId.LITE].includes(
+            : [ModelId.PRO, ModelId.FLASH_3_8, ModelId.FLASH, ModelId.LITE].includes(
                   currentModel as any,
                 )
               ? currentModel === ModelId.PRO
                 ? "PRO 3.1"
-                : currentModel === ModelId.LITE
-                  ? "LITE 3.1"
-                  : "FLASH 3.7"
+                : currentModel === ModelId.FLASH_3_8
+                  ? "FLASH 3.8"
+                  : currentModel === ModelId.LITE
+                    ? "LITE 3.1"
+                    : "FLASH 3.7"
               : (currentModel || "")
                   .split("/")
                   .pop()
@@ -107,18 +109,34 @@ export function ModelSelector({
               </div>
 
               <div className="max-h-64 overflow-y-auto custom-scrollbar p-2 space-y-1">
-                {[
-                  ...modelCatalog.filter(
-                    (m: any) =>
-                      modelSearch === "" ||
-                      m.name
-                        .toLowerCase()
-                        .includes(modelSearch.toLowerCase()) ||
-                      m.id
-                        .toLowerCase()
-                        .includes(modelSearch.toLowerCase()),
-                  ),
-                ].map((modelInfo: any) => {
+                {modelCatalog.length === 0 ? (
+                  <div className="space-y-1.5 p-1">
+                    {[1, 2, 3, 4].map((i) => (
+                      <div
+                        key={i}
+                        className="px-3 py-2 rounded-xl bg-zinc-900/40 border border-zinc-800/60 flex flex-col gap-1.5 animate-pulse"
+                      >
+                        <div className="h-3 w-28 bg-zinc-800 rounded" />
+                        <div className="h-2 w-16 bg-zinc-850 rounded" />
+                      </div>
+                    ))}
+                    <div className="text-center py-2 text-[9px] font-mono text-zinc-500">
+                      Loading neural models...
+                    </div>
+                  </div>
+                ) : (
+                  [
+                    ...modelCatalog.filter(
+                      (m: any) =>
+                        modelSearch === "" ||
+                        m.name
+                          .toLowerCase()
+                          .includes(modelSearch.toLowerCase()) ||
+                        m.id
+                          .toLowerCase()
+                          .includes(modelSearch.toLowerCase()),
+                    ),
+                  ].map((modelInfo: any) => {
                   const activeKey = apiKeys.find(
                     (k: any) => k.id === activeKeyId,
                   );
@@ -168,7 +186,7 @@ export function ModelSelector({
                       )}
                     </button>
                   );
-                })}
+                }))}
               </div>
             </motion.div>
           </>

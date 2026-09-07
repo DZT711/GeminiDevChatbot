@@ -6,8 +6,10 @@ import {
   WorkspaceDirectoryListing,
   WorkspaceRef,
   CommandResult,
+  RunCommandOptions,
   WorkspacePathError
 } from '../../../agent/workspace/index.js';
+import { activeCommandRegistry } from '../../workspace/activeCommandRegistry.js';
 import { E2BWorkspaceProvider } from '../../workspace/E2BWorkspaceProvider.js';
 import {
   PlanExecutionService,
@@ -432,13 +434,21 @@ export class WorkspaceService {
     userId: string,
     workspaceId: string | undefined,
     command: string,
-    options: { cwd?: string; timeoutMs?: number } = {}
+    options: RunCommandOptions = {}
   ): Promise<CommandResult> {
     if (!command || command.trim() === '') {
       throw new Error('Command cannot be empty');
     }
     const workspace = await this.resolveUserWorkspace(userId, workspaceId);
     return workspace.runCommand(command, options);
+  }
+
+  public sendInputToCommand(sessionId: string, input: string): boolean {
+    return activeCommandRegistry.sendInput(sessionId, input);
+  }
+
+  public abortCommand(sessionId: string): boolean {
+    return activeCommandRegistry.abort(sessionId);
   }
 
   public async executePlan(

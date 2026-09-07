@@ -284,12 +284,61 @@ export function PlanningPlaygroundView(props: { theme?: string }) {
     };
   }, [selectedFixtureId]);
 
-  const handleCopyJson = () => {
-    if (!fullSimulationState) return;
-    const json = PlanningPlaygroundSerializer.exportSimulationJson(fullSimulationState);
-    navigator.clipboard.writeText(json);
+  const handleCopyJson = async () => {
+    let stateToExport = fullSimulationState;
+    if (!stateToExport) {
+      try {
+        stateToExport = await simulator.runSimulation(selectedFixtureId);
+        setFullSimulationState(stateToExport);
+      } catch (err) {
+        console.error('Failed to generate simulation state for export:', err);
+      }
+    }
+    if (!stateToExport) return;
+
+    const json = PlanningPlaygroundSerializer.exportSimulationJson(stateToExport);
+
+    // 1. Trigger JSON file download
+    try {
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `planning-simulation-${selectedFixtureId || 'state'}-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (downloadErr) {
+      console.warn('File download failed, attempting clipboard fallback:', downloadErr);
+    }
+
+    // 2. Copy to clipboard with iframe-safe fallback
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(json);
+      } else {
+        throw new Error('Clipboard API unavailable');
+      }
+    } catch {
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = json;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        textarea.style.left = '-9999px';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+      } catch (fallbackErr) {
+        console.warn('Clipboard fallback copy failed:', fallbackErr);
+      }
+    }
+
     setCopyFeedback(true);
-    setTimeout(() => setCopyFeedback(false), 2000);
+    setTimeout(() => setCopyFeedback(false), 2400);
   };
 
   const visibleTimeline: PlanningSimulationStepLog[] = useMemo(() => {
@@ -433,16 +482,23 @@ export function PlanningPlaygroundView(props: { theme?: string }) {
           <button
             id="playground-export-json-btn"
             onClick={handleCopyJson}
-            disabled={!fullSimulationState}
+            disabled={!fullSimulationState && isRunning}
             className={cn(
-              "px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-2 transition-all shadow-sm cursor-pointer",
-              theme === "light"
-                ? "bg-indigo-50 hover:bg-indigo-100 text-indigo-600 border border-indigo-200"
-                : "bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-400 border border-indigo-500/20"
+              "px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-2 transition-all shadow-sm cursor-pointer select-none active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
+              copyFeedback
+                ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-emerald-500/10"
+                : theme === "light"
+                  ? "bg-indigo-50 hover:bg-indigo-100/90 text-indigo-700 border border-indigo-200/90 hover:border-indigo-300"
+                  : "bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 border border-indigo-500/25 hover:border-indigo-400/40"
             )}
+            title="Export and download simulation state as JSON, and copy to clipboard"
           >
-            {copyFeedback ? <CheckCircle2 size={13} className="text-emerald-400" /> : <Copy size={13} />}
-            <span>{copyFeedback ? "Copied JSON!" : "Export State JSON"}</span>
+            {copyFeedback ? (
+              <CheckCircle2 size={13} className="text-emerald-400 shrink-0" />
+            ) : (
+              <Download size={13} className="shrink-0 text-indigo-400" />
+            )}
+            <span>{copyFeedback ? "Exported & Copied!" : "Export State JSON"}</span>
           </button>
         </div>
       </header>

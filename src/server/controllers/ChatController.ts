@@ -7,12 +7,12 @@ import path from 'path';
 import { db } from '../db/index.js';
 import { users, accounts, userPreferences, apiKeys, customSkills, sessions, messages, modelInformation } from '../db/schema.js';
 import { encryptKey, decryptKey } from '../lib/encryption.js';
-import { CLASSIFICATION_MODEL, EMBEDDING_MODEL, DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL } from '../agent/agent.config.js';
+import { CLASSIFICATION_MODEL, EMBEDDING_MODEL, DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL, FLASH_3_8_CHAT_MODEL, isThoughtSignatureModel, getThinkingConfigForModel } from '../agent/agent.config.js';
 import { di } from "../di.js";
 import { JWT_SECRET, getBaseUrl, txWithUser, resolveGoogleApiKey, determineRoutingStrategy } from './utils.js';
 import { AgentFeatureFlags } from '../services/agentIntegration/AgentFeatureFlags.js';
 import { AgentAdapter } from '../services/agentIntegration/AgentAdapter.js';
-import { AgentIntegrationService } from '../services/agentIntegration/AgentIntegrationService.js';
+import { AgentIntegrationService, adaptContentsForModelSwitch, sanitizeAllToolTurnsToText } from '../services/agentIntegration/AgentIntegrationService.js';
 import { RetrieverAdapter } from '../services/agentIntegration/retrieval/RetrieverAdapter.js';
 import { ContextIntegrationService } from '../services/agentIntegration/context/ContextIntegrationService.js';
 import { ContextBuilderAdapter } from '../services/agentIntegration/context/ContextBuilderAdapter.js';
@@ -352,17 +352,23 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
         }
     }
 
-    // Convert history parts into the model input parts
-    const formattedContents = history.map((h: any, idx: number) => {
-      if (idx === history.length - 1 && h.role === 'user') {
-        const parts = h.parts.map((p: any, pIdx: number) => {
-          if (pIdx === 0 && p.text) return { text: cleanPrompt };
-          return p;
-        });
-        return { role: h.role, parts };
-      }
-      return h;
-    });
+    const chatModel = model || DEFAULT_CHAT_MODEL;
+    let finalModelUsed = chatModel;
+
+    // Convert history parts into the model input parts and adapt tool calls across model switches
+    let formattedContents = adaptContentsForModelSwitch(
+      history.map((h: any, idx: number) => {
+        if (idx === history.length - 1 && h.role === 'user') {
+          const parts = h.parts.map((p: any, pIdx: number) => {
+            if (pIdx === 0 && p.text) return { text: cleanPrompt };
+            return p;
+          });
+          return { role: h.role, parts, modelUsed: h.modelUsed || h.modelName };
+        }
+        return h;
+      }),
+      chatModel
+    );
 
     const Type = di.llmService.getTypeEnum();
     const aiInstance = di.llmService.getClient(apiKey, customBaseUrl, provider);
@@ -412,8 +418,6 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       ]
     };
 
-    const chatModel = model || DEFAULT_CHAT_MODEL;
-    let finalModelUsed = chatModel;
     let toolLoops = 0;
     let lastUsageMetadata: any = null;
 
@@ -431,9 +435,10 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       while (!streamSuccess && attemptCount < 4) {
         attemptCount++;
         let loopProvider = provider;
+        let finalConfig: any = {};
+        let actualModel = finalModelUsed;
+        let loopAiInstance = aiInstance;
         try {
-          let finalConfig: any = {};
-             
           if (!loopProvider) {
               if (finalModelUsed && finalModelUsed.includes('/') && !finalModelUsed.startsWith('models/')) {
                   loopProvider = 'openrouter';
@@ -449,9 +454,9 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           }
           
           // Re-create aiInstance per loop in case we fell back from OpenRouter to Google
-          const loopAiInstance = di.llmService.getClient(loopApiKey, customBaseUrl, loopProvider);
+          loopAiInstance = di.llmService.getClient(loopApiKey, customBaseUrl, loopProvider);
           
-          let actualModel = finalModelUsed;
+          actualModel = finalModelUsed;
           if ((!loopProvider || loopProvider === 'google') && actualModel.startsWith('google/')) {
              actualModel = actualModel.replace('google/', '');
              actualModel = actualModel.split(':')[0];
@@ -465,11 +470,9 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           if (!isGemma) {
             finalConfig.systemInstruction = finalSystemPrompt;
             finalConfig.tools = [proposeKnowledgeTool];
-            if (actualModel.includes('thinking') || actualModel === 'gemini-3.1-pro-preview') {
-              finalConfig.thinkingConfig = {
-                 thinkingLevel: thinkingLevel || 'LOW',
-                 includeThoughts: true
-              };
+            const thinkingConfig = getThinkingConfigForModel(actualModel, typeof thinkingLevel === 'string' ? thinkingLevel : undefined);
+            if (thinkingConfig) {
+              finalConfig.thinkingConfig = thinkingConfig;
             }
           }
           
@@ -511,6 +514,7 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           lastStreamError = streamError;
           console.error("[CHAT_STREAM_ERROR]", streamError);
           const errorMsg = streamError.message || streamError.toString() || '';
+          const errLower = errorMsg.toLowerCase();
           
           if ((errorMsg.includes('401') || errorMsg.includes('Authentication')) && loopProvider === 'openrouter') {
               throw new Error("OpenRouter API Key is missing or invalid. Please add your OpenRouter key in Settings -> API Keys.");
@@ -527,39 +531,93 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
                                  errorMsg.includes('not supported') ||
                                  errorMsg.includes('not be found');
           const isUnavailable = errorMsg.includes('503') || errorMsg.includes('UNAVAILABLE') || errorMsg.includes('experiencing high demand');
+          const isThoughtSignatureError =
+            errLower.includes('thought_signature') ||
+            errLower.includes('thoughtsignature') ||
+            errLower.includes('thought signature') ||
+            errLower.includes('missing thought') ||
+            errLower.includes('invalid thought') ||
+            errLower.includes('thought_context');
 
-          const needsFallback = isQuotaExceeded || isModelNotFound || isUnavailable;
+          // If thought signature error occurs on the user selected model, sanitize history turns into clean context
+          // and retry immediately on the same model!
+          if (isThoughtSignatureError) {
+            console.warn(`[CHAT] Detected thought_signature mismatch on model '${finalModelUsed}'. Converting history into context transcripts and retrying '${finalModelUsed}'...`);
+            formattedContents = sanitizeAllToolTurnsToText(formattedContents);
+            try {
+              let retryContents = [...formattedContents];
+              if (finalSystemPrompt && loopProvider === 'openrouter') {
+                retryContents = [
+                  { role: 'user', parts: [{ text: "System Instructions:\n" + finalSystemPrompt + "\n\n--- END SYSTEM INSTRUCTIONS ---\n\n" }] },
+                  ...retryContents
+                ];
+              }
+              const retryConfig = { ...finalConfig };
+              const retryThinkingConfig = getThinkingConfigForModel(actualModel, typeof thinkingLevel === 'string' ? thinkingLevel : undefined);
+              if (retryThinkingConfig) {
+                retryConfig.thinkingConfig = retryThinkingConfig;
+              } else {
+                delete retryConfig.thinkingConfig;
+              }
+              const retryStream = await loopAiInstance.models.generateContentStream({
+                model: actualModel,
+                contents: retryContents,
+                config: Object.keys(retryConfig).length > 0 ? retryConfig : undefined
+              });
+              const rIter = retryStream[Symbol.asyncIterator]();
+              const rRes = await rIter.next();
+              let rChunk = null;
+              if (!rRes.done) {
+                rChunk = rRes.value;
+              }
+              async function* wrappedRetryStream() {
+                if (rChunk) yield rChunk;
+                for await (const chunk of rIter) yield chunk;
+              }
+              responseStream = wrappedRetryStream();
+              streamSuccess = true;
+              break;
+            } catch (retryErr: any) {
+              console.warn(`[CHAT] Direct retry on '${finalModelUsed}' after sanitizing history tool turns failed:`, retryErr?.message || retryErr);
+            }
+          }
+
+          const needsFallback = isQuotaExceeded || isModelNotFound || isUnavailable || isThoughtSignatureError;
           const normalizedModel = finalModelUsed.replace('models/', '');
           
           const isOpenRouterUpstreamError = loopProvider === 'openrouter' && (errorMsg.includes('API key not valid') || errorMsg.includes('400') && errorMsg.includes('type.googleapis.com'));
           const reallyNeedsFallback = needsFallback || isOpenRouterUpstreamError;
           
-          let fb1 = loopProvider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gemini-3.7-flash';
+          let fb1 = loopProvider === 'openrouter' ? 'google/gemini-2.5-flash' : 'gemini-3.8-flash';
           let fb2 = loopProvider === 'openrouter' ? 'meta-llama/llama-3.3-70b-instruct' : 'gemini-3.1-flash-lite';
-          let fb3 = loopProvider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : 'gemini-3.1-pro-preview';
-          let fb4 = loopProvider === 'openrouter' ? 'google/gemini-2.0-pro-exp-02-05:free' : 'gemini-3.7-flash';
+          let fb3 = loopProvider === 'openrouter' ? 'google/gemini-2.0-flash-exp:free' : 'gemini-2.5-flash';
+          let fb4 = loopProvider === 'openrouter' ? 'google/gemini-2.0-pro-exp-02-05:free' : 'gemini-3.1-pro-preview';
           
-          const failureReason = isModelNotFound ? '404 Not Found' : isQuotaExceeded ? '429 Quota Exceeded' : isUnavailable ? '503 High Demand' : 'Endpoint Error';
+          const failureReason = isModelNotFound ? '404 Not Found' : isQuotaExceeded ? '429 Quota Exceeded' : isUnavailable ? '503 High Demand' : isThoughtSignatureError ? 'Thought Signature Mismatch' : 'Endpoint Error';
 
           if (reallyNeedsFallback && normalizedModel !== fb1 && normalizedModel !== fb2 && normalizedModel !== fb3 && normalizedModel !== fb4) {
             console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb1}'...`);
             sendEvent('status', { message: `⚠️ Selected model '${finalModelUsed}' hit limits. Cascading to '${fb1}'.` });
             finalModelUsed = fb1;
+            formattedContents = adaptContentsForModelSwitch(formattedContents, finalModelUsed);
             sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb1) {
             console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb2}'...`);
             sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb2}'...` });
             finalModelUsed = fb2;
+            formattedContents = adaptContentsForModelSwitch(formattedContents, finalModelUsed);
             sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb2) {
             console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb3}'...`);
             sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb3}'...` });
             finalModelUsed = fb3;
+            formattedContents = adaptContentsForModelSwitch(formattedContents, finalModelUsed);
             sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else if (reallyNeedsFallback && normalizedModel === fb3) {
             console.warn(`[MODEL FALLBACK] Model '${finalModelUsed}' failed (${failureReason}). Cascading to fallback '${fb4}'...`);
             sendEvent('status', { message: `⚠️ Cascading to alternative fallback model '${fb4}'...` });
             finalModelUsed = fb4;
+            formattedContents = adaptContentsForModelSwitch(formattedContents, finalModelUsed);
             sendEvent('model_switch', { model: finalModelUsed, isFallback: true });
           } else {
             console.error(`[MODEL FALLBACK] No further fallback candidates available for model '${finalModelUsed}'`);
@@ -578,11 +636,39 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
 
       let hasFunctionCalls = false;
       const allFunctionCallsInStream: any[] = [];
+      const allFunctionCallPartsInStream: Array<{
+        functionCall: any;
+        thoughtSignature?: string;
+        thought_signature?: string;
+      }> = [];
       const toolResponses: any[] = [];
+      let latestThoughtSignature: string | undefined = undefined;
 
       for await (const chunk of responseStream) {
         if (chunk.usageMetadata) {
           lastUsageMetadata = chunk.usageMetadata;
+        }
+
+        const candidate = (chunk as any).candidates?.[0];
+        const rawParts = (candidate?.content?.parts as Array<Record<string, unknown>> | undefined) || [];
+
+        for (const part of rawParts) {
+          const sig = (part.thoughtSignature as string | undefined) ||
+                      (part.thought_signature as string | undefined) ||
+                      ((part.functionCall as Record<string, unknown> | undefined)?.thoughtSignature as string | undefined) ||
+                      ((part.functionCall as Record<string, unknown> | undefined)?.thought_signature as string | undefined);
+          if (sig) {
+            latestThoughtSignature = sig;
+          }
+
+          if (part.functionCall && (part.functionCall as any).name) {
+            const fc = part.functionCall as any;
+            const partSig = sig || latestThoughtSignature;
+            allFunctionCallPartsInStream.push({
+              functionCall: fc,
+              ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
+            });
+          }
         }
         
         if (chunk.functionCalls && chunk.functionCalls.length > 0) {
@@ -595,6 +681,16 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
           for (const fc of chunk.functionCalls) {
             allFunctionCallsInStream.push(fc);
             autoSave_allFunctionCalls.push({ name: fc.name });
+            
+            const sig = ((fc as any).thoughtSignature as string | undefined) ||
+                        ((fc as any).thought_signature as string | undefined) ||
+                        latestThoughtSignature;
+            if (!allFunctionCallPartsInStream.some(p => p.functionCall === fc || (p.functionCall.name === fc.name && JSON.stringify(p.functionCall.args) === JSON.stringify(fc.args)))) {
+              allFunctionCallPartsInStream.push({
+                functionCall: fc,
+                ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+              });
+            }
             
             if (AgentFeatureFlags.USE_EXECUTION_PIPELINE) {
               try {
@@ -833,8 +929,30 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
         if (autoSave_aiOutputText.trim()) {
           modelParts.push({ text: autoSave_aiOutputText });
         }
-        for (const fc of allFunctionCallsInStream) {
-          modelParts.push({ functionCall: fc });
+        if (allFunctionCallPartsInStream.length > 0) {
+          for (const fcp of allFunctionCallPartsInStream) {
+            const sig = fcp.thoughtSignature || fcp.thought_signature || latestThoughtSignature;
+            const partObj: Record<string, unknown> = {
+              functionCall: fcp.functionCall
+            };
+            if (sig) {
+              partObj.thoughtSignature = sig;
+              partObj.thought_signature = sig;
+            }
+            modelParts.push(partObj);
+          }
+        } else {
+          for (const fc of allFunctionCallsInStream) {
+            const sig = (fc as any).thoughtSignature || (fc as any).thought_signature || latestThoughtSignature;
+            const partObj: Record<string, unknown> = {
+              functionCall: fc
+            };
+            if (sig) {
+              partObj.thoughtSignature = sig;
+              partObj.thought_signature = sig;
+            }
+            modelParts.push(partObj);
+          }
         }
         formattedContents.push({ role: 'model', parts: modelParts });
         formattedContents.push({ role: 'user', parts: toolResponses });

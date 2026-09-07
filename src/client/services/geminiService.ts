@@ -7,6 +7,7 @@ import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { githubService } from "./githubService";
 import { transparencyLogger, thinkingStore } from '../utils/transparencyLogger';
 import { manageSessionMemory } from './memoryManager';
+import { isGeminiThinkingConfigSupported, isThoughtSignatureModel } from '../../agent/agent.config';
 
 
 
@@ -137,6 +138,93 @@ export interface UsageLimit {
   daily: number; // Max tokens per day
   current: number; // Consumed today
   lastReset: number; // Timestamp
+}
+
+export function adaptHistoryForModelSwitch(contents: any[], targetModel?: string): any[] {
+  if (!Array.isArray(contents)) return contents;
+  const isTargetNonGoogle = targetModel && targetModel.includes('/') && !targetModel.startsWith('google/');
+
+  return contents.map((turn: any) => {
+    if (!turn.parts || !Array.isArray(turn.parts)) return turn;
+    const turnModel = turn.modelUsed || turn.modelName || turn.model;
+    const isModelDifferent = targetModel && turnModel && (turnModel !== targetModel);
+
+    if (turn.role === 'model') {
+      const newParts: any[] = [];
+      for (const part of turn.parts) {
+        if (part.functionCall) {
+          const sig = part.thoughtSignature || part.thought_signature || part.functionCall?.thoughtSignature || part.functionCall?.thought_signature;
+          if (isTargetNonGoogle || isModelDifferent || !sig) {
+            const argsStr = JSON.stringify(part.functionCall.args || {});
+            newParts.push({ text: `[Action: Executed tool '${part.functionCall.name}' with parameters: ${argsStr}]` });
+          } else {
+            newParts.push(part);
+          }
+        } else if (part.thought) {
+          if (isTargetNonGoogle) {
+            continue;
+          }
+          newParts.push(part);
+        } else {
+          newParts.push(part);
+        }
+      }
+      return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+    } else if (turn.role === 'user') {
+      const newParts: any[] = [];
+      for (const part of turn.parts) {
+        if (part.functionResponse) {
+          if (isTargetNonGoogle || isModelDifferent) {
+            const respStr = typeof part.functionResponse.response === 'object'
+              ? JSON.stringify(part.functionResponse.response)
+              : String(part.functionResponse.response);
+            newParts.push({ text: `[Tool Result for '${part.functionResponse.name}': ${respStr}]` });
+          } else {
+            newParts.push(part);
+          }
+        } else {
+          newParts.push(part);
+        }
+      }
+      return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+    }
+    return turn;
+  });
+}
+
+export function sanitizeAllHistoryToolTurns(contents: any[]): any[] {
+  if (!Array.isArray(contents)) return contents;
+  return contents.map((turn: any) => {
+    if (!turn.parts || !Array.isArray(turn.parts)) return turn;
+    if (turn.role === 'model') {
+      const newParts: any[] = [];
+      for (const part of turn.parts) {
+        if (part.functionCall) {
+          const argsStr = JSON.stringify(part.functionCall.args || {});
+          newParts.push({ text: `[Action: Executed tool '${part.functionCall.name}' with parameters: ${argsStr}]` });
+        } else if (part.thought) {
+          continue;
+        } else {
+          newParts.push(part);
+        }
+      }
+      return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+    } else if (turn.role === 'user') {
+      const newParts: any[] = [];
+      for (const part of turn.parts) {
+        if (part.functionResponse) {
+          const respStr = typeof part.functionResponse.response === 'object'
+            ? JSON.stringify(part.functionResponse.response)
+            : String(part.functionResponse.response);
+          newParts.push({ text: `[Tool Result for '${part.functionResponse.name}': ${respStr}]` });
+        } else {
+          newParts.push(part);
+        }
+      }
+      return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+    }
+    return turn;
+  });
 }
 
 class GeminiService {
@@ -305,7 +393,7 @@ class GeminiService {
         const bodyPayload = {
           prompt,
           activeSkillIds,
-          history,
+          history: adaptHistoryForModelSwitch(history, config.model || modelQueueManager.getCurrentModel()),
           model: config.model || modelQueueManager.getCurrentModel(),
           useSearch: config.useSearch,
           thinkingLevel: config.thinkingLevel,
@@ -620,7 +708,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                 ]
               };
 
-              let currentHistory = [...history];
+              let currentHistory = adaptHistoryForModelSwitch(history, model);
               let finalAccumulatedText = "";
               let toolLoops = 0;
               let usageMetadata: any = null;
@@ -631,7 +719,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                   contents: currentHistory,
                   config: {
                     systemInstruction: systemPrompt,
-                    thinkingConfig: (model.includes('thinking') || model === ModelId.PRO) ? { 
+                    thinkingConfig: isGeminiThinkingConfigSupported(model) ? { 
                       thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW,
                       includeThoughts: true 
                     } : undefined,
@@ -641,6 +729,8 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 
                 let chunkText = "";
                 let functionCalls: any[] = [];
+                let functionCallParts: Array<{ functionCall: any; thoughtSignature?: string; thought_signature?: string }> = [];
+                let latestThoughtSignature: string | undefined = undefined;
 
                 for await (const chunk of stream) {
                   if (config.signal?.aborted) throw new Error("Operation aborted");
@@ -648,6 +738,21 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                   // Extract usage metadata if available (usually in the last chunk)
                   if (chunk.usageMetadata) {
                     usageMetadata = chunk.usageMetadata;
+                  }
+
+                  const candidateParts = (chunk as any).candidates?.[0]?.content?.parts || [];
+                  for (const part of candidateParts) {
+                    const sig = part.thoughtSignature || part.thought_signature || part.functionCall?.thoughtSignature || part.functionCall?.thought_signature;
+                    if (sig) {
+                      latestThoughtSignature = sig;
+                    }
+                    if (part.functionCall) {
+                      const partSig = sig || latestThoughtSignature;
+                      functionCallParts.push({
+                        functionCall: part.functionCall,
+                        ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
+                      });
+                    }
                   }
 
                   const calls = chunk.functionCalls;
@@ -1080,7 +1185,25 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                        transparencyLogger.updateAction(actionId, { status: 'completed' });
                     }
                   }
-                  currentHistory.push({ role: 'model', parts: functionCalls.map(c => ({ functionCall: c })) });
+                  const modelTurnParts: Array<Record<string, unknown>> = [];
+                  if (functionCallParts.length > 0) {
+                    for (const fcp of functionCallParts) {
+                      const sig = fcp.thoughtSignature || fcp.thought_signature || latestThoughtSignature;
+                      modelTurnParts.push({
+                        functionCall: fcp.functionCall,
+                        ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+                      });
+                    }
+                  } else {
+                    for (const c of functionCalls) {
+                      const sig = (c as any).thoughtSignature || (c as any).thought_signature || latestThoughtSignature;
+                      modelTurnParts.push({
+                        functionCall: c,
+                        ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+                      });
+                    }
+                  }
+                  currentHistory.push({ role: 'model', parts: modelTurnParts });
                   currentHistory.push({ role: 'user', parts: toolResponses });
                   toolLoops++;
                   continue; 
@@ -1096,7 +1219,11 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
               this.updateMetrics(model, 0, false);
               if (error.message === "Operation aborted") throw error;
               
-              const isResourceError = error?.message?.toLowerCase().includes("429") || error?.message?.toLowerCase().includes("quota") || error?.message?.toLowerCase().includes("overloaded");
+              const isResourceError = error?.message?.toLowerCase().includes("429") || 
+                                      error?.message?.toLowerCase().includes("quota") || 
+                                      error?.message?.toLowerCase().includes("overloaded") ||
+                                      error?.message?.toLowerCase().includes("thought_signature") ||
+                                      error?.message?.toLowerCase().includes("thoughtsignature");
               const nextModelId = modelQueueManager.getQueue()[(startIndex + attempts + 1) % modelQueueManager.getQueue().length];
               
               if (attempts < modelQueueManager.getQueue().length - 1) {

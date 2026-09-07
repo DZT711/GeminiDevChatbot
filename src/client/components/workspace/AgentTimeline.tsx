@@ -12,7 +12,8 @@ import {
   ShieldCheck,
   Terminal,
   Activity,
-  Layers
+  Layers,
+  Loader2
 } from 'lucide-react';
 import type { GoalPlanningResult } from '../../../server/services/agentIntegration/planning/GoalPlanningTypes.js';
 import type { PlanExecutionProgressEvent } from '../../services/workspaceService.js';
@@ -38,6 +39,7 @@ export const AgentTimeline: React.FC<AgentTimelineProps> = ({
 }) => {
   const [expandedTasks, setExpandedTasks] = useState<Set<string>>(new Set());
   const [showApprovalModal, setShowApprovalModal] = useState(false);
+  const [isSubmittingApproval, setIsSubmittingApproval] = useState(false);
 
   const plan = planningResult?.repairedPlan || planningResult?.plan;
   const goal = planningResult?.goal;
@@ -102,20 +104,32 @@ export const AgentTimeline: React.FC<AgentTimelineProps> = ({
         </div>
 
         <div className="flex items-center gap-2">
-          {isExecuting && activeExecutionId ? (
-            <button
-              type="button"
-              onClick={() => onStopExecution(activeExecutionId)}
-              className="px-3 py-1 text-xs font-medium rounded bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-sm transition-colors"
-            >
-              <Square className="w-3.5 h-3.5" />
-              Stop Execution
-            </button>
+          {isExecuting ? (
+            activeExecutionId ? (
+              <button
+                type="button"
+                onClick={() => onStopExecution(activeExecutionId)}
+                className="px-3 py-1 text-xs font-medium rounded bg-rose-600 hover:bg-rose-500 text-white flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                title="Stop agent plan execution"
+              >
+                <Square className="w-3.5 h-3.5" />
+                Stop Execution
+              </button>
+            ) : (
+              <div
+                className="px-3 py-1 text-xs font-medium rounded bg-purple-950/80 border border-purple-600/40 text-purple-300 flex items-center gap-1.5 shadow-sm select-none animate-pulse"
+                title="Agent is executing plan steps in workspace"
+              >
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-purple-400" />
+                <span>Agent Coding...</span>
+              </div>
+            )
           ) : (
             <button
               type="button"
               onClick={() => setShowApprovalModal(true)}
-              className="px-3 py-1 text-xs font-medium rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              disabled={!plan || plan.steps.length === 0}
+              className="px-3 py-1 text-xs font-medium rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
             >
               <Play className="w-3.5 h-3.5" />
               Execute Plan
@@ -265,20 +279,37 @@ export const AgentTimeline: React.FC<AgentTimelineProps> = ({
               <button
                 type="button"
                 onClick={() => setShowApprovalModal(false)}
-                className="px-3 py-1.5 text-xs rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                disabled={isSubmittingApproval}
+                className="px-3 py-1.5 text-xs rounded border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
               >
                 Cancel
               </button>
               <button
                 type="button"
+                disabled={isSubmittingApproval || isExecuting}
                 onClick={async () => {
-                  setShowApprovalModal(false);
-                  await onExecutePlan(planningResult);
+                  if (isSubmittingApproval || isExecuting) return;
+                  setIsSubmittingApproval(true);
+                  try {
+                    setShowApprovalModal(false);
+                    await onExecutePlan(planningResult);
+                  } finally {
+                    setIsSubmittingApproval(false);
+                  }
                 }}
-                className="px-3 py-1.5 text-xs font-medium rounded bg-purple-600 hover:bg-purple-500 text-white flex items-center gap-1.5"
+                className="px-3 py-1.5 text-xs font-medium rounded bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white flex items-center gap-1.5 cursor-pointer"
               >
-                <Play className="w-3.5 h-3.5" />
-                Approve & Execute
+                {isSubmittingApproval ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Starting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5" />
+                    <span>Approve & Execute</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

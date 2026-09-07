@@ -1,7 +1,7 @@
 import { apiClient } from './apiClient.js';
 import { storageService } from './storageService.js';
 import type { GoalPlanningResult } from '../../server/services/agentIntegration/planning/GoalPlanningTypes.js';
-import type { PlanExecutionApproval } from '../../server/services/agentIntegration/planning/PlanExecutionService.js';
+import type { PlanExecutionApproval, PlanExecutionSummary } from '../../server/services/agentIntegration/planning/PlanExecutionService.js';
 
 export type WorkspaceStatus = 'CREATING' | 'READY' | 'RUNNING' | 'STOPPED' | 'ERROR';
 export type MutationActor = 'USER' | 'AGENT';
@@ -92,6 +92,7 @@ export interface CommandExecutionResult {
   stderr: string;
   durationMs: number;
   error?: string;
+  workingDirectory?: string;
 }
 
 export const workspaceService = {
@@ -177,25 +178,135 @@ export const workspaceService = {
 
   async runCommand(
     command: string,
-    options: { cwd?: string; timeoutMs?: number; workspaceId?: string } = {}
+    options: { cwd?: string; timeoutMs?: number; workspaceId?: string; input?: string; sessionId?: string; signal?: AbortSignal } = {}
   ): Promise<CommandExecutionResult> {
     return apiClient.post('/api/workspace/command', {
       command,
       cwd: options.cwd,
       timeoutMs: options.timeoutMs,
-      workspaceId: options.workspaceId
-    });
+      workspaceId: options.workspaceId,
+      input: options.input,
+      sessionId: options.sessionId
+    }, { signal: options.signal });
+  },
+
+  async runCommandStream(
+    command: string,
+    options: {
+      cwd?: string;
+      timeoutMs?: number;
+      workspaceId?: string;
+      sessionId?: string;
+      input?: string;
+      signal?: AbortSignal;
+      onStdout?: (chunk: string) => void;
+      onStderr?: (chunk: string) => void;
+    } = {}
+  ): Promise<CommandExecutionResult> {
+    const response = await apiClient.stream('/api/workspace/command/stream', {
+      command,
+      cwd: options.cwd,
+      timeoutMs: options.timeoutMs,
+      workspaceId: options.workspaceId,
+      sessionId: options.sessionId,
+      input: options.input
+    }, { signal: options.signal });
+
+    if (!response.body) {
+      throw new Error('Readable stream not supported or empty body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let result: CommandExecutionResult = {
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      durationMs: 0
+    };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() || '';
+
+      for (const block of lines) {
+        if (!block.trim()) continue;
+        let eventType = 'message';
+        let dataStr = '';
+
+        const eventLines = block.split('\n');
+        for (const line of eventLines) {
+          if (line.startsWith('event: ')) {
+            eventType = line.substring(7).trim();
+          } else if (line.startsWith('data: ')) {
+            dataStr = line.substring(6).trim();
+          }
+        }
+
+        if (!dataStr) continue;
+
+        try {
+          const parsed = JSON.parse(dataStr);
+          if (eventType === 'stdout') {
+            options.onStdout?.(parsed.chunk);
+            result.stdout += parsed.chunk;
+          } else if (eventType === 'stderr') {
+            options.onStderr?.(parsed.chunk);
+            result.stderr += parsed.chunk;
+          } else if (eventType === 'exit') {
+            result = parsed;
+          }
+        } catch {
+          // ignore parse defect
+        }
+      }
+    }
+
+    return result;
+  },
+
+  async sendCommandInput(sessionId: string, input: string): Promise<boolean> {
+    try {
+      const res = await apiClient.post<{ success: boolean }>('/api/workspace/command/input', {
+        sessionId,
+        input
+      });
+      return res.success;
+    } catch {
+      return false;
+    }
+  },
+
+  async abortCommand(sessionId: string): Promise<boolean> {
+    try {
+      const res = await apiClient.post<{ success: boolean }>('/api/workspace/command/abort', {
+        sessionId
+      });
+      return res.success;
+    } catch {
+      return false;
+    }
   },
 
   async executePlan(
     planningResult: GoalPlanningResult,
     approval: PlanExecutionApproval,
-    workspaceId?: string
-  ): Promise<{ success: boolean; summary: unknown }> {
+    workspaceId?: string,
+    apiKey?: string,
+    model?: string
+  ): Promise<{ success: boolean; summary: PlanExecutionSummary; diagnosis?: unknown }> {
+    const activeModel = model || storageService.getItem("devengine_last_model") || undefined;
     return apiClient.post('/api/workspace/execute', {
       planningResult,
       approval,
-      workspaceId
+      workspaceId,
+      apiKey,
+      model: activeModel
     });
   },
 

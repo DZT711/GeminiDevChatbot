@@ -4,6 +4,7 @@ import { JWT_SECRET } from './utils.js';
 import { globalWorkspaceService, FileProvenanceRecord } from '../services/workspace/WorkspaceService.js';
 import { GoalPlanningResult } from '../services/agentIntegration/planning/GoalPlanningTypes.js';
 import { PlanExecutionApproval } from '../services/agentIntegration/planning/PlanExecutionService.js';
+import { formatAgentError } from '../utils/agentErrorFormatter.js';
 
 export const router = express.Router();
 
@@ -268,16 +269,27 @@ router.delete('/workspace/directory', async (req, res) => {
 router.post('/workspace/command', async (req, res) => {
   try {
     const userId = await resolveUserId(req);
-    const { command, cwd, timeoutMs, workspaceId } = req.body;
+    const { command, cwd, timeoutMs, workspaceId, input, sessionId } = req.body;
 
     if (!command || typeof command !== 'string') {
       return res.status(400).json({ error: 'Command string is required' });
     }
 
+    const effectiveSessionId = sessionId || `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // Abort if client aborts the HTTP request
+    req.on('close', () => {
+      if (!res.writableEnded) {
+        globalWorkspaceService.abortCommand(effectiveSessionId);
+      }
+    });
+
     const startTime = Date.now();
     const result = await globalWorkspaceService.runCommand(userId, workspaceId, command, {
       cwd,
-      timeoutMs: timeoutMs || 30000
+      timeoutMs: timeoutMs || (sessionId ? 180000 : 30000),
+      input,
+      sessionId: effectiveSessionId
     });
 
     res.json({
@@ -297,16 +309,111 @@ router.post('/workspace/command', async (req, res) => {
 });
 
 /**
+ * POST /api/workspace/command/stream
+ * Stream command output in real-time using SSE and keep stdin open for interactive inputs
+ */
+router.post('/workspace/command/stream', async (req, res) => {
+  const { command, cwd, timeoutMs, workspaceId, input, sessionId } = req.body;
+
+  if (!command || typeof command !== 'string') {
+    return res.status(400).json({ error: 'Command string is required' });
+  }
+
+  const effectiveSessionId = sessionId || `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  let isCompleted = false;
+
+  req.on('close', () => {
+    if (!isCompleted) {
+      globalWorkspaceService.abortCommand(effectiveSessionId);
+    }
+  });
+
+  try {
+    const userId = await resolveUserId(req);
+
+    const result = await globalWorkspaceService.runCommand(userId, workspaceId, command, {
+      cwd,
+      timeoutMs: timeoutMs || 180000,
+      input,
+      sessionId: effectiveSessionId,
+      onStdout: (chunk: string) => {
+        if (!res.writableEnded) {
+          res.write(`event: stdout\ndata: ${JSON.stringify({ chunk })}\n\n`);
+        }
+      },
+      onStderr: (chunk: string) => {
+        if (!res.writableEnded) {
+          res.write(`event: stderr\ndata: ${JSON.stringify({ chunk })}\n\n`);
+        }
+      }
+    });
+
+    isCompleted = true;
+    if (!res.writableEnded) {
+      res.write(`event: exit\ndata: ${JSON.stringify(result)}\n\n`);
+      res.end();
+    }
+  } catch (err: any) {
+    isCompleted = true;
+    if (!res.writableEnded) {
+      res.write(`event: exit\ndata: ${JSON.stringify({
+        exitCode: 1,
+        stdout: '',
+        stderr: err?.message || 'Command failed',
+        durationMs: 0
+      })}\n\n`);
+      res.end();
+    }
+  }
+});
+
+/**
+ * POST /api/workspace/command/input
+ * Feed user standard input into an actively running command in the sandbox
+ */
+router.post('/workspace/command/input', async (req, res) => {
+  const { sessionId, input } = req.body;
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ error: 'sessionId is required' });
+  }
+
+  const success = globalWorkspaceService.sendInputToCommand(sessionId, String(input ?? ''));
+  res.json({ success });
+});
+
+/**
+ * POST /api/workspace/command/abort
+ * Send SIGINT / abort an actively running command (e.g. user pressed Ctrl+C)
+ */
+router.post('/workspace/command/abort', async (req, res) => {
+  const { sessionId } = req.body;
+  if (!sessionId || typeof sessionId !== 'string') {
+    return res.status(400).json({ error: 'sessionId is required' });
+  }
+
+  const success = globalWorkspaceService.abortCommand(sessionId);
+  res.json({ success });
+});
+
+/**
  * POST /api/workspace/execute
  * Execute approved Plan through PlanExecutionService
  */
 router.post('/workspace/execute', async (req, res) => {
   try {
     const userId = await resolveUserId(req);
-    const { planningResult, approval, workspaceId } = req.body as {
+    const { planningResult, approval, workspaceId, apiKey, model } = req.body as {
       planningResult: GoalPlanningResult;
       approval: PlanExecutionApproval;
       workspaceId?: string;
+      apiKey?: string;
+      model?: string;
     };
 
     if (!planningResult || !planningResult.plan) {
@@ -322,16 +429,25 @@ router.post('/workspace/execute', async (req, res) => {
     const summary = await globalWorkspaceService.executePlan(userId, {
       planningResult,
       approval,
-      workspaceId
+      workspaceId,
+      apiKey,
+      model
     });
+
+    const diagnosis = !summary.success && summary.error ? formatAgentError(summary.error) : undefined;
 
     res.json({
       success: summary.success,
-      summary
+      summary,
+      diagnosis
     });
-  } catch (err: any) {
-    console.error('[WorkspaceController] Error executing plan:', err);
-    res.status(500).json({ error: err.message || 'Execution failed' });
+  } catch (err: unknown) {
+    const diag = formatAgentError(err);
+    console.error('[WorkspaceController] Error executing plan:', diag);
+    res.status(diag.statusCode || 500).json({
+      error: `${diag.title}: ${diag.message}`,
+      diagnosis: diag
+    });
   }
 });
 

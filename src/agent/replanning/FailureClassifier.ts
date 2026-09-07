@@ -30,10 +30,47 @@ export class FailureClassifier {
     let replannable = true;
     let recommendedAction: ReplanningAction = 'REPLAN';
 
-    // 1. Transient / Rate Limit / Timeout / Network
+    // 1. Quota Exceeded (hard quota limit on account/key)
     if (
-      lower.includes('rate limit') ||
       lower.includes('quota exceeded') ||
+      lower.includes('insufficient_quota') ||
+      lower.includes('exceeded your current quota') ||
+      lower.includes('quota')
+    ) {
+      category = FailureCategory.CONSTRAINT_VIOLATION;
+      severity = 'HIGH';
+      retryable = false;
+      repairable = false;
+      replannable = false;
+      recommendedAction = 'ABORT';
+      evidence.push('Matched account or project quota exhaustion');
+    }
+    // 2. Permission Denied / Authorization / Invalid API Key
+    else if (
+      lower.includes('permission denied') ||
+      lower.includes('eacces') ||
+      lower.includes('unauthorized') ||
+      lower.includes('forbidden') ||
+      lower.includes('401') ||
+      lower.includes('403') ||
+      lower.includes('forbidden tool') ||
+      lower.includes('api key') ||
+      lower.includes('api_key') ||
+      lower.includes('unauthenticated') ||
+      (lower.includes('risk level') && lower.includes('exceeds'))
+    ) {
+      category = FailureCategory.PERMISSION_DENIED;
+      severity = 'HIGH';
+      retryable = false;
+      repairable = false;
+      replannable = false;
+      recommendedAction = 'ABORT';
+      evidence.push('Matched access control / invalid API key / authentication violation');
+    }
+    // 3. Transient / Rate Limit / Timeout / Network
+    else if (
+      lower.includes('rate limit') ||
+      lower.includes('rate_limit') ||
       lower.includes('429') ||
       lower.includes('503') ||
       lower.includes('504') ||
@@ -50,25 +87,6 @@ export class FailureClassifier {
       replannable = false;
       recommendedAction = 'RETRY';
       evidence.push('Matched transient network or rate-limit indicator');
-    }
-    // 2. Permission Denied / Authorization / Forbidden
-    else if (
-      lower.includes('permission denied') ||
-      lower.includes('eacces') ||
-      lower.includes('unauthorized') ||
-      lower.includes('forbidden') ||
-      lower.includes('401') ||
-      lower.includes('403') ||
-      lower.includes('forbidden tool') ||
-      lower.includes('risk level') && lower.includes('exceeds')
-    ) {
-      category = FailureCategory.PERMISSION_DENIED;
-      severity = 'HIGH';
-      retryable = false;
-      repairable = false;
-      replannable = false;
-      recommendedAction = 'ABORT';
-      evidence.push('Matched access control / risk ceiling violation');
     }
     // 3. Input / Argument / Syntax / Parameter Errors
     else if (

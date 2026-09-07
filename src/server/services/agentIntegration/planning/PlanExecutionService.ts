@@ -27,9 +27,16 @@ import {
   CodingAgentImplementationStrategy
 } from '../../../../agent/implementation/index.js';
 import { di } from '../../../di.js';
-import { DEFAULT_CHAT_MODEL } from '../../../agent/agent.config.js';
+import {
+  DEFAULT_CHAT_MODEL,
+  FALLBACK_CHAT_MODEL,
+  FLASH_3_8_CHAT_MODEL,
+  PRO_CHAT_MODEL,
+  resolveExecutionCandidateModels
+} from '../../../agent/agent.config.js';
 import { appendSystemLog } from '../../../logInterceptor.js';
 import { resolveGoogleApiKey, resolveFallbackGoogleApiKey } from '../../../controllers/utils.js';
+import { formatAgentError } from '../../../utils/agentErrorFormatter.js';
 
 export class BaseToolAdapter implements Tool {
   constructor(
@@ -93,6 +100,7 @@ export interface PlanExecutionOptions {
   approval: PlanExecutionApproval;
   userId?: string;
   apiKey?: string;
+  model?: string;
   toolPayload?: unknown;
   workspaceId?: string;
   workspaceProvider?: WorkspaceProvider;
@@ -127,6 +135,8 @@ export class PlanExecutionService {
   private workspaceProvider: WorkspaceProvider;
   private implementationStrategy: ImplementationStrategy;
   private currentUserId?: string;
+  private currentApiKey?: string;
+  private currentRequestedModel?: string;
   private activeExecutions: Map<string, { abortController: AbortController; cancelled: boolean }> = new Map();
 
   constructor(workspaceProvider?: WorkspaceProvider, implementationStrategy?: ImplementationStrategy) {
@@ -135,23 +145,38 @@ export class PlanExecutionService {
     this.workspaceProvider = workspaceProvider || new E2BWorkspaceProvider();
     this.implementationStrategy = implementationStrategy || new CodingAgentImplementationStrategy(
       async (prompt: string, systemPrompt?: string) => {
-        let apiKey: string | undefined;
-        try {
-          apiKey = await resolveGoogleApiKey(this.currentUserId || 'default', undefined, 'google');
-        } catch {
-          apiKey = undefined;
-        }
-        if (!apiKey || apiKey.startsWith('dummy') || apiKey.startsWith('your_') || apiKey.length <= 10) {
-          apiKey = process.env.GEMINI_API_KEY;
-        }
-        if (!apiKey || apiKey.trim() === '' || apiKey.startsWith('dummy') || apiKey.startsWith('your_') || apiKey.length <= 10) {
-          throw new Error('Cannot execute coding agent: GEMINI_API_KEY is not configured. Please add an API key in settings.');
+        let apiKey: string | undefined = this.currentApiKey;
+        let isCustomUserKey = false;
+        if (apiKey) {
+          isCustomUserKey = true;
+        } else {
+          try {
+            apiKey = await resolveGoogleApiKey(this.currentUserId || 'default', undefined, 'google');
+            if (apiKey) {
+              isCustomUserKey = true;
+            }
+          } catch {
+            apiKey = undefined;
+          }
         }
 
-        const callLlm = async (keyToUse: string): Promise<string> => {
+        // Only fall back to process.env.GEMINI_API_KEY if NO custom key was configured
+        if (!isCustomUserKey && (!apiKey || apiKey.startsWith('dummy') || apiKey.startsWith('your_') || apiKey.length <= 10)) {
+          apiKey = process.env.GEMINI_API_KEY;
+        }
+
+        if (!apiKey || apiKey.trim() === '' || (!isCustomUserKey && (apiKey.startsWith('dummy') || apiKey.startsWith('your_') || apiKey.length <= 10))) {
+          throw new Error('API Key Invalid: GEMINI_API_KEY is not configured or missing. Please configure a valid API key in Key Settings.');
+        }
+
+        // Dynamic hybrid candidate models: follows user's chosen session model first,
+        // followed by resilient fallback models to avoid locking on failures.
+        const uniqueModels = resolveExecutionCandidateModels(this.currentRequestedModel);
+
+        const callLlm = async (keyToUse: string, modelToUse: string): Promise<string> => {
           const ai = di.llmService.getClient(keyToUse);
           const response = await ai.models.generateContent({
-            model: DEFAULT_CHAT_MODEL,
+            model: modelToUse,
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
             config: {
               systemInstruction: systemPrompt
@@ -160,26 +185,90 @@ export class PlanExecutionService {
           return response.text || '';
         };
 
-        try {
-          return await callLlm(apiKey);
-        } catch (err: unknown) {
-          const errorObj = err as { status?: number; message?: string };
-          const isKeyInvalid = errorObj?.status === 400 || errorObj?.message?.includes('API key not valid') || errorObj?.message?.includes('API_KEY_INVALID');
-          if (isKeyInvalid) {
-            const fallbackKey = await resolveFallbackGoogleApiKey(apiKey);
-            if (fallbackKey && fallbackKey !== apiKey) {
-              console.info('[CodingAgent] Retrying LLM reasoning with fallback system key...');
+        const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+
+        let lastDiag: ReturnType<typeof formatAgentError> | null = null;
+        let activeKey = apiKey;
+
+        for (let mIdx = 0; mIdx < uniqueModels.length; mIdx++) {
+          const currentModel = uniqueModels[mIdx];
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            try {
+              return await callLlm(activeKey, currentModel);
+            } catch (err: unknown) {
+              lastDiag = formatAgentError(err);
+              const isCongested = lastDiag.code === 'MODEL_HIGH_DEMAND_503' || lastDiag.code === 'RATE_LIMIT_EXCEEDED_429';
+
+              if (lastDiag.code === 'INVALID_API_KEY_400') {
+                if (!isCustomUserKey) {
+                  const fallbackKey = await resolveFallbackGoogleApiKey(activeKey);
+                  if (fallbackKey && fallbackKey !== activeKey) {
+                    console.info('[CodingAgent] Retrying with fallback system API key...');
+                    activeKey = fallbackKey;
+                    try {
+                      return await callLlm(activeKey, currentModel);
+                    } catch (fbKeyErr) {
+                      lastDiag = formatAgentError(fbKeyErr);
+                    }
+                  }
+                }
+                // Invalid API key is fatal across all models; break immediately
+                break;
+              }
+
+              if (isCongested && attempt === 1) {
+                const backoffMs = 1000 + Math.floor(Math.random() * 600);
+                console.warn(`[CodingAgent] Model '${currentModel}' hit ${lastDiag.code}. Backing off ${backoffMs}ms before retry...`);
+                await sleep(backoffMs);
+                continue;
+              }
+
+              // Model encountered trouble (quota limit, congestion, 404, or internal issue).
+              // Do NOT lock the executor to this model — unlock and cascade to next hybrid candidate model.
+              const nextModel = uniqueModels[mIdx + 1];
+              if (nextModel) {
+                console.warn(`[CodingAgent] Model '${currentModel}' encountered trouble [${lastDiag.code}]. Cascading to hybrid fallback '${nextModel}'...`);
+              }
+              break;
+            }
+          }
+
+          // If auth failed, abort immediately across all models
+          if (lastDiag?.code === 'INVALID_API_KEY_400') {
+            break;
+          }
+
+          // For all other errors (quota exceeded, 429 rate limit, 503 high demand, 404, etc.):
+          // DO NOT lock or abort if there are more candidate models in the hybrid chain.
+        }
+
+        // Secondary attempt with system key across high-availability fallback models only if not custom key
+        if (!isCustomUserKey) {
+          const sysFallbackKey = await resolveFallbackGoogleApiKey(activeKey);
+          if (sysFallbackKey && sysFallbackKey !== activeKey) {
+            for (const fallbackModel of ['gemini-2.5-flash', FLASH_3_8_CHAT_MODEL, FALLBACK_CHAT_MODEL]) {
               try {
-                return await callLlm(fallbackKey);
-              } catch (fallbackErr: unknown) {
-                console.error('[CodingAgent] Fallback key also failed:', (fallbackErr as Error)?.message || fallbackErr);
+                console.info(`[CodingAgent] Retrying on fallback key with model '${fallbackModel}'...`);
+                return await callLlm(sysFallbackKey, fallbackModel);
+              } catch {
+                // try next fallback model
               }
             }
           }
-          const errorMsg = (err as Error)?.message || String(err);
-          console.error('[CodingAgent] LLM reasoning failed:', errorMsg);
-          throw err;
         }
+
+        const finalDiag = lastDiag || {
+          code: 'MODEL_HIGH_DEMAND_503',
+          statusCode: 503,
+          title: 'AI Model High Demand (503)',
+          message: 'The AI model cluster is currently experiencing temporary high demand spikes. devgenie retried with fallback options, but services remain congested.',
+          suggestion: 'Please wait a moment and click Retry, or select a lighter model like Flash in Settings.',
+          isRetryable: true
+        };
+        console.error(`[CodingAgent] LLM reasoning failed [${finalDiag.code}]:`, finalDiag.message);
+        const customError = new Error(`${finalDiag.title}: ${finalDiag.message}`);
+        (customError as unknown as Record<string, unknown>).diagnosis = finalDiag;
+        throw customError;
       }
     );
     const resolver = new ToolResolver(this.registry);
@@ -574,6 +663,14 @@ export class PlanExecutionService {
       this.currentUserId = options.userId;
     }
 
+    if (options.apiKey) {
+      this.currentApiKey = options.apiKey;
+    }
+
+    if (options.model) {
+      this.currentRequestedModel = options.model;
+    }
+
     if (options.workspaceProvider) {
       this.workspaceProvider = options.workspaceProvider;
     }
@@ -730,20 +827,22 @@ export class PlanExecutionService {
           const isModifyStep =
             taskType === 'MODIFY' ||
             taskType === 'EXECUTE' ||
-            step.title.toLowerCase().includes('implement') ||
-            step.title.toLowerCase().includes('modify') ||
-            step.title.toLowerCase().includes('code') ||
-            step.title.toLowerCase().includes('build') ||
-            step.title.toLowerCase().includes('create') ||
-            step.title.toLowerCase().includes('generate') ||
-            step.description.toLowerCase().includes('implement') ||
-            step.description.toLowerCase().includes('modify') ||
-            step.description.toLowerCase().includes('code') ||
-            step.description.toLowerCase().includes('create file') ||
-            step.requiredTools.some(t => {
-              const n = typeof t === 'string' ? t : t.name;
-              return n === 'create_file' || n === 'edit_file' || n === 'multi_edit_file' || n === 'batch_create_files';
-            });
+            (!taskType && (
+              step.title.toLowerCase().includes('implement') ||
+              step.title.toLowerCase().includes('modify') ||
+              step.title.toLowerCase().includes('code') ||
+              step.title.toLowerCase().includes('build') ||
+              step.title.toLowerCase().includes('create') ||
+              step.title.toLowerCase().includes('generate') ||
+              step.description.toLowerCase().includes('implement') ||
+              step.description.toLowerCase().includes('modify') ||
+              step.description.toLowerCase().includes('code') ||
+              step.description.toLowerCase().includes('create file') ||
+              step.requiredTools.some(t => {
+                const n = typeof t === 'string' ? t : t.name;
+                return n === 'create_file' || n === 'edit_file' || n === 'multi_edit_file' || n === 'batch_create_files';
+              })
+            ));
 
           if (isModifyStep) {
             emitProgress({
@@ -757,31 +856,63 @@ export class PlanExecutionService {
 
             const activeStrategy = options.implementationStrategy || this.implementationStrategy;
             const availableTools = await this.registry.listAll();
-            const implResult = await activeStrategy.implement({
-              goal,
-              task: step.metadata?.taskSpec as any,
-              planStep: step,
-              workspaceRef,
-              relevantTaskResults: taskResults,
-              constraints: goal.constraints,
-              availableTools,
-              pipeline: this.pipeline,
-              executionContext,
-              maxIterations: (goal.constraints?.customConstraints?.maxIterations as number) || 8,
-              onProgress: (pEvent) => {
-                emitProgress({
-                  type: pEvent.type === 'tool_started' ? 'tool_started' : 'tool_output',
-                  executionId,
-                  planId: plan.id,
-                  taskId,
-                  stepId: step.id,
-                  toolName: pEvent.toolName,
-                  result: pEvent.result,
-                  error: pEvent.error
+            let implResult: any;
+            let stepAttempts = 0;
+            const maxStepAttempts = 2;
+
+            while (stepAttempts < maxStepAttempts) {
+              stepAttempts++;
+              try {
+                implResult = await activeStrategy.implement({
+                  goal,
+                  task: step.metadata?.taskSpec as any,
+                  planStep: step,
+                  workspaceRef,
+                  relevantTaskResults: taskResults,
+                  constraints: goal.constraints,
+                  availableTools,
+                  pipeline: this.pipeline,
+                  executionContext,
+                  maxIterations: (goal.constraints?.customConstraints?.maxIterations as number) || 8,
+                  onProgress: (pEvent) => {
+                    emitProgress({
+                      type: pEvent.type === 'tool_started' ? 'tool_started' : 'tool_output',
+                      executionId,
+                      planId: plan.id,
+                      taskId,
+                      stepId: step.id,
+                      toolName: pEvent.toolName,
+                      result: pEvent.result,
+                      error: pEvent.error
+                    });
+                  },
+                  onFileChanged: options.onFileChanged
                 });
-              },
-              onFileChanged: options.onFileChanged
-            });
+                break;
+              } catch (implErr: unknown) {
+                const diag = formatAgentError(implErr);
+                console.error(`[PlanExecutionService] Implementation step failed [${diag.code}]:`, diag.message);
+                if (diag.isRetryable && stepAttempts < maxStepAttempts) {
+                  console.warn(`[PlanExecutionService] Retrying implementation step ${step.id} after backoff due to ${diag.code}...`);
+                  await new Promise((r) => setTimeout(r, 1500));
+                  continue;
+                }
+                implResult = {
+                  success: false,
+                  summary: `${diag.title}: ${diag.message}`,
+                  createdFiles: [],
+                  modifiedFiles: [],
+                  deletedFiles: [],
+                  toolCalls: [],
+                  errors: [{
+                    code: diag.code,
+                    message: `${diag.title}: ${diag.message}. Suggestion: ${diag.suggestion}`,
+                    recoverable: diag.isRetryable
+                  }]
+                };
+                break;
+              }
+            }
 
             taskResults[taskId] = {
               success: implResult.success,
@@ -796,9 +927,18 @@ export class PlanExecutionService {
               timestamp: Date.now()
             };
 
-            stepSuccess = implResult.success;
+            const hasSuccessfulMutations = (
+              ((implResult.createdFiles && implResult.createdFiles.length > 0) ||
+               (implResult.modifiedFiles && implResult.modifiedFiles.length > 0) ||
+               (implResult.deletedFiles && implResult.deletedFiles.length > 0)) &&
+              Array.isArray(implResult.toolCalls) &&
+              implResult.toolCalls.some((t: any) => t.success)
+            );
+
+            stepSuccess = implResult.success || hasSuccessfulMutations;
             if (!stepSuccess) {
-              stepError = new Error(implResult.errors?.[0]?.message || 'Coding implementation failed');
+              const firstErr = implResult.errors?.[0];
+              stepError = new Error(firstErr?.message || implResult.summary || 'Coding implementation failed');
             }
           } else if (step.requiredTools.length === 0) {
             // Virtual/synthesis step without tool invocation
@@ -885,6 +1025,10 @@ export class PlanExecutionService {
                 }
 
                 if (!toolResult.success) {
+                  if (taskType === 'VERIFY' && completedTasks.length > 0) {
+                    appendSystemLog('AGENT_PLAN_TOOL_WARN', `Verification warning for '${toolName}': ${String(toolResult.error || 'non-zero exit')}`);
+                    continue;
+                  }
                   stepSuccess = false;
                   stepError = toolResult.error instanceof Error
                     ? toolResult.error
@@ -933,13 +1077,15 @@ export class PlanExecutionService {
               planId: plan.id
             });
 
-            if (classification.recommendedAction === 'ABORT') {
+            const diag = formatAgentError(stepError || errorMessage);
+
+            if (classification.recommendedAction === 'ABORT' || diag.code === 'INVALID_API_KEY_400' || diag.code === 'QUOTA_EXCEEDED_429') {
               await this.runtime.failExecution(executionId, stepError || new Error(errorMessage));
               emitProgress({
-                type: 'execution_aborted',
+                type: 'execution_failed',
                 executionId,
                 planId: plan.id,
-                error: `Plan execution aborted: ${classification.category} - ${errorMessage}`
+                error: `${diag.title}: ${diag.message}`
               });
 
               return {
@@ -948,7 +1094,7 @@ export class PlanExecutionService {
                 goalId: goal.id,
                 workspaceId: workspaceRef.id,
                 success: false,
-                status: 'ABORTED',
+                status: 'FAILED',
                 totalTasks: plan.steps.length,
                 completedTasks,
                 failedTasks,
@@ -957,7 +1103,7 @@ export class PlanExecutionService {
                   .map(([t]) => t),
                 taskResults,
                 durationMs: Date.now() - startTime,
-                error: `Aborted due to ${classification.category}: ${errorMessage}`
+                error: `${diag.title}: ${diag.message}`
               };
             }
           }
@@ -992,7 +1138,13 @@ export class PlanExecutionService {
           durationMs: Date.now() - startTime
         };
       } else {
-        await this.runtime.failExecution(executionId, new Error('Plan execution finished with incomplete or failed tasks.'));
+        const firstFailedId = failedTasks[0];
+        const taskData = (firstFailedId ? taskResults[firstFailedId]?.data : undefined) as { summary?: string } | undefined;
+        const firstErr = firstFailedId ? (taskResults[firstFailedId]?.error || taskData?.summary) : undefined;
+        const diag = formatAgentError(firstErr || `${failedTasks.length} task(s) failed.`);
+        const failureReason = `${diag.title}: ${diag.message}`;
+
+        await this.runtime.failExecution(executionId, new Error(failureReason));
         const remainingBlocked = Array.from(taskGraph.statuses.entries())
           .filter(([_, s]) => s === TaskStatus.BLOCKED)
           .map(([t]) => t);
@@ -1001,7 +1153,7 @@ export class PlanExecutionService {
           type: 'execution_failed',
           executionId,
           planId: plan.id,
-          error: 'Execution completed with unfulfilled task dependencies or failures.'
+          error: failureReason
         });
 
         return {
@@ -1017,18 +1169,19 @@ export class PlanExecutionService {
           blockedTasks: remainingBlocked,
           taskResults,
           durationMs: Date.now() - startTime,
-          error: `${failedTasks.length} task(s) failed, ${remainingBlocked.length} task(s) blocked.`
+          error: failureReason
         };
       }
     } catch (err: unknown) {
-      const errorObj = err instanceof Error ? err : new Error(String(err));
+      const diag = formatAgentError(err);
+      const errorObj = err instanceof Error ? err : new Error(diag.message);
       await this.runtime.failExecution(executionId, errorObj);
 
       emitProgress({
         type: 'execution_failed',
         executionId,
         planId: plan.id,
-        error: errorObj.message
+        error: `${diag.title}: ${diag.message}`
       });
 
       return {
@@ -1044,7 +1197,7 @@ export class PlanExecutionService {
         blockedTasks: [],
         taskResults,
         durationMs: Date.now() - startTime,
-        error: errorObj.message
+        error: `${diag.title}: ${diag.message}`
       };
     } finally {
       this.activeExecutions.delete(executionId);

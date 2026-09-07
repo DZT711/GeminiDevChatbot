@@ -171,7 +171,7 @@ router.get('/auth/me', async (req, res) => {
 });
 
 
-router.get('/auth/github/url', (req, res) => {
+router.get(['/auth/github/url', '/auth/github/url/'], (req, res) => {
   try {
     if (!process.env.GITHUB_CLIENT_ID) {
       return res.status(501).json({ error: 'GitHub OAuth is not configured. Missing GITHUB_CLIENT_ID.' });
@@ -185,9 +185,49 @@ router.get('/auth/github/url', (req, res) => {
 });
 
 
-router.get('/auth/github/callback', async (req, res) => {
+router.get(['/auth/github/callback', '/auth/github/callback/'], async (req, res) => {
+  const errorParam = (req.query.error as string) || (req.query.error_description as string);
+  if (errorParam) {
+    const errorMsg = req.query.error === 'access_denied'
+      ? 'You cancelled GitHub sign-in. Please try again.'
+      : (req.query.error_description as string || errorParam || 'GitHub authentication failed');
+    const err = encodeURIComponent(errorMsg);
+    return res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener && window.opener !== window) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/auth/callback?error=${err}';
+            }
+          </script>
+          <p>Authentication cancelled. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  }
+
   const code = req.query.code as string;
-  if (!code) return res.status(400).send('No code provided');
+  if (!code) {
+    const err = encodeURIComponent('No authorization code provided by GitHub. Please retry.');
+    return res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener && window.opener !== window) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/auth/callback?error=${err}';
+            }
+          </script>
+          <p>No authorization code received. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  }
 
   try {
     // 1. Get access token
@@ -311,19 +351,59 @@ router.get('/auth/github/callback', async (req, res) => {
 });
 
 
-router.get('/auth/google/url', (req, res) => {
+router.get(['/auth/google/url', '/auth/google/url/'], (req, res) => {
   if (!process.env.GOOGLE_CLIENT_ID) {
     return res.status(501).json({ error: 'Google OAuth is not configured. Missing GOOGLE_CLIENT_ID.' });
   }
   const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;
-  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=email profile`;
+  const url = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${process.env.GOOGLE_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=email%20profile&prompt=select_account`;
   res.json({ url });
 });
 
 
-router.get('/auth/google/callback', async (req, res) => {
+router.get(['/auth/google/callback', '/auth/google/callback/'], async (req, res) => {
+  const errorParam = (req.query.error as string) || (req.query.error_description as string);
+  if (errorParam) {
+    const errorMsg = req.query.error === 'access_denied'
+      ? 'You cancelled Google sign-in. Please try again.'
+      : (req.query.error_description as string || errorParam || 'Google authentication failed');
+    const err = encodeURIComponent(errorMsg);
+    return res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener && window.opener !== window) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/auth/callback?error=${err}';
+            }
+          </script>
+          <p>Authentication cancelled. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  }
+
   const code = req.query.code as string;
-  if (!code) return res.status(400).send('No code provided');
+  if (!code) {
+    const err = encodeURIComponent('No authorization code provided by Google. Please retry.');
+    return res.send(`
+      <html>
+        <body>
+          <script>
+            if (window.opener && window.opener !== window) {
+              window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', error: '${err}' }, '*');
+              window.close();
+            } else {
+              window.location.href = '/auth/callback?error=${err}';
+            }
+          </script>
+          <p>No authorization code received. This window should close automatically.</p>
+        </body>
+      </html>
+    `);
+  }
 
   try {
     const redirectUri = `${getBaseUrl(req)}/api/auth/google/callback`;

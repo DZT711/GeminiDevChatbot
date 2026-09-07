@@ -85,7 +85,7 @@ CRITICAL RULES:
 4. Output your plan as a JSON object with:
    {
      "reasoning": "string explaining what code changes you are making",
-     "completed": boolean, // ONLY SET TRUE AFTER YOU HAVE VERIFIED THE CODE WORKS (e.g. by running tests or scripts). Do not set to true in the same step as file creation/editing unless no verification is possible.
+     "completed": boolean, // Set to true when you have finished making all required code or file changes for this task.
      "toolCalls": [
        { "toolName": "create_file" | "edit_file" | "delete_file" | "view_file" | "run_command", "input": { ... } }
      ],
@@ -150,34 +150,78 @@ Provide the next set of tool calls to implement the goal.`;
               isComplete = true;
             }
           } else {
-            // No tool calls produced or parse failure
+            // If LLM returned completed: true OR if tools were already executed successfully and LLM returned summary/no more tools
+            if (parsed?.completed || (toolCalls.length > 0 && toolCalls.some(t => t.success))) {
+              isComplete = true;
+            }
             break;
           }
-        } catch (err: any) {
-          const errMsg = err?.message || String(err);
+        } catch (err: unknown) {
+          const rawMsg = (err as Error)?.message || String(err);
+          let cleanMessage = rawMsg;
+
+          // Parse any JSON error structures embedded in raw error strings
+          if (cleanMessage.includes('{') && cleanMessage.includes('}')) {
+            try {
+              const start = cleanMessage.indexOf('{');
+              const end = cleanMessage.lastIndexOf('}');
+              const parsed = JSON.parse(cleanMessage.substring(start, end + 1));
+              const inner = parsed?.error || parsed;
+              if (inner?.message) {
+                cleanMessage = `[${inner.code || 500} ${inner.status || 'ERROR'}] ${inner.message}`;
+              }
+            } catch {
+              // use rawMsg
+            }
+          }
+
+          const is503 = cleanMessage.includes('503') || cleanMessage.includes('high demand') || cleanMessage.includes('UNAVAILABLE');
+          const isQuota = cleanMessage.toLowerCase().includes('quota') || cleanMessage.toLowerCase().includes('insufficient_quota');
+          const isRateLimit = (cleanMessage.includes('429') || cleanMessage.includes('RESOURCE_EXHAUSTED') || cleanMessage.toLowerCase().includes('rate limit')) && !isQuota;
+          const isAuth = cleanMessage.toLowerCase().includes('api key') || cleanMessage.toLowerCase().includes('api_key') || cleanMessage.includes('400') || cleanMessage.includes('401');
+
           errors.push({
-            code: 'LLM_REASONING_ERROR',
-            message: errMsg,
-            recoverable: false
+            code: is503 ? 'MODEL_HIGH_DEMAND_503' : isQuota ? 'QUOTA_EXCEEDED_429' : isRateLimit ? 'RATE_LIMIT_429' : isAuth ? 'INVALID_API_KEY_400' : 'LLM_REASONING_ERROR',
+            message: cleanMessage,
+            recoverable: (is503 || isRateLimit) && !isQuota && !isAuth
           });
-          throw new Error(`LLM reasoning failed during execution: ${errMsg}`);
+
+          // Quota and Auth errors are NOT recoverable by retrying - fail immediately
+          if (isQuota || isAuth) {
+            throw new Error(cleanMessage);
+          }
+
+          if ((is503 || isRateLimit) && iteration < 2) {
+            const backoff = 1000 + Math.floor(Math.random() * 800);
+            await new Promise((r) => setTimeout(r, backoff));
+            continue;
+          }
+
+          throw new Error(cleanMessage);
         }
       }
     }
 
-    // 4. If not completed via LLM, throw error
+    // 4. If not completed via LLM, throw clean error
     if (!isComplete && toolCalls.length === 0) {
       if (errors.length > 0) {
-        throw new Error(`Implementation failed: ${errors[errors.length - 1].message}`);
+        throw new Error(errors[errors.length - 1].message);
       }
       throw new Error("LLM could not generate valid tool calls for implementation. Iterations exhausted or failed.");
     }
 
     const hasMutation = createdFiles.size > 0 || modifiedFiles.size > 0 || deletedFiles.size > 0;
-    const hasSuccessfulToolCalls = toolCalls.some(t => t.success);
+    const hasSuccessfulToolCalls = toolCalls.length > 0 && toolCalls.some(t => t.success);
+
+    // If mutations occurred or tool calls succeeded, mark completion
+    if (hasMutation || hasSuccessfulToolCalls) {
+      isComplete = true;
+    }
+
+    const stepSuccess = (isComplete || hasMutation || hasSuccessfulToolCalls) && (hasSuccessfulToolCalls || errors.length === 0);
 
     return {
-      success: isComplete && hasSuccessfulToolCalls,
+      success: stepSuccess,
       modifiedFiles: Array.from(modifiedFiles),
       createdFiles: Array.from(createdFiles),
       deletedFiles: Array.from(deletedFiles),
@@ -256,11 +300,24 @@ Provide the next set of tool calls to implement the goal.`;
       const jsonMatch = response.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || [null, response];
       const rawJson = (jsonMatch[1] || response).trim();
       const parsed = JSON.parse(rawJson);
-      if (parsed && (parsed.toolCalls || parsed.reasoning || parsed.summary)) {
+      if (parsed && (parsed.toolCalls || parsed.reasoning || parsed.summary || parsed.completed !== undefined)) {
         return parsed;
       }
     } catch {
-      // Continue to multi-code block extraction
+      // Fallback: try finding first '{' and last '}'
+      const firstBrace = response.indexOf('{');
+      const lastBrace = response.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        try {
+          const candidate = response.substring(firstBrace, lastBrace + 1);
+          const parsed = JSON.parse(candidate);
+          if (parsed && (parsed.toolCalls || parsed.reasoning || parsed.summary || parsed.completed !== undefined)) {
+            return parsed;
+          }
+        } catch {
+          // Continue to multi-code block extraction
+        }
+      }
     }
 
     // 2. Extract ALL code blocks across multiple files

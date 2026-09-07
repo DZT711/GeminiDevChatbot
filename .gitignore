@@ -34,6 +34,7 @@ patch*.ts
 patch*.cjs
 patch*.js
 patch*.diff
+*.patch
 test*.ts
 test*.cjs
 test*.js

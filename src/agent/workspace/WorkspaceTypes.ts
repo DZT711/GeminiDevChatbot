@@ -48,6 +48,9 @@ export interface RunCommandOptions {
   timeoutMs?: number;
   env?: Record<string, string>;
   input?: string;
+  sessionId?: string;
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 export interface CommandResult {
@@ -55,6 +58,7 @@ export interface CommandResult {
   stdout: string;
   stderr: string;
   durationMs?: number;
+  workingDirectory?: string;
 }
 
 export interface WorkspaceCreateRequest {

@@ -28,6 +28,7 @@ import { cn } from '@/lib/utils';
 import type { GoalPlanningResult } from '../../../server/services/agentIntegration/planning/GoalPlanningTypes.js';
 import type { PlanExecutionProgressEvent, PlanExecutionSummary } from '../../../server/services/agentIntegration/planning/PlanExecutionService.js';
 import { workspaceService } from '../../services/workspaceService.js';
+import { diagnoseAgentError, type AgentErrorDiagnosis } from '../../utils/agentErrorDiagnostics.js';
 
 interface PlanningResultCardProps {
   result: GoalPlanningResult;
@@ -52,6 +53,7 @@ export function PlanningResultCard({
   const [executionSummary, setExecutionSummary] = useState<PlanExecutionSummary | null>(null);
   const [executionLogs, setExecutionLogs] = useState<PlanExecutionProgressEvent[]>([]);
   const [activeRunningTaskId, setActiveRunningTaskId] = useState<string | null>(null);
+  const [errorDiagnosis, setErrorDiagnosis] = useState<AgentErrorDiagnosis | null>(null);
 
   const goal = result.goal;
   const plan = result.repairedPlan || result.plan;
@@ -129,6 +131,7 @@ export function PlanningResultCard({
     setActiveTab('execution');
     setExecutionLogs([]);
     setExecutionSummary(null);
+    setErrorDiagnosis(null);
 
     try {
       const execRes = await workspaceService.executePlan(
@@ -143,12 +146,27 @@ export function PlanningResultCard({
 
       const summary = execRes.summary as PlanExecutionSummary;
       setExecutionSummary(summary);
+
+      const isSuccess = Boolean(execRes.success && summary?.success);
+      if (isSuccess) {
+        window.dispatchEvent(new CustomEvent('agent:execution-result', {
+          detail: { success: true, planResult: result, summary }
+        }));
+      } else {
+        const diag = (execRes.diagnosis ? diagnoseAgentError(execRes) : null) || diagnoseAgentError(summary?.error || 'Execution halted with incomplete tasks');
+        setErrorDiagnosis(diag);
+        window.dispatchEvent(new CustomEvent('agent:execution-result', {
+          detail: { success: false, planResult: result, summary, diagnosis: diag }
+        }));
+      }
+
       if (onExecutePlan) {
         onExecutePlan(result);
       }
     } catch (err: unknown) {
-      const errorMsg = err instanceof Error ? err.message : String(err);
-      setExecutionSummary({
+      const diag = diagnoseAgentError(err);
+      setErrorDiagnosis(diag);
+      const failedSummary: PlanExecutionSummary = {
         executionId: 'err-exec',
         planId: plan?.id || 'unknown',
         goalId: goal?.id || 'unknown',
@@ -160,8 +178,13 @@ export function PlanningResultCard({
         blockedTasks: [],
         taskResults: {},
         durationMs: 0,
-        error: errorMsg
-      });
+        error: `${diag.title}: ${diag.description}`
+      };
+      setExecutionSummary(failedSummary);
+
+      window.dispatchEvent(new CustomEvent('agent:execution-result', {
+        detail: { success: false, planResult: result, summary: failedSummary, diagnosis: diag }
+      }));
     } finally {
       setIsExecuting(false);
       setActiveRunningTaskId(null);
@@ -528,6 +551,46 @@ export function PlanningResultCard({
               )}
             </div>
 
+            {/* Situational Error Alert Card if Execution Failed */}
+            {(errorDiagnosis || (executionSummary && !executionSummary.success)) && (
+              <div className="p-3.5 rounded-lg bg-rose-950/40 border border-rose-500/40 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-rose-300 font-semibold text-xs">
+                    <AlertOctagon size={16} className="text-rose-400 shrink-0" />
+                    <span>{errorDiagnosis?.title || 'Execution Halted with Failure'}</span>
+                  </div>
+                  <span className="text-[10px] px-2 py-0.5 rounded font-mono font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30 uppercase">
+                    {errorDiagnosis?.badge || 'FAILED'}
+                  </span>
+                </div>
+
+                <p className="text-zinc-300 text-xs leading-relaxed">
+                  {errorDiagnosis?.description || executionSummary?.error || 'The agent encountered an issue and could not complete all scheduled tasks.'}
+                </p>
+
+                {errorDiagnosis?.suggestion && (
+                  <div className="flex items-start gap-2 text-[11px] text-amber-300 bg-amber-950/30 p-2 rounded border border-amber-500/20">
+                    <span className="font-bold shrink-0">Action:</span>
+                    <span>{errorDiagnosis.suggestion}</span>
+                  </div>
+                )}
+
+                <div className="pt-1 flex items-center justify-between">
+                  <span className="text-[10px] text-zinc-500 font-mono">
+                    Failed Tasks: {executionSummary?.failedTasks.length || 1} / {plan.steps.length}
+                  </span>
+                  <button
+                    onClick={handleConfirmExecution}
+                    disabled={isExecuting}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-mono text-xs font-semibold shadow transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <RotateCcw size={12} className={isExecuting ? "animate-spin" : ""} />
+                    <span>Retry Execution</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Live Event Stream */}
             <div className="space-y-1.5 max-h-56 overflow-y-auto font-mono text-[11px]">
               {executionLogs.map((log, idx) => (
@@ -665,11 +728,21 @@ export function PlanningResultCard({
                   Cancel
                 </button>
                 <button
+                  disabled={isExecuting}
                   onClick={handleConfirmExecution}
-                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-900/40 cursor-pointer"
+                  className="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-mono font-bold flex items-center gap-1.5 shadow-lg shadow-emerald-900/40 cursor-pointer"
                 >
-                  <CheckSquare size={13} />
-                  <span>Confirm & Execute</span>
+                  {isExecuting ? (
+                    <>
+                      <Activity size={13} className="animate-spin" />
+                      <span>Executing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckSquare size={13} />
+                      <span>Confirm & Execute</span>
+                    </>
+                  )}
                 </button>
               </div>
             </motion.div>

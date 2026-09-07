@@ -2,7 +2,7 @@
  * Purpose: Production concrete Workspace implementation using E2B Sandbox.
  * STRICT ARCHITECTURAL RULE: Located outside Agent Core (src/agent/).
  */
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -17,6 +17,7 @@ import {
   CommandResult,
   WorkspacePathError
 } from '../../agent/workspace/index.js';
+import { activeCommandRegistry } from './activeCommandRegistry.js';
 
 export interface E2BWorkspaceOptions {
   apiKey?: string;
@@ -29,6 +30,7 @@ export class E2BWorkspace implements Workspace {
   public readonly id: string;
   private apiKey?: string;
   private workingDirectory: string;
+  private currentSubDir: string = '';
   private timeoutMs: number;
   private sandboxInstance: any = null;
   private fallbackMemoryFiles: Map<string, WorkspaceFile> = new Map();
@@ -543,6 +545,8 @@ export class E2BWorkspace implements Workspace {
     const isolatedEnv: Record<string, string> = {
       PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
       HOME: this.workingDirectory,
+      PYTHONUNBUFFERED: '1',
+      NODE_NO_WARNINGS: '1',
       ...(options?.env || {})
     };
 
@@ -558,7 +562,8 @@ export class E2BWorkspace implements Workspace {
           exitCode: result.exitCode ?? 0,
           stdout: result.stdout || '',
           stderr: result.stderr || '',
-          durationMs: Date.now() - startTime
+          durationMs: Date.now() - startTime,
+          workingDirectory: this.workingDirectory
         };
       } catch (err: any) {
         this.handleSandboxError(err);
@@ -568,125 +573,261 @@ export class E2BWorkspace implements Workspace {
     // Safe isolated fallback evaluation against in-memory workspace
     const trimmed = command.trim();
 
-    if (trimmed.startsWith('pwd')) {
+    if (trimmed === 'pwd') {
       return {
         exitCode: 0,
         stdout: `${this.workingDirectory}\n`,
         stderr: '',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        workingDirectory: this.workingDirectory
       };
     }
 
-    if (trimmed.startsWith('ls')) {
-      const listing = await this.listDir();
-      const names = listing.entries.map(e => e.name).join('  ');
+    if (trimmed === 'clear' || trimmed === 'cls') {
       return {
         exitCode: 0,
-        stdout: names ? `${names}\n` : '',
+        stdout: '',
         stderr: '',
-        durationMs: Date.now() - startTime
+        durationMs: Date.now() - startTime,
+        workingDirectory: this.workingDirectory
       };
     }
 
-    if (trimmed.startsWith('cat ') || trimmed.startsWith('head ') || trimmed.startsWith('tail ')) {
-      const parts = trimmed.split(/\s+/);
-      const target = parts[parts.length - 1];
+    // Execute runnable shell commands locally in isolated temp workspace
+    return new Promise<CommandResult>((resolve) => {
+      const tempDir = path.join(os.tmpdir(), `devgenie_ws_${this.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
       try {
-        const file = await this.readFile(target);
-        return {
-          exitCode: 0,
-          stdout: `${file.content}\n`,
-          stderr: '',
-          durationMs: Date.now() - startTime
-        };
-      } catch {
-        return {
-          exitCode: 1,
-          stdout: '',
-          stderr: `cat: ${target}: No such file or directory\n`,
-          durationMs: Date.now() - startTime
-        };
-      }
-    }
-
-    if (trimmed.startsWith('echo ')) {
-      const text = trimmed.substring(5).replace(/["']/g, '');
-      return {
-        exitCode: 0,
-        stdout: `${text}\n`,
-        stderr: '',
-        durationMs: Date.now() - startTime
-      };
-    }
-
-    if (command.includes('node -e ') || command.includes('node -p ')) {
-      if (command.includes('workspace-ok')) {
-        return {
-          exitCode: 0,
-          stdout: 'workspace-ok\n',
-          stderr: '',
-          durationMs: Date.now() - startTime
-        };
-      }
-    }
-
-    // Check if any file in memory is being printed or read
-    for (const [filePath, file] of this.fallbackMemoryFiles.entries()) {
-      const baseName = filePath.split('/').pop() || filePath;
-      if (command.includes(baseName) || command.includes(filePath)) {
-        if (command.startsWith('cat ') || command.includes('cat ') || command.includes('type ')) {
-          return {
-            exitCode: 0,
-            stdout: `${file.content}\n`,
-            stderr: '',
-            durationMs: Date.now() - startTime
-          };
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
         }
+        // Sync files from memory to temp workspace
+        for (const [, file] of this.fallbackMemoryFiles.entries()) {
+          const relPath = file.path.replace(/^\/workspace\/?/, '').replace(/^\/home\/user\/?/, '');
+          const targetFile = path.join(tempDir, relPath);
+          fs.mkdirSync(path.dirname(targetFile), { recursive: true });
+          fs.writeFileSync(targetFile, file.content, 'utf-8');
+        }
+      } catch {
+        // Ignore temp sync errors
       }
-    }
 
-    // Execute runnable commands (python3, python, node, bash) locally in isolated temp workspace
-    if (
-      trimmed.startsWith('python') ||
-      trimmed.startsWith('node') ||
-      trimmed.startsWith('pytest') ||
-      trimmed.includes('.py') ||
-      trimmed.includes('.js')
-    ) {
-      return new Promise<CommandResult>((resolve) => {
-        const tempDir = path.join(os.tmpdir(), `devgenie_ws_${this.id.replace(/[^a-zA-Z0-9_-]/g, '_')}`);
-        try {
-          if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
+      // Determine active execution working directory inside tempDir
+      let targetExecutionDir = path.join(tempDir, this.currentSubDir);
+      if (!fs.existsSync(targetExecutionDir)) {
+        targetExecutionDir = tempDir;
+        this.currentSubDir = '';
+        this.workingDirectory = '/workspace';
+      }
+
+      const cwdReportFile = path.join(tempDir, `.devgenie_cwd_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`);
+
+      const executionEnv: Record<string, string> = {
+        PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        HOME: tempDir,
+        PWD: targetExecutionDir,
+        USER: 'dev',
+        LOGNAME: 'dev',
+        HOSTNAME: 'devgenie-sandbox',
+        TERM: 'xterm-256color',
+        SHELL: '/bin/bash',
+        DEVGENIE_CWD_REPORT_FILE: cwdReportFile,
+        PYTHONUNBUFFERED: '1',
+        NODE_NO_WARNINGS: '1',
+        ...(options?.env || {})
+      };
+
+      // Wrap bash command to support linux aliases (ll, la, l, whoami) and track working directory changes (cd)
+      const wrappedScript = `
+shopt -s expand_aliases 2>/dev/null
+alias ll='ls -la'
+alias la='ls -A'
+alias l='ls -CF'
+alias whoami='echo dev'
+${command}
+__DEVGENIE_EC=$?
+pwd > "$DEVGENIE_CWD_REPORT_FILE" 2>/dev/null
+exit $__DEVGENIE_EC
+`;
+
+      // Allow plenty of time for interactive input prompts while user types
+      const timeoutMs = options?.timeoutMs || (options?.sessionId ? 300000 : 30000);
+
+      let stdout = '';
+      let stderr = '';
+      let isResolved = false;
+
+      // Use bash with detached process group so signals like SIGINT propagate to sub-processes (Python, Node, etc.)
+      const child = spawn('bash', ['-c', wrappedScript], {
+        cwd: targetExecutionDir,
+        env: executionEnv,
+        detached: true
+      });
+
+      const cleanupTimer = setTimeout(() => {
+        if (!isResolved) {
+          try {
+            if (child.pid) process.kill(-child.pid, 'SIGTERM');
+          } catch {
+            // ignore
           }
-          // Sync files to temp workspace
-          for (const [, file] of this.fallbackMemoryFiles.entries()) {
-            const relPath = file.path.replace(/^\/workspace\/?/, '').replace(/^\/home\/user\/?/, '');
-            const targetFile = path.join(tempDir, relPath);
-            fs.mkdirSync(path.dirname(targetFile), { recursive: true });
-            fs.writeFileSync(targetFile, file.content, 'utf-8');
+        }
+      }, timeoutMs);
+
+      const sanitizeOutput = (str: string): string => {
+        if (!str) return '';
+        // Sanitize temp directory references to /workspace for authentic Linux appearance
+        return str.split(tempDir).join('/workspace');
+      };
+
+      const finish = (code: number | null, signal: string | null) => {
+        if (isResolved) return;
+        isResolved = true;
+        clearTimeout(cleanupTimer);
+
+        if (options?.sessionId) {
+          activeCommandRegistry.unregister(options.sessionId);
+        }
+
+        // Check if working directory was changed by command (e.g. cd)
+        try {
+          if (fs.existsSync(cwdReportFile)) {
+            const reportedPwd = fs.readFileSync(cwdReportFile, 'utf-8').trim();
+            fs.unlinkSync(cwdReportFile);
+            if (reportedPwd && fs.existsSync(reportedPwd)) {
+              const rel = path.relative(tempDir, reportedPwd).replace(/\\/g, '/');
+              if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
+                this.currentSubDir = (rel === '.' || rel === '') ? '' : rel;
+                this.workingDirectory = this.currentSubDir ? `/workspace/${this.currentSubDir}` : '/workspace';
+              } else {
+                this.currentSubDir = '';
+                this.workingDirectory = '/workspace';
+              }
+            }
           }
         } catch {
-          // Ignore temp sync errors
+          // ignore cwd tracking error
         }
 
-        exec(command, { cwd: tempDir, timeout: 15000, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
-          resolve({
-            exitCode: error ? (error.code ?? 1) : 0,
-            stdout: stdout || (error && !stderr ? `Error: ${error.message}\n` : ''),
-            stderr: stderr || '',
-            durationMs: Date.now() - startTime
-          });
-        });
-      });
-    }
+        // Sync any created or modified files back from tempDir to fallbackMemoryFiles
+        try {
+          const syncBack = (dir: string, baseDir: string): void => {
+            if (!fs.existsSync(dir)) return;
+            const items = fs.readdirSync(dir, { withFileTypes: true });
+            for (const item of items) {
+              const fullPath = path.join(dir, item.name);
+              const relPath = path.relative(baseDir, fullPath).replace(/\\/g, '/');
+              if (item.name === '.git' || item.name === 'node_modules' || item.name === '__pycache__' || item.name.endsWith('.pyc') || item.name.startsWith('.devgenie_cwd_')) {
+                continue;
+              }
+              if (item.isDirectory()) {
+                this.explicitDirectories.add(this.normalizePath(relPath));
+                syncBack(fullPath, baseDir);
+              } else if (item.isFile()) {
+                const content = fs.readFileSync(fullPath, 'utf-8');
+                const norm = this.normalizePath(relPath);
+                this.fallbackMemoryFiles.set(norm, {
+                  path: norm,
+                  content,
+                  size: Buffer.byteLength(content, 'utf-8'),
+                  modifiedAt: Date.now()
+                });
+              }
+            }
+          };
+          syncBack(tempDir, tempDir);
+        } catch {
+          // Ignore sync back errors
+        }
 
-    return {
-      exitCode: 0,
-      stdout: `[E2BWorkspace] Executed command: ${command}\n`,
-      stderr: '',
-      durationMs: Date.now() - startTime
-    };
+        let formattedStderr = stderr || '';
+        // If Python EOFError occurred because user program asked for input() without piped stdin
+        if (formattedStderr.includes('EOFError: EOF when reading a line')) {
+          formattedStderr += `\n💡 Tip: Python input() requested interactive stdin. You can type in the terminal and press Enter while running, or pipe it: echo "your_input" | ${command}\n`;
+        }
+
+        const isSigint = signal === 'SIGINT' || code === 130;
+        const resolvedExitCode = isSigint ? 130 : (code ?? 0);
+
+        resolve({
+          exitCode: resolvedExitCode,
+          stdout: sanitizeOutput(stdout),
+          stderr: sanitizeOutput(formattedStderr),
+          durationMs: Date.now() - startTime,
+          workingDirectory: this.workingDirectory
+        });
+      };
+
+      child.stdout?.on('data', (chunk) => {
+        const text = chunk.toString();
+        stdout += text;
+        const sanitized = sanitizeOutput(text);
+        options?.onStdout?.(sanitized);
+      });
+
+      child.stderr?.on('data', (chunk) => {
+        const text = chunk.toString();
+        stderr += text;
+        const sanitized = sanitizeOutput(text);
+        options?.onStderr?.(sanitized);
+      });
+
+      child.on('close', (code, signal) => finish(code, signal));
+      child.on('error', (err) => {
+        stderr += `\nError: ${err.message}\n`;
+        finish(1, null);
+      });
+
+      // Register active interactive session if sessionId provided
+      if (options?.sessionId) {
+        activeCommandRegistry.register({
+          sessionId: options.sessionId,
+          child,
+          startedAt: Date.now(),
+          sendInput: (input: string) => {
+            if (child.stdin && child.stdin.writable) {
+              const inputWithNewline = input.endsWith('\n') ? input : `${input}\n`;
+              child.stdin.write(inputWithNewline);
+              return true;
+            }
+            return false;
+          },
+          abort: () => {
+            try {
+              if (child.pid) {
+                process.kill(-child.pid, 'SIGINT');
+              } else {
+                child.kill('SIGINT');
+              }
+              setTimeout(() => {
+                try {
+                  if (child.pid && !child.killed) {
+                    process.kill(-child.pid, 'SIGKILL');
+                  }
+                } catch {
+                  // ignore
+                }
+              }, 1200);
+              return true;
+            } catch {
+              return false;
+            }
+          }
+        });
+      }
+
+      // Write initial stdin if provided
+      if (options?.input !== undefined && child.stdin && child.stdin.writable) {
+        const inputWithNewline = options.input.endsWith('\n') ? options.input : `${options.input}\n`;
+        child.stdin.write(inputWithNewline);
+      }
+
+      // CRITICAL: Only close stdin if this is NOT an interactive session.
+      // For interactive sessions, keep stdin open so scripts like input("Enter your name:")
+      // wait for the user to type in the terminal instead of immediately failing with EOFError.
+      if (!options?.sessionId) {
+        child.stdin?.end();
+      }
+    });
   }
 
   public async executeCode(code: string, language: string): Promise<CommandResult> {
