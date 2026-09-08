@@ -125,7 +125,19 @@ router.put('/user/state', async (req, res) => {
       if (newSessions && Array.isArray(newSessions)) {
         // Simple strategy: delete all sessions for user, re-insert
         await tx.delete(sessions).where(eq(sessions.userId, userId));
+
+        // Deduplicate sessions by ID in case client sent duplicate session objects
+        const uniqueSessionsMap = new Map<string, any>();
         for (const s of newSessions) {
+          if (s && s.id) {
+            uniqueSessionsMap.set(s.id, s);
+          }
+        }
+
+        const validRoles = new Set(['user', 'model', 'system', 'tool']);
+        const seenMessageIds = new Set<string>();
+
+        for (const s of uniqueSessionsMap.values()) {
           await tx.insert(sessions).values({
             id: s.id,
             userId,
@@ -133,21 +145,66 @@ router.put('/user/state', async (req, res) => {
             pinned: s.pinned || false,
             updatedAt: s.updatedAt ? new Date(s.updatedAt) : new Date(),
             createdAt: s.createdAt ? new Date(s.createdAt) : new Date(),
+          }).onConflictDoUpdate({
+            target: sessions.id,
+            set: {
+              title: sql`excluded.title`,
+              pinned: sql`excluded.pinned`,
+              updatedAt: sql`excluded.updated_at`,
+            }
           });
+
           if (s.messages && Array.isArray(s.messages) && s.messages.length > 0) {
-            const msgsToInsert = s.messages.map((m: any) => ({
-              id: m.id || `msg-${Date.now()}-${Math.random()}`,
-              sessionId: s.id,
-              role: m.role || 'user',
-              content: m.content || '',
-              modelUsed: m.modelName || m.modelUsed,
-              imageUrl: m.imageUrl,
-              videoUrl: m.videoUrl,
-              attachments: m.attachments || [],
-              rating: typeof m.rating === 'number' ? m.rating : 0,
-              createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
-            }));
-            await tx.insert(messages).values(msgsToInsert);
+            const msgsToInsert = s.messages.map((m: {
+              id?: string;
+              role?: string;
+              content?: string;
+              modelName?: string;
+              modelUsed?: string;
+              imageUrl?: string;
+              videoUrl?: string;
+              attachments?: unknown;
+              rating?: number;
+              createdAt?: string | number | Date;
+            }, idx: number) => {
+              let msgId = m.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              if (seenMessageIds.has(msgId)) {
+                msgId = `${msgId}-${s.id.slice(-6)}-${idx}`;
+              }
+              seenMessageIds.add(msgId);
+
+              const role = (m.role && validRoles.has(m.role)) ? (m.role as 'user' | 'model' | 'system' | 'tool') : 'user';
+
+              return {
+                id: msgId,
+                sessionId: s.id,
+                role,
+                content: m.content || '',
+                modelUsed: m.modelName || m.modelUsed,
+                imageUrl: m.imageUrl,
+                videoUrl: m.videoUrl,
+                attachments: m.attachments || [],
+                rating: typeof m.rating === 'number' ? m.rating : 0,
+                createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
+              };
+            });
+
+            if (msgsToInsert.length > 0) {
+              await tx.insert(messages).values(msgsToInsert).onConflictDoUpdate({
+                target: messages.id,
+                set: {
+                  sessionId: sql`excluded.session_id`,
+                  role: sql`excluded.role`,
+                  content: sql`excluded.content`,
+                  modelUsed: sql`excluded.model_used`,
+                  imageUrl: sql`excluded.image_url`,
+                  videoUrl: sql`excluded.video_url`,
+                  attachments: sql`excluded.attachments`,
+                  rating: sql`excluded.rating`,
+                  createdAt: sql`excluded.created_at`,
+                }
+              });
+            }
           }
         }
       }

@@ -58,7 +58,7 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
         const data = await apiClient.get<any[]>('/api/models/info');
         setGlobalModelCatalog(data);
       } catch (err) {
-        console.error("Failed to fetch model catalog", err);
+        console.warn("Failed to fetch model catalog", err);
       }
     };
     fetchModels();

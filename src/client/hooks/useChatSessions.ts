@@ -52,10 +52,21 @@ export function useChatSessions({
   ) => {
     if (updatedMessages.length === 0 || !updatedMessages[0]) return;
 
+    // Deduplicate messages within the session by ID to prevent any duplicate key errors
+    const seenMsgIds = new Set<string>();
+    const dedupedMessages = updatedMessages.filter((m) => {
+      if (!m || !m.id) return false;
+      if (seenMsgIds.has(m.id)) return false;
+      seenMsgIds.add(m.id);
+      return true;
+    });
+
+    if (dedupedMessages.length === 0 || !dedupedMessages[0]) return;
+
     const finalId = sessionId || currentSessionId || `session-${Date.now()}`;
     const defaultTitle =
-      updatedMessages[0].content?.slice(0, 30) +
-      (updatedMessages[0].content?.length > 30 ? "..." : "");
+      dedupedMessages[0].content?.slice(0, 30) +
+      (dedupedMessages[0].content?.length > 30 ? "..." : "");
 
     setSessions((prev) => {
       const idx = prev.findIndex((s) => s.id === finalId);
@@ -69,7 +80,7 @@ export function useChatSessions({
       const newSession: ChatSession = {
         id: finalId,
         title: newTitle,
-        messages: updatedMessages,
+        messages: dedupedMessages,
         updatedAt: Date.now(),
         pinned: isPinned,
       };
@@ -164,40 +175,46 @@ export function useChatInteractions(options: any) {
       const { success, planResult, summary, diagnosis } = customEvent.detail || {};
       const goalIntent = planResult?.goal?.intent || 'Agent task execution';
 
+      const randomSuffix = Math.random().toString(36).substring(2, 7);
+
       if (success) {
         const completedCount = summary?.completedTasks?.length ?? 0;
         const totalCount = summary?.totalTasks ?? (planResult?.plan?.steps?.length || 0);
         const durationStr = summary?.durationMs ? ` (${(summary.durationMs / 1000).toFixed(1)}s)` : '';
 
         const successMsg: Message = {
-          id: `exec-success-${Date.now()}`,
+          id: `exec-success-${Date.now()}-${randomSuffix}`,
           role: 'model',
           content: `✅ **Agent Execution Succeeded**${durationStr}\n\nAll planned tasks completed for: **${goalIntent}**\n- **Tasks Executed:** ${completedCount} / ${totalCount}\n- **Workspace Status:** All file modifications and tools completed with verified outputs.`
         };
-        setMessages((prev: Message[]) => {
-          const next = [...prev, successMsg];
-          if (saveCurrentSession) {
-            setTimeout(() => saveCurrentSession(next), 0);
-          }
-          return next;
-        });
+        setMessages((prev: Message[]) => [...prev, successMsg]);
+        if (saveCurrentSession) {
+          setTimeout(() => {
+            setMessages((currentMsgs: Message[]) => {
+              saveCurrentSession(currentMsgs, currentSessionId || undefined);
+              return currentMsgs;
+            });
+          }, 0);
+        }
         if (addNotification) {
           addNotification(`Agent executed successfully: ${goalIntent}`, 'success');
         }
       } else {
         const diag = diagnosis || diagnoseAgentError(summary?.error || 'Execution stopped with failures');
         const failMsg: Message = {
-          id: `exec-fail-${Date.now()}`,
+          id: `exec-fail-${Date.now()}-${randomSuffix}`,
           role: 'model',
           content: `⚠️ **Agent Execution Unsuccessful**\n\n**Situation:** ${diag.title} \`[${diag.badge}]\`\n${diag.description}\n\n💡 **Recommended Action:** ${diag.suggestion}\n\n*Target Goal:* ${goalIntent}`
         };
-        setMessages((prev: Message[]) => {
-          const next = [...prev, failMsg];
-          if (saveCurrentSession) {
-            setTimeout(() => saveCurrentSession(next), 0);
-          }
-          return next;
-        });
+        setMessages((prev: Message[]) => [...prev, failMsg]);
+        if (saveCurrentSession) {
+          setTimeout(() => {
+            setMessages((currentMsgs: Message[]) => {
+              saveCurrentSession(currentMsgs, currentSessionId || undefined);
+              return currentMsgs;
+            });
+          }, 0);
+        }
         if (addNotification) {
           addNotification(`Agent execution unsuccessful: ${diag.title}`, 'error');
         }
@@ -208,7 +225,7 @@ export function useChatInteractions(options: any) {
     return () => {
       window.removeEventListener('agent:execution-result', handleAgentExecutionResult);
     };
-  }, [setMessages, saveCurrentSession, addNotification]);
+  }, [setMessages, saveCurrentSession, addNotification, currentSessionId]);
 
   const handleStop = () => {
     if (abortControllerRef.current) {
@@ -1346,19 +1363,7 @@ export function useDevEngineEffects(options: any) {
   const currentSession = sessions.find((s: any) => s.id === currentSessionId);
   const lastStatesRef = React.useRef<Record<string, { status?: string; description?: string }>>({});
 
-useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const data = await apiClient.get<any[]>('/api/models/info');
-        setGlobalModelCatalog(data);
-      } catch (err) {
-        console.error("Failed to fetch model catalog", err);
-      }
-    };
-    fetchModels();
-  }, []);
-
-useEffect(() => {
+  useEffect(() => {
     if (!input.startsWith("/")) {
       setIsCommandListDismissed(false);
       setSelectedCommandIndex(0);
@@ -1654,7 +1659,7 @@ useEffect(() => {
             sessions,
           });
       } catch (e) {
-        console.error("Failed to sync state", e);
+        console.warn("Failed to sync state, will retry on next update", e);
       }
     }, 300); // Debounce
     return () => clearTimeout(timer);

@@ -11,6 +11,8 @@ interface RequestOptions extends RequestInit {
   requireAuth?: boolean;
 }
 
+const inFlightGetRequests = new Map<string, Promise<any>>();
+
 export const apiClient = {
   async request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
     const { requireAuth = true, ...customConfig } = options;
@@ -32,7 +34,18 @@ export const apiClient = {
       headers,
     };
 
-    const response = await fetch(endpoint, config);
+    let response: Response;
+    try {
+      response = await fetch(endpoint, config);
+    } catch (networkErr: unknown) {
+      // Auto-retry once after 600ms on transient network errors or dev server reload
+      if (networkErr instanceof TypeError && (networkErr.message.includes('fetch') || networkErr.message.includes('Network'))) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        response = await fetch(endpoint, config);
+      } else {
+        throw networkErr;
+      }
+    }
 
     // Read the response stream exactly ONCE
     const text = await response.text();
@@ -64,7 +77,16 @@ export const apiClient = {
   },
 
   get<T>(endpoint: string, options?: RequestOptions): Promise<T> {
-    return apiClient.request<T>(endpoint, { ...options, method: 'GET' });
+    const cacheKey = `GET:${endpoint}`;
+    if (inFlightGetRequests.has(cacheKey)) {
+      return inFlightGetRequests.get(cacheKey) as Promise<T>;
+    }
+    const promise = apiClient.request<T>(endpoint, { ...options, method: 'GET' })
+      .finally(() => {
+        inFlightGetRequests.delete(cacheKey);
+      });
+    inFlightGetRequests.set(cacheKey, promise);
+    return promise;
   },
 
   post<T>(endpoint: string, body?: any, options?: RequestOptions): Promise<T> {

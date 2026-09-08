@@ -41,6 +41,6 @@
     "test-migrate.ts",
     "test-query.ts",
     "test-table-metadata.ts",
-    "api/index.ts"
+    "api"
   ]
 }
