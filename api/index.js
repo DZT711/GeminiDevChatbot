@@ -4577,7 +4577,7 @@ router.post("/messages/query", async (req, res) => {
     if (!payload || !payload.id) {
       return res.status(401).json({ error: "Invalid token" });
     }
-    const { query, limit = 50, sessionId } = req.body;
+    const { query, limit = 50, sessionId, workspaceId, planningOnly, includeAllUsers } = req.body;
     const userId = payload.id;
     const results = await txWithUser(userId, async (tx) => {
       const userObj = await tx.query.users.findFirst({
@@ -4588,16 +4588,54 @@ router.post("/messages/query", async (req, res) => {
       }
       const { and: and2, ilike, desc: desc2 } = await import("drizzle-orm");
       const conditions = [];
-      if (sessionId) {
-        conditions.push(eq4(messages.sessionId, sessionId));
-      }
-      if (userObj.role !== "ADMIN") {
-        const userSessions = await tx.select().from(sessions).where(eq4(sessions.userId, userId));
-        const userSessionIds = userSessions.map((s) => s.id);
-        if (userSessionIds.length === 0) {
+      const shouldScopeToUser = userObj.role !== "ADMIN" || !includeAllUsers;
+      let scopedSessionIds = null;
+      if (shouldScopeToUser) {
+        const userSessions = await tx.select({ id: sessions.id }).from(sessions).where(eq4(sessions.userId, userId));
+        scopedSessionIds = userSessions.map((s) => s.id);
+        if (scopedSessionIds.length === 0) {
           return [];
         }
-        conditions.push(sql4`${messages.sessionId} IN ${userSessionIds}`);
+      }
+      if (sessionId) {
+        if (scopedSessionIds && !scopedSessionIds.includes(sessionId)) {
+          return [];
+        }
+        conditions.push(eq4(messages.sessionId, sessionId));
+      } else if (scopedSessionIds) {
+        conditions.push(sql4`${messages.sessionId} IN ${scopedSessionIds}`);
+      }
+      if (planningOnly) {
+        conditions.push(sql4`(
+          ${messages.content} ILIKE '%/goal%' OR
+          ${messages.content} ILIKE '%M05 Planning%' OR
+          ${messages.content} ILIKE '%Planning Complete%' OR
+          ${messages.content} ILIKE '%GoalPlanningResult%' OR
+          ${messages.content} ILIKE '%Goal Intent%' OR
+          ${messages.modelUsed} ILIKE '%Planning Engine%' OR
+          EXISTS (
+            SELECT 1 FROM ${sessions} s
+            WHERE s.id = ${messages.sessionId} AND (
+              s.title ILIKE '/goal%' OR
+              s.title ILIKE '🎯 Goal%' OR
+              s.title ILIKE 'GOAL%'
+            )
+          )
+        )`);
+      }
+      if (workspaceId && typeof workspaceId === "string" && workspaceId.trim()) {
+        const cleanWsId = workspaceId.trim();
+        conditions.push(sql4`(
+          ${messages.content} ILIKE ${`%${cleanWsId}%`} OR
+          CAST(${messages.attachments} AS TEXT) ILIKE ${`%${cleanWsId}%`} OR
+          EXISTS (
+            SELECT 1 FROM ${sessions} s
+            WHERE s.id = ${messages.sessionId} AND (
+              s.summary ILIKE ${`%${cleanWsId}%`} OR
+              s.title ILIKE ${`%${cleanWsId}%`}
+            )
+          )
+        )`);
       }
       if (query && typeof query === "string" && query.trim()) {
         const cleanQuery = `%${query.trim()}%`;
@@ -9595,6 +9633,46 @@ var ReplanningEngine = class {
       };
     }
     let generatedPlan = planResult.plan;
+    if (context.failedStep) {
+      const failedId = context.failedStep.id;
+      const replacementId = `${failedId}_repaired`;
+      const updatedSteps = generatedPlan.steps.map((s) => {
+        if (s.id === failedId || s.taskId === failedId) {
+          return {
+            ...s,
+            id: replacementId,
+            taskId: replacementId,
+            title: `Repaired: ${s.title}`,
+            description: `Replanned step replacing ${failedId} after failure: ${context.failureClassification.originalError}. ${s.description}`,
+            metadata: {
+              ...s.metadata,
+              replannedFrom: failedId,
+              replanReason: context.failureClassification.originalError,
+              isReplacementStep: true
+            }
+          };
+        }
+        if (s.dependencies && s.dependencies.includes(failedId)) {
+          return {
+            ...s,
+            dependencies: s.dependencies.map((d) => d === failedId ? replacementId : d)
+          };
+        }
+        return s;
+      });
+      const revPlanId = `plan_rev_${Date.now()}`;
+      const newPlanTaskGraph = new DirectedTaskGraph(revPlanId, generatedPlan.goalId);
+      for (const s of updatedSteps) {
+        newPlanTaskGraph.addTask(s, s.dependencies);
+      }
+      generatedPlan = {
+        ...generatedPlan,
+        id: revPlanId,
+        steps: updatedSteps,
+        taskGraph: newPlanTaskGraph,
+        executionOrder: newPlanTaskGraph.getTopologicalOrder()
+      };
+    }
     let validationResult = await this.validator.validate(generatedPlan, planningContext);
     if (!validationResult.isValid) {
       if (this.repairer.canRepair(validationResult)) {
@@ -10582,7 +10660,7 @@ var PlanExecutionService = class {
       };
     }
     const goal = planningResult.goal;
-    const plan = planningResult.repairedPlan || planningResult.plan;
+    let plan = planningResult.repairedPlan || planningResult.plan;
     if (!goal || !plan) {
       throw new Error("Cannot execute plan: Goal or Plan is missing from PlanningResult.");
     }
@@ -10596,7 +10674,7 @@ var PlanExecutionService = class {
     if (sendEvent) {
       await this.registerProductionTools(toolPayload || {}, sendEvent);
     }
-    const taskGraph = new DirectedTaskGraph(plan.id, goal.id);
+    let taskGraph = new DirectedTaskGraph(plan.id, goal.id);
     for (const step of plan.steps) {
       taskGraph.addTask(step, step.dependencies);
     }
@@ -10619,7 +10697,9 @@ var PlanExecutionService = class {
       completedTasks: 0
     });
     const completedTasks = [];
-    const failedTasks = [];
+    let failedTasks = [];
+    let replanAttempts = 0;
+    const maxReplanBudget = 2;
     const blockedTasks = [];
     const taskResults = {};
     try {
@@ -10660,6 +10740,9 @@ var PlanExecutionService = class {
           if (!step) {
             taskGraph.setTaskStatus(taskId, "SKIPPED" /* SKIPPED */);
             continue;
+          }
+          if (taskGraph.statuses.get(taskId) === "PENDING" /* PENDING */) {
+            taskGraph.setTaskStatus(taskId, "READY" /* READY */);
           }
           taskGraph.setTaskStatus(taskId, "RUNNING" /* RUNNING */);
           appendSystemLog("AGENT_STEP_START", `[${step.id}] ${step.title}`, { description: step.description });
@@ -10904,6 +10987,83 @@ var PlanExecutionService = class {
                 durationMs: Date.now() - startTime,
                 error: `${diag.title}: ${diag.message}`
               };
+            }
+            if (replanAttempts < maxReplanBudget) {
+              emitProgress({
+                type: "replan_requested",
+                executionId,
+                planId: plan.id,
+                taskId,
+                stepId: step.id,
+                status: classification.category,
+                result: {
+                  failureClassification: classification,
+                  action: classification.recommendedAction
+                }
+              });
+              const replanDecision = await this.replanningEngine.handleFailure({
+                goal,
+                currentPlan: plan,
+                currentTaskGraph: taskGraph,
+                failedStep: step,
+                failureClassification: classification,
+                completedTaskIds: [...completedTasks],
+                replanBudget: maxReplanBudget - replanAttempts,
+                constraints: goal.constraints,
+                executionContext
+              });
+              if (replanDecision.action === "ABORT") {
+                console.error(`[PlanExecutionService] Replanning aborted: ${replanDecision.reason}`);
+                await this.runtime.failExecution(executionId, stepError || new Error(replanDecision.reason));
+                emitProgress({
+                  type: "execution_failed",
+                  executionId,
+                  planId: plan.id,
+                  error: replanDecision.reason
+                });
+                return {
+                  executionId,
+                  planId: plan.id,
+                  goalId: goal.id,
+                  workspaceId: workspaceRef.id,
+                  success: false,
+                  status: "FAILED",
+                  totalTasks: plan.steps.length,
+                  completedTasks,
+                  failedTasks,
+                  blockedTasks: Array.from(taskGraph.statuses.entries()).filter(([_, s]) => s === "BLOCKED" /* BLOCKED */).map(([t]) => t),
+                  taskResults,
+                  durationMs: Date.now() - startTime,
+                  error: replanDecision.reason
+                };
+              }
+              if (replanDecision.action === "REPLAN" || replanDecision.action === "REPAIR") {
+                replanAttempts++;
+                const revisedPlan = replanDecision.revision?.newPlan || replanDecision.repairedPlan;
+                if (revisedPlan) {
+                  plan = revisedPlan;
+                  const newTaskGraph = new DirectedTaskGraph(revisedPlan.id, goal.id);
+                  for (const s of revisedPlan.steps) {
+                    newTaskGraph.addTask(s, s.dependencies);
+                  }
+                  for (const s of revisedPlan.steps) {
+                    if (completedTasks.includes(s.id) || completedTasks.includes(s.taskId)) {
+                      if (newTaskGraph.statuses.get(s.id) === "PENDING" /* PENDING */) {
+                        newTaskGraph.setTaskStatus(s.id, "READY" /* READY */);
+                      }
+                      newTaskGraph.setTaskStatus(s.id, "RUNNING" /* RUNNING */);
+                      newTaskGraph.setTaskStatus(s.id, "COMPLETED" /* COMPLETED */);
+                    }
+                  }
+                  taskGraph = newTaskGraph;
+                  failedTasks = failedTasks.filter((id) => id !== taskId);
+                  break;
+                }
+              } else if (replanDecision.action === "RETRY") {
+                taskGraph.setTaskStatus(taskId, "READY" /* READY */);
+                failedTasks = failedTasks.filter((id) => id !== taskId);
+                break;
+              }
             }
           }
         }

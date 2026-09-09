@@ -1437,32 +1437,20 @@ useEffect(() => {
               if (stateData.preferences.enabledModels) {
                 setGlobalEnabledModels(stateData.preferences.enabledModels);
               }
+            } else {
+              setActiveKeyId("");
             }
-            if (stateData.apiKeys && stateData.apiKeys.length > 0) setApiKeys(stateData.apiKeys);
+            setApiKeys(Array.isArray(stateData.apiKeys) ? stateData.apiKeys : []);
             if (stateData.customSkills) {
-              setCustomSkills(prev => {
-                const merged = [...prev];
-                for (const s of stateData.customSkills) if (!merged.find(x => x.id === s.id)) merged.push(s);
-                return merged;
-              });
+              setCustomSkills(Array.isArray(stateData.customSkills) ? stateData.customSkills : []);
             }
             if (stateData.sessions) {
-              setSessions(prev => {
-                const merged = [...prev];
-                for (const s of stateData.sessions) {
-                  const existingIdx = merged.findIndex(x => x.id === s.id);
-                  if (existingIdx !== -1) {
-                    if (s.updatedAt > merged[existingIdx].updatedAt) merged[existingIdx] = s;
-                  } else {
-                    merged.push(s);
-                  }
-                }
-                return merged.sort((a, b) => {
-                  const tB = new Date(b.updatedAt || 0).getTime();
-                  const tA = new Date(a.updatedAt || 0).getTime();
-                  return tB - tA;
-                });
-              });
+              const userSessions = Array.isArray(stateData.sessions) ? stateData.sessions : [];
+              setSessions(userSessions.sort((a: any, b: any) => {
+                const tB = new Date(b.updatedAt || 0).getTime();
+                const tA = new Date(a.updatedAt || 0).getTime();
+                return tB - tA;
+              }));
             }
 
           // Fetch model catalog

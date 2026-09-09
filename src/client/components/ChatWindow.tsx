@@ -6,12 +6,16 @@ import {
   AlertCircle, ArrowDown, AtSign, Check, ChevronDown, Circle, Code, Cpu, 
   FileIcon, FileText, Image as ImageIcon, Maximize2, Mic, Minimize2, 
   Paperclip, Play, Plus, Search, Send, Settings, Settings as SettingsIcon, Sparkles, Terminal, 
-  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database
+  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database, LogOut
 } from "lucide-react";
 import { ChatMessage } from "./ChatMessage";
 import { storageService } from '../services/storageService';
+import { useNavigate } from 'react-router-dom';
+import { LogoutTransitionModal } from './LogoutTransitionModal';
 
 export function ChatWindow(props: any) {
+  const navigate = useNavigate();
+  const [isLoggingOut, setIsLoggingOut] = React.useState(false);
   const {
     theme, currentSessionId, editingSessionId, setEditingSessionId,
     editingSessionTitle, setEditingSessionTitle, saveCurrentSession,
@@ -247,17 +251,32 @@ export function ChatWindow(props: any) {
                     </span>
                   </div>
                   <button
-                    onClick={() => {
-                      storageService.removeItem("session");
-                      window.location.href = "/";
-                    }}
-                    className="p-1.5 bg-red-500/10 text-red-500 hover:bg-red-500/20 rounded-lg text-xs font-bold uppercase transition-colors"
+                    onClick={() => setIsLoggingOut(true)}
+                    className="px-2 py-1 bg-zinc-800/60 hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 hover:border-zinc-600 rounded-lg text-xs font-mono transition-colors flex items-center gap-1.5 cursor-pointer active:scale-95"
+                    title="Sign out"
                   >
-                    Logout
+                    <LogOut size={12} />
+                    <span>Logout</span>
                   </button>
                 </div>
               </div>
             </header>
+
+            {/* Terminal Logout Transition Overlay */}
+            <LogoutTransitionModal
+              isOpen={isLoggingOut}
+              userEmail={user?.email}
+              isGuest={user?.isGuest}
+              onComplete={() => {
+                storageService.clearUserSessionData();
+                if (typeof props.setUser === "function") props.setUser(null);
+                if (typeof props.setApiKeys === "function") props.setApiKeys([]);
+                if (typeof props.setActiveKeyId === "function") props.setActiveKeyId("");
+                if (typeof props.setSessions === "function") props.setSessions([]);
+                if (typeof props.setMessages === "function") props.setMessages([]);
+                navigate('/login', { replace: true });
+              }}
+            />
 
             <div
               ref={scrollRef}

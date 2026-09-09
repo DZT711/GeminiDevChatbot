@@ -1057,9 +1057,9 @@ export default function DevEngine() {
   const handleDeleteKey = (id: string) => rawHandleDeleteKey(id, setApiKeys, activeKeyId, setActiveKeyId);
 
   const sidebarProps = {
-    theme, isSidebarCollapsed, createNewSession, setView, view, user,
-    apiKeys, activeKeyId, modelQueueManager, currentModel, modelCatalog,
-    sessions, renderSessionItem, showHistory, setShowHistory
+    theme, isSidebarCollapsed, createNewSession, setView, view, user, setUser,
+    apiKeys, setApiKeys, activeKeyId, setActiveKeyId, modelQueueManager, currentModel, modelCatalog,
+    sessions, setSessions, setMessages, renderSessionItem, showHistory, setShowHistory
   };
 
   const settingsModalProps = {

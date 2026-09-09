@@ -3,6 +3,7 @@ import { storageService } from '../services/storageService.js';
 import { useState, useEffect, useRef } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, RefreshCw, X } from 'lucide-react'
+import { motion } from 'motion/react'
 
 /* ── Provider icons ─────────────────────────────────────── */
 const GitHubIcon = () => (
@@ -150,7 +151,7 @@ export default function Login() {
         }
         popupRef.current = null
         const token = event.data.token
-        storageService.removeItem('session')
+        storageService.clearUserSessionData()
         storageService.setItem('session', token)
         navigate('/app')
       } else if (event.data?.type === 'OAUTH_AUTH_ERROR') {
@@ -183,7 +184,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to login')
       
-      storageService.removeItem('session')
+      storageService.clearUserSessionData()
       storageService.setItem('session', data.token)
       navigate('/app')
     } catch(e: unknown) {
@@ -205,7 +206,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to register')
       
-      storageService.removeItem('session')
+      storageService.clearUserSessionData()
       storageService.setItem('session', data.token)
       navigate('/app')
     } catch(e: unknown) {
@@ -225,7 +226,7 @@ export default function Login() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || 'Failed to create guest session')
       
-      storageService.removeItem('session')
+      storageService.clearUserSessionData()
       storageService.setItem('session', data.token)
       navigate('/app')
     } catch(e: unknown) {
@@ -239,23 +240,32 @@ export default function Login() {
     <div className="min-h-screen bg-primary-dark flex items-center justify-center px-4 relative">
       <button 
         onClick={() => navigate('/')}
-        className="absolute top-6 left-6 flex items-center gap-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium bg-slate-800/50 hover:bg-slate-700/50 px-4 py-2 rounded-xl backdrop-blur-sm"
+        className="absolute top-6 left-6 flex items-center gap-2 text-text-secondary hover:text-text-primary transition-colors text-sm font-medium bg-slate-800/50 hover:bg-slate-700/50 px-4 py-2 rounded-xl backdrop-blur-sm cursor-pointer"
       >
         <ArrowLeft size={16} />
         Back
       </button>
-      <div className="w-full max-w-md">
+      <motion.div 
+        initial={{ opacity: 0, y: 12, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ duration: 0.3, ease: "easeOut" }}
+        className="w-full max-w-md"
+      >
 
         {/* ── Logo + heading ── */}
         <div className="text-center mb-10">
-          <a href="/" className="inline-flex items-center gap-3 mb-6 hover:opacity-80 transition-opacity">
+          <button 
+            type="button" 
+            onClick={() => navigate('/')} 
+            className="inline-flex items-center gap-3 mb-6 hover:opacity-80 transition-opacity cursor-pointer"
+          >
             <div className="w-10 h-10 rounded-xl bg-accent-blue/20 border border-accent-blue/30 flex items-center justify-center">
               <svg className="w-5 h-5 text-accent-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
               </svg>
             </div>
             <span className="font-heading text-xl font-bold text-text-primary">GeminiDevChatbot</span>
-          </a>
+          </button>
           <h1 className="font-heading text-3xl font-bold text-text-primary mb-2">Welcome</h1>
           <p className="text-text-secondary text-sm">
             Sign in or create your account — no password needed
@@ -449,7 +459,7 @@ export default function Login() {
         </div>
 
 
-      </div>
+      </motion.div>
     </div>
   )
 }

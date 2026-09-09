@@ -707,7 +707,7 @@ export class PlanExecutionService {
     }
 
     const goal = planningResult.goal;
-    const plan = planningResult.repairedPlan || planningResult.plan;
+    let plan = planningResult.repairedPlan || planningResult.plan;
     if (!goal || !plan) {
       throw new Error('Cannot execute plan: Goal or Plan is missing from PlanningResult.');
     }
@@ -727,7 +727,7 @@ export class PlanExecutionService {
     }
 
     // 3. Initialize DirectedTaskGraph from Plan
-    const taskGraph = new DirectedTaskGraph(plan.id, goal.id);
+    let taskGraph = new DirectedTaskGraph(plan.id, goal.id);
     for (const step of plan.steps) {
       taskGraph.addTask(step, step.dependencies);
     }
@@ -756,7 +756,9 @@ export class PlanExecutionService {
     });
 
     const completedTasks: string[] = [];
-    const failedTasks: string[] = [];
+    let failedTasks: string[] = [];
+    let replanAttempts = 0;
+    const maxReplanBudget = 2;
     const blockedTasks: string[] = [];
     const taskResults: Record<string, ToolResult> = {};
 
@@ -807,6 +809,9 @@ export class PlanExecutionService {
             continue;
           }
 
+          if (taskGraph.statuses.get(taskId) === TaskStatus.PENDING) {
+            taskGraph.setTaskStatus(taskId, TaskStatus.READY);
+          }
           taskGraph.setTaskStatus(taskId, TaskStatus.RUNNING);
           appendSystemLog('AGENT_STEP_START', `[${step.id}] ${step.title}`, { description: step.description });
           emitProgress({
@@ -1105,6 +1110,91 @@ export class PlanExecutionService {
                 durationMs: Date.now() - startTime,
                 error: `${diag.title}: ${diag.message}`
               };
+            }
+
+            // Recoverable error: attempt replanning / repair / recovery
+            if (replanAttempts < maxReplanBudget) {
+              emitProgress({
+                type: 'replan_requested',
+                executionId,
+                planId: plan.id,
+                taskId,
+                stepId: step.id,
+                status: classification.category,
+                result: {
+                  failureClassification: classification,
+                  action: classification.recommendedAction
+                }
+              });
+
+              const replanDecision = await this.replanningEngine.handleFailure({
+                goal,
+                currentPlan: plan,
+                currentTaskGraph: taskGraph,
+                failedStep: step,
+                failureClassification: classification,
+                completedTaskIds: [...completedTasks],
+                replanBudget: maxReplanBudget - replanAttempts,
+                constraints: goal.constraints,
+                executionContext
+              });
+
+              if (replanDecision.action === 'ABORT') {
+                console.error(`[PlanExecutionService] Replanning aborted: ${replanDecision.reason}`);
+                await this.runtime.failExecution(executionId, stepError || new Error(replanDecision.reason));
+                emitProgress({
+                  type: 'execution_failed',
+                  executionId,
+                  planId: plan.id,
+                  error: replanDecision.reason
+                });
+
+                return {
+                  executionId,
+                  planId: plan.id,
+                  goalId: goal.id,
+                  workspaceId: workspaceRef.id,
+                  success: false,
+                  status: 'FAILED',
+                  totalTasks: plan.steps.length,
+                  completedTasks,
+                  failedTasks,
+                  blockedTasks: Array.from(taskGraph.statuses.entries())
+                    .filter(([_, s]) => s === TaskStatus.BLOCKED)
+                    .map(([t]) => t),
+                  taskResults,
+                  durationMs: Date.now() - startTime,
+                  error: replanDecision.reason
+                };
+              }
+
+              if (replanDecision.action === 'REPLAN' || replanDecision.action === 'REPAIR') {
+                replanAttempts++;
+                const revisedPlan = replanDecision.revision?.newPlan || replanDecision.repairedPlan;
+                if (revisedPlan) {
+                  plan = revisedPlan;
+                  const newTaskGraph = new DirectedTaskGraph(revisedPlan.id, goal.id);
+                  for (const s of revisedPlan.steps) {
+                    newTaskGraph.addTask(s, s.dependencies);
+                  }
+                  for (const s of revisedPlan.steps) {
+                    if (completedTasks.includes(s.id) || completedTasks.includes(s.taskId)) {
+                      if (newTaskGraph.statuses.get(s.id) === TaskStatus.PENDING) {
+                        newTaskGraph.setTaskStatus(s.id, TaskStatus.READY);
+                      }
+                      newTaskGraph.setTaskStatus(s.id, TaskStatus.RUNNING);
+                      newTaskGraph.setTaskStatus(s.id, TaskStatus.COMPLETED);
+                    }
+                  }
+                  taskGraph = newTaskGraph;
+                  failedTasks = failedTasks.filter(id => id !== taskId);
+                  break;
+                }
+              } else if (replanDecision.action === 'RETRY') {
+                taskGraph.setTaskStatus(taskId, TaskStatus.READY);
+                failedTasks = failedTasks.filter(id => id !== taskId);
+                break;
+              }
             }
           }
         }

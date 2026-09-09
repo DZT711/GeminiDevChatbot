@@ -117,6 +117,14 @@ export class GoalPlanningService {
         title: objective.length > 60 ? `${objective.slice(0, 57)}...` : objective,
         description: objective,
         desiredOutcome: `Verified implementation of: ${objective}`,
+        successCriteria: request.successCriteria && request.successCriteria.length > 0 ? request.successCriteria : [
+          {
+            id: `crit_${Date.now()}_1`,
+            description: `Verify completion of: ${objective}`,
+            assertionType: 'BUILD_SUCCEEDS',
+            required: true
+          }
+        ],
         constraints: request.constraints,
         priority: GoalPriority.MEDIUM,
         status: GoalStatus.CREATED,

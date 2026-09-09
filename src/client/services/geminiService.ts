@@ -695,13 +695,15 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                   },
                   {
                     name: "query_database_messages",
-                    description: "Queries historical developer logs and user/assistant messages from the PostgreSQL database messages table. Extremely useful to read previous conversations, find previous solutions to bugs, error logs, and details of past conversations across sessions to make current responses smarter.",
+                    description: "Queries historical developer logs and messages from the PostgreSQL database messages table. Automatically scoped to the authenticated user's account for privacy. Supports filtering by keyword, specific sessionId, planning-specific logs (goal planning, tasks, decomposition), or workspaceId.",
                     parameters: {
                       type: Type.OBJECT,
                       properties: {
                         query: { type: Type.STRING, description: "Optional search text or keyword to look up within conversation contents." },
                         limit: { type: Type.INTEGER, description: "Optional max number of records to return (default 50)." },
-                        sessionId: { type: Type.STRING, description: "Optional. Retrieve messages belonging ONLY to a specific session ID." }
+                        sessionId: { type: Type.STRING, description: "Optional. Retrieve messages belonging ONLY to a specific session ID." },
+                        workspaceId: { type: Type.STRING, description: "Optional. Retrieve messages belonging ONLY to a specific workspace ID or workspace operations." },
+                        planningOnly: { type: Type.BOOLEAN, description: "Optional. If true, filters specifically for autonomous goal planning, task decomposition, and execution plan logs." }
                       }
                     }
                   }
@@ -1092,9 +1094,20 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                         transparencyLogger.updateAction(actionId, { status: 'failed', outputPayload: { error: err.message } });
                       }
                     } else if (call.name === 'query_database_messages') {
-                      const args = call.args as any;
-                      const displayQuery = args.query ? `for "${args.query}"` : "all sessions";
-                      onChunk?.(`[Database Engine: Inspecting messages history ${displayQuery}...]`);
+                      const args = call.args as {
+                        query?: string;
+                        limit?: number;
+                        sessionId?: string;
+                        workspaceId?: string;
+                        planningOnly?: boolean;
+                      };
+                      const displayTarget = args.planningOnly
+                        ? "planning history"
+                        : args.workspaceId
+                        ? `workspace "${args.workspaceId}"`
+                        : "account history";
+                      const displayQuery = args.query ? `for "${args.query}" (${displayTarget})` : displayTarget;
+                      onChunk?.(`[Database Engine: Inspecting messages ${displayQuery}...]`);
                       try {
                         const token = storageService.getItem('session');
                         if (!token) throw new Error('Unauthenticated database operation');

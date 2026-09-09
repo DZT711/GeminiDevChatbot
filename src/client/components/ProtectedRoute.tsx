@@ -20,7 +20,7 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
       .then(() => setStatus('ok'))
       .catch((err) => {
         if (err.name === 'ApiError') {
-          storageService.removeItem('session');
+          storageService.clearUserSessionData();
           navigate('/login', { replace: true });
         } else {
           setStatus('ok');
@@ -30,10 +30,10 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
 
   if (status === 'checking') {
     return (
-      <div className="min-h-screen bg-primary-dark flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4 text-text-secondary">
-          <span className="w-8 h-8 border-2 border-accent-blue border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm">Loading…</p>
+      <div className="min-h-screen bg-[#050506] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3 text-zinc-400">
+          <span className="w-5 h-5 border-2 border-zinc-700 border-t-zinc-300 rounded-full animate-spin block" />
+          <p className="text-xs font-mono tracking-wider text-zinc-500">Authenticating…</p>
         </div>
       </div>
     )

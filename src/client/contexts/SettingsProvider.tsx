@@ -18,6 +18,7 @@ const SettingsContext = createContext<SettingsContextType | undefined>(undefined
 export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [apiKeys, setApiKeys] = useState<ApiKey[]>(() => {
     try {
+      if (!storageService.getItem("session")) return [];
       const saved = storageService.getItem("devengine_api_keys");
       if (saved) return JSON.parse(saved);
     } catch {}
@@ -25,6 +26,7 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   });
 
   const [activeKeyId, setActiveKeyId] = useState<string>(() => {
+    if (!storageService.getItem("session")) return "";
     return storageService.getItem("devengine_active_key_id") || "";
   });
 
@@ -42,8 +44,14 @@ export const SettingsProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   useEffect(() => {
     try {
-      storageService.setItem("devengine_api_keys", JSON.stringify(apiKeys));
-      storageService.setItem("devengine_active_key_id", activeKeyId);
+      const hasSession = !!storageService.getItem("session");
+      if (hasSession) {
+        storageService.setItem("devengine_api_keys", JSON.stringify(apiKeys));
+        storageService.setItem("devengine_active_key_id", activeKeyId);
+      } else {
+        storageService.removeItem("devengine_api_keys");
+        storageService.removeItem("devengine_active_key_id");
+      }
       storageService.setItem("devengine_enabled_models", JSON.stringify(globalEnabledModels));
       storageService.setItem("theme", theme);
     } catch {}

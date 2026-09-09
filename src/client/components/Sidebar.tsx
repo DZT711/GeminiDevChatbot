@@ -1,9 +1,14 @@
-import { MessageSquare, Sparkles, Database, ChevronDown, Key, Activity, Terminal, Pin, History, Compass, FolderCode } from "lucide-react";
-import React from 'react';
+import { MessageSquare, Sparkles, Database, ChevronDown, Key, Activity, Terminal, Pin, History, Compass, FolderCode, LogOut } from "lucide-react";
+import React, { useState } from 'react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
+import { useNavigate } from 'react-router-dom';
+import { storageService } from '../services/storageService';
+import { LogoutTransitionModal } from './LogoutTransitionModal';
 
 export function Sidebar(props: any) {
+  const navigate = useNavigate();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
   const {
     theme, isSidebarCollapsed, createNewSession, setView, view, user,
     apiKeys, activeKeyId, modelQueueManager, currentModel, modelCatalog,
@@ -378,12 +383,46 @@ export function Sidebar(props: any) {
                 Optimized
               </span>
             </div>
-            <div className="w-full bg-zinc-950 h-0.5 rounded-full overflow-hidden">
+            <div className="w-full bg-zinc-950 h-0.5 rounded-full overflow-hidden mb-2.5">
               <div className="bg-green-500/40 h-full w-[85%] animate-pulse" />
             </div>
+
+            {/* Quick Session Exit Button */}
+            <button
+              type="button"
+              onClick={() => setIsLoggingOut(true)}
+              className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl bg-zinc-900/60 hover:bg-zinc-800/70 border border-zinc-800/60 hover:border-zinc-700/60 text-zinc-400 hover:text-zinc-200 text-xs font-mono transition-all group cursor-pointer"
+              title="Sign out"
+            >
+              <div className="flex items-center gap-2 truncate">
+                <LogOut size={12} className="text-zinc-500 group-hover:text-zinc-300 transition-colors shrink-0" />
+                <span className="text-[10px] truncate">
+                  {user?.name || (user?.isGuest ? "Guest Node" : user?.email?.split("@")[0] || "Active Node")}
+                </span>
+              </div>
+              <span className="text-[9px] uppercase tracking-wider text-zinc-500 group-hover:text-zinc-300 font-medium">
+                Exit
+              </span>
+            </button>
           </div>
         </div>
       </aside>
+
+      {/* Terminal Logout Transition Overlay */}
+      <LogoutTransitionModal
+        isOpen={isLoggingOut}
+        userEmail={user?.email}
+        isGuest={user?.isGuest}
+        onComplete={() => {
+          storageService.clearUserSessionData();
+          if (typeof props.setUser === "function") props.setUser(null);
+          if (typeof props.setApiKeys === "function") props.setApiKeys([]);
+          if (typeof props.setActiveKeyId === "function") props.setActiveKeyId("");
+          if (typeof props.setSessions === "function") props.setSessions([]);
+          if (typeof props.setMessages === "function") props.setMessages([]);
+          navigate('/login', { replace: true });
+        }}
+      />
     </>
   );
 }

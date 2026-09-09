@@ -3,6 +3,7 @@ import { storageService } from '../services/storageService.js';
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthProvider';
+import { LogoutTransitionModal } from '../components/LogoutTransitionModal';
 
 /* ── Interfaces ── */
 
@@ -52,6 +53,7 @@ function CodeSnippet({ code }: { code: string }) {
 export default function Landing() {
   const navigate = useNavigate()
   const { user, setUser } = useAuth();
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
 
   useEffect(() => {
     document.title = "DevEngine | AI Coding Assistant";
@@ -119,11 +121,8 @@ export default function Landing() {
                 Dashboard
               </button>
               <button
-                onClick={() => {
-                  storageService.removeItem('session');
-                  setUser(null);
-                }}
-                className="text-red-400 border border-red-500/30 text-sm font-semibold px-4 py-1.5 rounded-lg hover:bg-red-500/10 transition-colors"
+                onClick={() => setIsLoggingOut(true)}
+                className="text-zinc-400 hover:text-zinc-200 border border-zinc-700/60 hover:border-zinc-600 text-sm font-medium px-4 py-1.5 rounded-lg hover:bg-zinc-800/40 transition-colors cursor-pointer"
               >
                 Logout
               </button>
@@ -138,6 +137,19 @@ export default function Landing() {
           )}
         </div>
       </nav>
+
+      {/* Terminal Logout Transition Overlay */}
+      <LogoutTransitionModal
+        isOpen={isLoggingOut}
+        userEmail={user?.email}
+        isGuest={user?.isGuest}
+        onComplete={() => {
+          storageService.clearUserSessionData();
+          setUser(null);
+          setIsLoggingOut(false);
+          navigate('/login', { replace: true });
+        }}
+      />
 
       {/* ── Hero ── */}
       <section className="min-h-[92vh] flex flex-col items-center justify-center text-center px-8 py-24 bg-gradient-to-b from-primary-dark via-slate-900 to-primary-dark">

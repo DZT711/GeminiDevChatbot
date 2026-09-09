@@ -49,8 +49,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             console.error("Auth context failed to fetch user:", error);
           }
           setUser(null);
-          storageService.removeItem("devengine_user");
-          storageService.removeSessionToken();
+          storageService.clearUserSessionData();
         }
       }
       setIsLoading(false);

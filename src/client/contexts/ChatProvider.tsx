@@ -19,6 +19,7 @@ const ChatContext = createContext<ChatContextType | undefined>(undefined);
 export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     try {
+      if (!storageService.getItem("session")) return [];
       const saved = storageService.getItem("devengine_sessions") || storageService.getItem("chat_sessions");
       if (saved) return JSON.parse(saved);
     } catch {}
@@ -27,6 +28,7 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const [customSkills, setCustomSkills] = useState<Skill[]>(() => {
     try {
+      if (!storageService.getItem("session")) return [];
       const saved = storageService.getItem("devengine_skills");
       if (saved) return JSON.parse(saved);
     } catch {}
@@ -38,8 +40,14 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     try {
-      storageService.setItem("devengine_sessions", JSON.stringify(sessions));
-      storageService.setItem("devengine_skills", JSON.stringify(customSkills));
+      if (storageService.getItem("session")) {
+        storageService.setItem("devengine_sessions", JSON.stringify(sessions));
+        storageService.setItem("devengine_skills", JSON.stringify(customSkills));
+      } else {
+        storageService.removeItem("devengine_sessions");
+        storageService.removeItem("devengine_skills");
+        storageService.removeItem("chat_sessions");
+      }
     } catch {}
   }, [sessions, customSkills]);
 

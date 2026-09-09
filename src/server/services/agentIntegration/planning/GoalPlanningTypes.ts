@@ -2,7 +2,8 @@ import type {
   Goal,
   GoalIntent,
   GoalConstraints,
-  GoalProvenance
+  GoalProvenance,
+  SuccessCriterion
 } from '../../../../agent/goal/GoalTypes.js';
 import type {
   DecompositionResult,
@@ -27,6 +28,7 @@ export interface GoalPlanningRequest {
   objective: string;
   intent?: GoalIntent;
   constraints?: Partial<GoalConstraints>;
+  successCriteria?: SuccessCriterion[];
   availableTools?: string[];
   metadata?: Record<string, unknown>;
   provenance?: GoalProvenance;

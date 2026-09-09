@@ -1087,7 +1087,7 @@ router.post('/messages/query', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    const { query, limit = 50, sessionId } = req.body;
+    const { query, limit = 50, sessionId, workspaceId, planningOnly, includeAllUsers } = req.body;
     const userId = payload.id as string;
 
     const results = await txWithUser(userId, async (tx) => {
@@ -1103,20 +1103,65 @@ router.post('/messages/query', async (req, res) => {
 
       const conditions = [];
 
-      // Filter by session if provided
-      if (sessionId) {
-        conditions.push(eq(messages.sessionId, sessionId));
-      }
+      // Account & Session Isolation:
+      // By default, ALL queries (including ADMIN accounts) are strictly isolated to the authenticated user's own sessions.
+      // An ADMIN can only perform a cross-account audit if `includeAllUsers: true` is explicitly provided.
+      const shouldScopeToUser = userObj.role !== 'ADMIN' || !includeAllUsers;
 
-      // Role filtration: Only Admin can inspect other users' logs.
-      // Standard users can only query their own session messages.
-      if (userObj.role !== 'ADMIN') {
-        const userSessions = await tx.select().from(sessions).where(eq(sessions.userId, userId));
-        const userSessionIds = userSessions.map(s => s.id);
-        if (userSessionIds.length === 0) {
+      let scopedSessionIds: string[] | null = null;
+      if (shouldScopeToUser) {
+        const userSessions = await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.userId, userId));
+        scopedSessionIds = userSessions.map((s: { id: string }) => s.id);
+        if (scopedSessionIds.length === 0) {
           return [];
         }
-        conditions.push(sql`${messages.sessionId} IN ${userSessionIds}`);
+      }
+
+      // Filter by session if provided
+      if (sessionId) {
+        if (scopedSessionIds && !scopedSessionIds.includes(sessionId)) {
+          // If session is not owned by the current user, deny access
+          return [];
+        }
+        conditions.push(eq(messages.sessionId, sessionId));
+      } else if (scopedSessionIds) {
+        conditions.push(sql`${messages.sessionId} IN ${scopedSessionIds}`);
+      }
+
+      // Planning-specific scoping filter
+      if (planningOnly) {
+        conditions.push(sql`(
+          ${messages.content} ILIKE '%/goal%' OR
+          ${messages.content} ILIKE '%M05 Planning%' OR
+          ${messages.content} ILIKE '%Planning Complete%' OR
+          ${messages.content} ILIKE '%GoalPlanningResult%' OR
+          ${messages.content} ILIKE '%Goal Intent%' OR
+          ${messages.modelUsed} ILIKE '%Planning Engine%' OR
+          EXISTS (
+            SELECT 1 FROM ${sessions} s
+            WHERE s.id = ${messages.sessionId} AND (
+              s.title ILIKE '/goal%' OR
+              s.title ILIKE '🎯 Goal%' OR
+              s.title ILIKE 'GOAL%'
+            )
+          )
+        )`);
+      }
+
+      // Workspace-specific scoping filter
+      if (workspaceId && typeof workspaceId === 'string' && workspaceId.trim()) {
+        const cleanWsId = workspaceId.trim();
+        conditions.push(sql`(
+          ${messages.content} ILIKE ${`%${cleanWsId}%`} OR
+          CAST(${messages.attachments} AS TEXT) ILIKE ${`%${cleanWsId}%`} OR
+          EXISTS (
+            SELECT 1 FROM ${sessions} s
+            WHERE s.id = ${messages.sessionId} AND (
+              s.summary ILIKE ${`%${cleanWsId}%`} OR
+              s.title ILIKE ${`%${cleanWsId}%`}
+            )
+          )
+        )`);
       }
 
       // Keyword filter on content if provided

@@ -5,6 +5,7 @@ import type { PlanningContext, PlanningStrategy } from '../planner/PlanningTypes
 import { PlanningValidator } from '../planner/PlanningValidator.js';
 import { LocalizedPlanRepairer } from '../planner/PlanRepairer.js';
 import { Planner } from '../planner/Planner.js';
+import { DirectedTaskGraph } from '../planner/TaskGraph.js';
 import { FailureClassifier } from './FailureClassifier.js';
 import { ReplanningPolicy } from './ReplanningPolicy.js';
 import {
@@ -227,6 +228,50 @@ export class ReplanningEngine {
     }
 
     let generatedPlan = planResult.plan;
+
+    // If a specific step failed, replace it with a repaired replacement step and rewire dependencies
+    if (context.failedStep) {
+      const failedId = context.failedStep.id;
+      const replacementId = `${failedId}_repaired`;
+      const updatedSteps = generatedPlan.steps.map(s => {
+        if (s.id === failedId || s.taskId === failedId) {
+          return {
+            ...s,
+            id: replacementId,
+            taskId: replacementId,
+            title: `Repaired: ${s.title}`,
+            description: `Replanned step replacing ${failedId} after failure: ${context.failureClassification.originalError}. ${s.description}`,
+            metadata: {
+              ...s.metadata,
+              replannedFrom: failedId,
+              replanReason: context.failureClassification.originalError,
+              isReplacementStep: true
+            }
+          };
+        }
+        if (s.dependencies && s.dependencies.includes(failedId)) {
+          return {
+            ...s,
+            dependencies: s.dependencies.map(d => (d === failedId ? replacementId : d))
+          };
+        }
+        return s;
+      });
+
+      const revPlanId = `plan_rev_${Date.now()}`;
+      const newPlanTaskGraph = new DirectedTaskGraph(revPlanId, generatedPlan.goalId);
+      for (const s of updatedSteps) {
+        newPlanTaskGraph.addTask(s, s.dependencies);
+      }
+
+      generatedPlan = {
+        ...generatedPlan,
+        id: revPlanId,
+        steps: updatedSteps,
+        taskGraph: newPlanTaskGraph,
+        executionOrder: newPlanTaskGraph.getTopologicalOrder()
+      };
+    }
 
     // 5. Stage A: Full M05-07 7-Stage Validation
     let validationResult = await this.validator.validate(generatedPlan, planningContext);

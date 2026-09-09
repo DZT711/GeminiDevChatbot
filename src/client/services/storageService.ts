@@ -39,6 +39,19 @@ export const storageService = {
     this.removeItem('session');
   },
   
+  clearUserSessionData(): void {
+    this.removeItem('session');
+    this.removeItem('devengine_user');
+    this.removeItem('devengine_api_keys');
+    this.removeItem('devengine_active_key_id');
+    this.removeItem('devengine_sessions');
+    this.removeItem('chat_sessions');
+    this.removeItem('devengine_skills');
+    this.removeItem('devengine_enabled_models');
+    this.removeItem('devengine_last_model');
+    this.removeItem('devgenie_planning_fixtures');
+  },
+  
   getParsedItem<T>(key: string, defaultValue: T): T {
     const item = this.getItem(key);
     if (!item) return defaultValue;
