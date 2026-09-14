@@ -7,7 +7,7 @@ import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { githubService } from "./githubService";
 import { transparencyLogger, thinkingStore } from '../utils/transparencyLogger';
 import { manageSessionMemory } from './memoryManager';
-import { isGeminiThinkingConfigSupported, isThoughtSignatureModel } from '../../agent/agent.config';
+import { isGeminiThinkingConfigSupported, isThoughtSignatureModel, getThinkingConfigForModel } from '../../agent/agent.config';
 
 
 
@@ -721,10 +721,9 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                   contents: currentHistory,
                   config: {
                     systemInstruction: systemPrompt,
-                    thinkingConfig: isGeminiThinkingConfigSupported(model) ? { 
-                      thinkingLevel: config.thinkingLevel || ThinkingLevel.LOW,
-                      includeThoughts: true 
-                    } : undefined,
+                    thinkingConfig: isGeminiThinkingConfigSupported(model)
+                      ? (getThinkingConfigForModel(model, config.thinkingLevel as string) as any)
+                      : undefined,
                     tools: this.resolveToolsPayload(config.useSearch, coreTools)
                   }
                 });

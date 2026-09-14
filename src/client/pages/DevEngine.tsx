@@ -173,6 +173,8 @@ export default function DevEngine() {
     globalModelCatalog, setGlobalModelCatalog,
     modelCatalog,
     setModelCatalog,
+    isLoadingModels, setIsLoadingModels,
+    refreshModels,
     newModelName, setNewModelName,
     newModelId, setNewModelId,
     newModelContext, setNewModelContext,
@@ -345,6 +347,8 @@ export default function DevEngine() {
     fetchKnowledgeData,
     handleApproveProposal,
     handleRejectProposal,
+    handleDeleteProposal,
+    handleResetProposal,
     handleUpdateProposal,
     handleDeleteNode,
     handleProposeDeleteNode,
@@ -354,11 +358,42 @@ export default function DevEngine() {
     handleCreateProposal,
   } = useKnowledgeBase();
 
-  
-  
-  
-  
-  
+  const handleApproveProposalAction = async (proposalId: string) => {
+    try {
+      await handleApproveProposal(proposalId);
+      addNotification("Proposal approved and indexed successfully into memory.", "success");
+    } catch (err: any) {
+      addNotification(err?.message || "Failed to approve proposal", "error");
+    }
+  };
+
+  const handleRejectProposalAction = async (proposalId: string) => {
+    try {
+      await handleRejectProposal(proposalId);
+      addNotification("Proposal marked as rejected.", "info");
+    } catch (err: any) {
+      addNotification(err?.message || "Failed to reject proposal", "error");
+    }
+  };
+
+  const handleDeleteProposalAction = async (proposalId: string) => {
+    try {
+      await handleDeleteProposal(proposalId);
+      addNotification("Proposal removed successfully.", "success");
+    } catch (err: any) {
+      addNotification(err?.message || "Failed to remove proposal", "error");
+    }
+  };
+
+  const handleResetProposalAction = async (proposalId: string) => {
+    try {
+      await handleResetProposal(proposalId);
+      addNotification("Proposal restored to pending queue.", "info");
+    } catch (err: any) {
+      addNotification(err?.message || "Failed to reset proposal", "error");
+    }
+  };
+
   const handleSaveProposalEdit = async (proposalId: string) => {
     const token = storageService.getItem("session");
     if (!token) return;
@@ -382,7 +417,13 @@ export default function DevEngine() {
       }
     } catch (err: any) {
       addNotification("Error updating proposal: " + err.message, "error");
-    } finally { setIsKnowledgeActionLoading(prev => ({...prev, [proposalId]: false})); }
+    } finally {
+      setIsKnowledgeActionLoading(prev => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
+    }
   };
 
   
@@ -443,7 +484,13 @@ export default function DevEngine() {
       }
     } catch (err: any) {
       addNotification("Error: " + err.message, "error");
-    } finally { setIsKnowledgeActionLoading(prev => ({...prev, [nodeId]: false})); }
+    } finally {
+      setIsKnowledgeActionLoading(prev => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
+    }
   };
 
   const handleDeleteNodeAction = async (nodeId: string) => {
@@ -490,7 +537,11 @@ export default function DevEngine() {
     } catch (err: any) {
       addNotification("Error deleting knowledge node: " + err.message, "error");
     } finally {
-      setIsKnowledgeActionLoading(prev => ({ ...prev, [nodeId]: false }));
+      setIsKnowledgeActionLoading(prev => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
     }
   };
 
@@ -862,8 +913,8 @@ export default function DevEngine() {
       },
       {
         cmd: "/skills",
-        syntax: "/skills",
-        description: "Open and browse neural developer skills list.",
+        syntax: "/skills, /skill",
+        description: "Open neural developer skills console & toggles.",
         icon: <Sparkles size={14} className="text-cyan-400" />,
       },
       {
@@ -923,9 +974,14 @@ export default function DevEngine() {
       setTimeout(() => setValidationStatus(null), 2000);
     } else if (cmd === "/refine") {
       handleEnhancePrompt();
-    } else if (cmd === "/skills") {
+    } else if (cmd === "/skills" || cmd === "/skill" || cmd.startsWith("/skill")) {
       setIsSkillsExpanded((prev) => !prev);
       setInput("");
+      setValidationStatus({
+        type: "info",
+        message: !isSkillsExpanded ? "NEURAL SKILLS CONSOLE OPENED" : "SKILLS CONSOLE CLOSED",
+      });
+      setTimeout(() => setValidationStatus(null), 2500);
     } else if (cmd === "/search") {
       setUseSearch((prev) => !prev);
       setInput("");
@@ -1059,7 +1115,8 @@ export default function DevEngine() {
   const sidebarProps = {
     theme, isSidebarCollapsed, createNewSession, setView, view, user, setUser,
     apiKeys, setApiKeys, activeKeyId, setActiveKeyId, modelQueueManager, currentModel, modelCatalog,
-    sessions, setSessions, setMessages, renderSessionItem, showHistory, setShowHistory
+    sessions, setSessions, setMessages, renderSessionItem, showHistory, setShowHistory,
+    isKnowledgeLoading, knowledgeNodes, knowledgeProposals
   };
 
   const settingsModalProps = {
@@ -1085,8 +1142,8 @@ export default function DevEngine() {
     knowledgeNodes, setKnowledgeNodes: () => {},
     kSearchQuery, setKSearchQuery, handleKSearch: executeKSearch, isKSearching, kSearchError, kSearchResults,
     newProposalContent, setNewProposalContent, newProposalReason, setNewProposalReason, handleCreateNewProposal: handleCreateProposal, isSubmittingProposal,
-    knowledgeProposals, editingProposalId, editingProposalContent, setEditingProposalContent, handleSaveProposalEdit: handleUpdateProposal, setEditingProposalId,
-    isKnowledgeActionLoading, handleRejectProposal, handleApproveProposal,
+    knowledgeProposals, editingProposalId, editingProposalContent, setEditingProposalContent, handleSaveProposalEdit, setEditingProposalId,
+    isKnowledgeActionLoading, handleRejectProposal: handleRejectProposalAction, handleApproveProposal: handleApproveProposalAction, handleDeleteProposal: handleDeleteProposalAction, handleResetProposal: handleResetProposalAction,
     toggleSkillSuggestions, showSkillSuggestions, autoScroll, setAutoScroll, handleSummarizeChat, isLoading, setShowTransparency
   };
 
@@ -1103,7 +1160,7 @@ export default function DevEngine() {
     selectedCommandIndex, setSelectedCommandIndex, uploadedFileName,
     handleStopGeneration: handleStop, autoScroll, setAutoScroll, isAutoCompact, setIsAutoCompact,
     isSidebarCollapsed, createNewSession, activeKey, activeApiKey,
-    isModelSelectorOpen, setIsModelSelectorOpen, currentModel, setCurrentModel, ModelId: (window as any).ModelId || {},
+    isModelSelectorOpen, setIsModelSelectorOpen, currentModel, setCurrentModel, ModelId,
     modelSearch, setModelSearch, activeKeyId, apiKeys, globalEnabledModels, modelQueueManager, modelCatalog,
     setSettingsTab, setShowSettings, removeAttachment, handlePaste, showCommands,
     filteredCommands, executeCommand, handleEnhancePrompt,
@@ -1119,7 +1176,7 @@ export default function DevEngine() {
   const propsToPass = {
     user, setUser, apiKeys, setApiKeys, activeKeyId, setActiveKeyId, globalEnabledModels, setGlobalEnabledModels, theme, setTheme,
     sessions, setSessions, customSkills, setCustomSkills, currentSessionId, setCurrentSessionId, messages, setMessages,
-    globalModelCatalog, setGlobalModelCatalog, modelCatalog, setModelCatalog, newModelName, setNewModelName,
+    globalModelCatalog, setGlobalModelCatalog, modelCatalog, setModelCatalog, isLoadingModels, refreshModels, newModelName, setNewModelName,
     newModelId, setNewModelId, newModelContext, setNewModelContext, newModelTools, setNewModelTools,
     modelSearch, setModelSearch, catalogSearch, setCatalogSearch, catalogFilter, setCatalogFilter,
     catalogPage, setCatalogPage, currentModel, setCurrentModel, metrics, setMetrics, managingKeyId, setManagingKeyId,
@@ -1139,14 +1196,19 @@ export default function DevEngine() {
     editingSessionTitle, setEditingSessionTitle, adminLogs, setAdminLogs, adminCliInput, setAdminCliInput, isStateLoaded, setIsStateLoaded,
     loadSession, createNewSession, saveCurrentSession, deleteSession, handleTogglePinSession, apiKeyWarning, setApiKeyWarning,
     knowledgeNodes, kSearchQuery, setKSearchQuery, newProposalContent, setNewProposalContent,
-    newProposalReason, setNewProposalReason, fetchKnowledgeData, handleApproveProposal, handleRejectProposal, handleUpdateProposal,
+    newProposalReason, setNewProposalReason, fetchKnowledgeData,
+    handleApproveProposal: handleApproveProposalAction,
+    handleRejectProposal: handleRejectProposalAction,
+    handleDeleteProposal: handleDeleteProposalAction,
+    handleResetProposal: handleResetProposalAction,
+    handleUpdateProposal,
     handleDeleteNode: handleDeleteNodeAction, handleProposeDeleteNode, handleUpdateNode, handleProposeUpdateNode, executeKSearch, handleCreateProposal,
     handleStop, handleEditMessage, handleRevertMessage, handleRateMessage, handleToggleRepoModal, handleStartEditingSession, handleSaveSessionTitle,
     handleImageGen, handleVideoGen, handlePaste, handleAddRepo, handleEnhancePrompt, handleSummarizeChat, handleSubmit,
     DEFAULT_SKILLS, PROVIDER_CONFIGS, ModelId, handleUploadSkillFile: () => {}, handleCreateCustomSkillManual: () => {}, handleEditSkill, handleGithubImport: () => {},
     Provider, handleCreateSkill, handleKSearch, handleCreateNewProposal, handleSaveProposalEdit, handleSaveNodeEdit,
     knowledgeProposals, isSubmittingProposal, editingProposalId, editingProposalContent, setEditingProposalContent,
-    setEditingProposalId, isKnowledgeActionLoading, editingNodeId, editingNodeContent, setEditingNodeContent, setEditingNodeId,
+    setEditingProposalId, isKnowledgeActionLoading, isKnowledgeLoading, editingNodeId, editingNodeContent, setEditingNodeContent, setEditingNodeId,
     kSearchResults, kSearchError, isKSearching, removeCustomSkill: () => {}, ICON_MAP,
   };
 

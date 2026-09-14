@@ -6,12 +6,13 @@ import {
   AlertCircle, ArrowDown, AtSign, Check, ChevronDown, Circle, Code, Cpu, 
   FileIcon, FileText, Image as ImageIcon, Maximize2, Mic, Minimize2, 
   Paperclip, Play, Plus, Search, Send, Settings, Settings as SettingsIcon, Sparkles, Terminal, 
-  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database, LogOut
+  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database, LogOut, ArrowUpRight
 } from "lucide-react";
 import { ChatMessage } from "./ChatMessage";
 import { storageService } from '../services/storageService';
 import { useNavigate } from 'react-router-dom';
 import { LogoutTransitionModal } from './LogoutTransitionModal';
+import { isGeminiThinkingConfigSupported, getSupportedThinkingLevelsForModel } from '../../agent/agent.config';
 
 export function ChatWindow(props: any) {
   const navigate = useNavigate();
@@ -42,10 +43,42 @@ export function ChatWindow(props: any) {
     setView, ICON_MAP, scrollRef, showInputBox, handleSubmit, setAutocompleteSuggestion
   } = props;
   const [previewImage, setPreviewImage] = React.useState<string | null>(null);
+  const [isDeepMenuOpen, setIsDeepMenuOpen] = React.useState(false);
+  const deepMenuRef = React.useRef<HTMLDivElement | null>(null);
+
+  const supportsThinking = React.useMemo(() => {
+    return isGeminiThinkingConfigSupported(currentModel);
+  }, [currentModel]);
+
+  const supportedThinkingLevels = React.useMemo(() => {
+    return getSupportedThinkingLevelsForModel(currentModel);
+  }, [currentModel]);
+
+  const currentThinkingLabel = React.useMemo(() => {
+    if (!supportsThinking || thinkingMode === "none") return "Off";
+    const matched = supportedThinkingLevels.find(l => l.id === thinkingMode);
+    if (matched) return matched.label;
+    if (thinkingMode === "medium" || thinkingMode === "normal") return "Normal";
+    if (thinkingMode === "extra_high" || thinkingMode === "xhigh") return "XHigh";
+    if (thinkingMode === "minimal") return "Minimal";
+    if (thinkingMode === "low") return "Low";
+    if (thinkingMode === "high") return "High";
+    return String(thinkingMode).toUpperCase();
+  }, [supportsThinking, thinkingMode, supportedThinkingLevels]);
   const selectedCommandRef = React.useRef<HTMLDivElement | null>(null);
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const backdropRef = React.useRef<HTMLDivElement | null>(null);
+
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (deepMenuRef.current && !deepMenuRef.current.contains(event.target as Node)) {
+        setIsDeepMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   const getSlashCommandHighlightClass = (cmd: string): string => {
     switch (cmd.toLowerCase()) {
@@ -70,6 +103,7 @@ export function ChatWindow(props: any) {
           ? "text-amber-700 font-bold bg-amber-100/90 rounded-xs"
           : "text-amber-400 font-bold bg-amber-500/20 rounded-xs";
       case '/skills':
+      case '/skill':
       case '/search':
       case '/deep':
       case '/compact':
@@ -297,10 +331,22 @@ export function ChatWindow(props: any) {
                   </div>
                 ) : (
                   messages
-                    .filter((m) => m)
-                    .map((m, i) => (
+                    .filter((m, idx, all) => {
+                      if (!m) return false;
+                      if (m.role === "user") return true;
+                      const hasContent = Boolean(m.content && m.content.trim());
+                      const hasMedia = Boolean(
+                        m.imageUrl ||
+                          m.videoUrl ||
+                          (m.attachments && m.attachments.length > 0),
+                      );
+                      if (hasContent || hasMedia) return true;
+                      // Keep empty model message ONLY if it is actively streaming/loading as the latest message
+                      return isLoading && idx === all.length - 1;
+                    })
+                    .map((m, i, arr) => (
                       <ChatMessage
-                        key={i}
+                        key={m.id || i}
                         id={m.id}
                         role={m.role}
                         content={m.content}
@@ -313,9 +359,7 @@ export function ChatWindow(props: any) {
                         onRevert={(content) => handleRevertMessage(i, content)}
                         attachments={m.attachments}
                         history={m.editHistory}
-                        isLatest={
-                          i === messages.filter((msg) => msg).length - 1
-                        }
+                        isLatest={i === arr.length - 1}
                         isLoading={isLoading}
                         userName={user?.name}
                         userAvatarUrl={user?.avatarUrl}
@@ -662,11 +706,48 @@ export function ChatWindow(props: any) {
                                       return;
                                     }
                                   }
+                                  if (e.key === "Escape") {
+                                    if (isSkillsExpanded) {
+                                      e.preventDefault();
+                                      setIsSkillsExpanded(false);
+                                      return;
+                                    }
+                                  }
                                   if (e.key === "Tab" && autocompleteSuggestion) {
                                     e.preventDefault();
                                     setInput(input + autocompleteSuggestion);
                                     setAutocompleteSuggestion("");
                                   } else if (e.key === "Enter" && !e.shiftKey) {
+                                    const trimmed = input.trim();
+                                    if (trimmed === "/skills" || trimmed === "/skill") {
+                                      e.preventDefault();
+                                      setIsSkillsExpanded((prev: boolean) => !prev);
+                                      setInput("");
+                                      return;
+                                    }
+                                    if (trimmed === "/search") {
+                                      e.preventDefault();
+                                      setUseSearch((prev: boolean) => !prev);
+                                      setInput("");
+                                      return;
+                                    }
+                                    if (trimmed === "/deep") {
+                                      e.preventDefault();
+                                      setThinkingMode((prev: any) => (prev === "none" ? "low" : "none"));
+                                      setInput("");
+                                      return;
+                                    }
+                                    if (trimmed === "/clear") {
+                                      e.preventDefault();
+                                      createNewSession();
+                                      setInput("");
+                                      return;
+                                    }
+                                    if (trimmed === "/help") {
+                                      e.preventDefault();
+                                      executeCommand("/help");
+                                      return;
+                                    }
                                     e.preventDefault();
                                     handleSubmit();
                                   }
@@ -790,6 +871,148 @@ export function ChatWindow(props: any) {
                                   </div>
                                 </motion.div>
                               )}
+                             </AnimatePresence>
+
+                            {/* Neural Skills Quick Console */}
+                            <AnimatePresence>
+                              {isSkillsExpanded && (
+                                <motion.div
+                                  initial={{ opacity: 0, y: 8, scale: 0.98 }}
+                                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                                  exit={{ opacity: 0, y: 8, scale: 0.98 }}
+                                  transition={{ duration: 0.15 }}
+                                  className={cn(
+                                    "absolute bottom-full left-0 mb-2 w-full rounded-2xl border shadow-2xl z-50 backdrop-blur-xl overflow-hidden",
+                                    theme === 'light'
+                                      ? "bg-white/95 border-slate-200/90 shadow-slate-200/60"
+                                      : "bg-[#0c0d12]/95 border-zinc-800/90 shadow-black/80"
+                                  )}
+                                >
+                                  <div className={cn(
+                                    "flex items-center justify-between px-3.5 py-2.5 border-b select-none",
+                                    theme === 'light' ? "border-slate-100 bg-slate-50/50" : "border-white/[0.04] bg-white/[0.02]"
+                                  )}>
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-5 h-5 rounded-md flex items-center justify-center bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                                        <Sparkles size={12} />
+                                      </div>
+                                      <span className={cn(
+                                        "text-[10px] font-mono font-bold uppercase tracking-[0.15em]",
+                                        theme === 'light' ? "text-slate-700" : "text-zinc-200"
+                                      )}>
+                                        Neural Skills Console
+                                      </span>
+                                      <span className={cn(
+                                        "text-[9px] font-mono px-2 py-0.5 rounded-full border font-bold",
+                                        activeSkillIds.length > 0
+                                          ? (theme === 'light' ? "bg-cyan-50 border-cyan-200 text-cyan-700" : "bg-cyan-950/40 border-cyan-500/30 text-cyan-400")
+                                          : (theme === 'light' ? "bg-slate-100 border-slate-200 text-slate-400" : "bg-zinc-900 border-zinc-800 text-zinc-500")
+                                      )}>
+                                        {activeSkillIds.length} Active
+                                      </span>
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setView("skills");
+                                          setIsSkillsExpanded(false);
+                                        }}
+                                        className={cn(
+                                          "flex items-center gap-1 px-2.5 py-1 rounded-lg text-[9.5px] font-mono font-bold uppercase tracking-wider transition-all border cursor-pointer",
+                                          theme === 'light'
+                                            ? "bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-cyan-700"
+                                            : "bg-white/5 border-white/10 text-zinc-400 hover:bg-white/10 hover:text-cyan-400"
+                                        )}
+                                        title="Open Full Skills Studio"
+                                      >
+                                        <span>Full Studio</span>
+                                        <ArrowUpRight size={11} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => setIsSkillsExpanded(false)}
+                                        className={cn(
+                                          "p-1 rounded-lg transition-colors cursor-pointer",
+                                          theme === 'light' ? "text-slate-400 hover:text-slate-700 hover:bg-slate-100" : "text-zinc-500 hover:text-zinc-200 hover:bg-white/5"
+                                        )}
+                                        title="Close Skills Drawer"
+                                      >
+                                        <X size={14} />
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Skills Grid */}
+                                  <div className="p-3 max-h-72 overflow-y-auto custom-scrollbar grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    {[...DEFAULT_SKILLS, ...customSkills].map((skill: any) => {
+                                      const Icon = (ICON_MAP && ICON_MAP[skill.icon]) || Code2;
+                                      const isActive = activeSkillIds.includes(skill.id);
+                                      return (
+                                        <div
+                                          key={skill.id}
+                                          onClick={() => toggleSkill(skill.id)}
+                                          className={cn(
+                                            "flex items-start gap-2.5 p-2.5 rounded-xl border transition-all cursor-pointer select-none group",
+                                            isActive
+                                              ? (theme === 'light'
+                                                  ? "bg-cyan-50/90 border-cyan-300 text-cyan-950 shadow-xs"
+                                                  : "bg-cyan-950/30 border-cyan-500/40 text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.1)]")
+                                              : (theme === 'light'
+                                                  ? "bg-slate-50/60 border-slate-200/80 hover:border-slate-300 hover:bg-slate-100/50 text-slate-700"
+                                                  : "bg-white/[0.02] border-white/5 hover:border-white/10 hover:bg-white/[0.04] text-zinc-400")
+                                          )}
+                                        >
+                                          <div className={cn(
+                                            "p-1.5 rounded-lg border shrink-0 transition-colors mt-0.5",
+                                            isActive
+                                              ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-400"
+                                              : (theme === 'light' ? "bg-white border-slate-200 text-slate-500 group-hover:text-slate-700" : "bg-zinc-900 border-zinc-800 text-zinc-500 group-hover:text-zinc-300")
+                                          )}>
+                                            <Icon size={14} />
+                                          </div>
+
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                                              <span className={cn(
+                                                "text-[11px] font-bold truncate",
+                                                isActive
+                                                  ? (theme === 'light' ? "text-cyan-900" : "text-cyan-300")
+                                                  : (theme === 'light' ? "text-slate-800" : "text-zinc-200")
+                                              )}>
+                                                {skill.name}
+                                              </span>
+                                              <span className={cn(
+                                                "text-[8.5px] font-mono px-1.5 py-0.5 rounded-md uppercase font-bold shrink-0",
+                                                isActive
+                                                  ? "bg-cyan-500 text-black font-black"
+                                                  : (theme === 'light' ? "bg-slate-200/60 text-slate-500" : "bg-zinc-800 text-zinc-500")
+                                              )}>
+                                                {isActive ? "ON" : "OFF"}
+                                              </span>
+                                            </div>
+                                            <p className={cn(
+                                              "text-[10px] line-clamp-1 leading-relaxed",
+                                              theme === 'light' ? "text-slate-500" : "text-zinc-500"
+                                            )}>
+                                              {skill.description}
+                                            </p>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+
+                                  <div className={cn(
+                                    "px-3.5 py-2 border-t flex items-center justify-between text-[9px] font-mono",
+                                    theme === 'light' ? "border-slate-100 bg-slate-50/40 text-slate-400" : "border-white/[0.03] bg-white/[0.01] text-zinc-600"
+                                  )}>
+                                    <span>Click any skill to toggle on/off</span>
+                                    <span>Press Esc to close</span>
+                                  </div>
+                                </motion.div>
+                              )}
                             </AnimatePresence>
 
                             <div className="flex items-center justify-between px-2 pt-1 pb-2">
@@ -818,10 +1041,16 @@ export function ChatWindow(props: any) {
                                    activeSkillIds.slice(0, 3).map(id => {
                                      const skill = [...DEFAULT_SKILLS, ...customSkills].find(s => s.id === id);
                                      return (
-                                       <span key={id} className="inline-flex items-center gap-1 text-[9px] font-mono font-bold text-cyan-500/60 uppercase tracking-[0.15em] cursor-default" title={skill?.name || id}>
+                                       <button
+                                         key={id}
+                                         type="button"
+                                         onClick={() => setIsSkillsExpanded((prev: boolean) => !prev)}
+                                         className="inline-flex items-center gap-1 text-[9px] font-mono font-bold text-cyan-500/70 hover:text-cyan-400 uppercase tracking-[0.15em] cursor-pointer transition-colors"
+                                         title={`Active: ${skill?.name || id}. Click to manage skills`}
+                                       >
                                          <span className="w-1 h-1 rounded-full bg-cyan-500/40" />
                                          {skill ? skill.name.split(' ')[0] : id.split('-')[0]}
-                                       </span>
+                                       </button>
                                      );
                                    })
                                  ) : null}
@@ -850,53 +1079,149 @@ export function ChatWindow(props: any) {
 
                               <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
 
-                              <button type="button" onClick={() => setIsSkillsExpanded(!isSkillsExpanded)} className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all text-[10px] font-bold uppercase tracking-widest shrink-0", isSkillsExpanded ? (theme === 'light' ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200/50" : "bg-zinc-800/80 text-white shadow-md border border-white/5") : (theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50" : "text-zinc-500 hover:text-white hover:bg-white/5"))}>
-                                <Sparkles size={12} className={isSkillsExpanded ? (theme === 'light' ? "text-slate-800" : "text-cyan-400") : "opacity-70"} /> Skills
-                              </button>
-                              
-                              {/* Expanded Skills Inline */}
-                              <div className={cn("flex items-center gap-1.5 overflow-x-auto custom-scrollbar transition-all duration-500 no-scrollbar", isSkillsExpanded ? "max-w-[300px] opacity-100 px-1" : "max-w-0 opacity-0 px-0")}>
-                                {[...DEFAULT_SKILLS, ...customSkills].map((skill) => {
-                                  // @ts-ignore
-                                  const Icon = ICON_MAP[skill.icon] || Code2;
-                                  const isActive = activeSkillIds.includes(skill.id);
-                                  return (
-                                    <button key={skill.id} type="button" onClick={() => toggleSkill(skill.id)} className={cn("flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border transition-all text-[9.5px] font-bold uppercase tracking-wider whitespace-nowrap shrink-0", isActive ? "bg-cyan-950/30 border-cyan-500/30 text-cyan-400 shadow-[0_0_15px_rgba(6,182,212,0.1)]" : theme === 'light' ? "bg-white border-slate-200 text-slate-600 hover:border-cyan-300 hover:text-cyan-700" : "bg-transparent border-white/5 text-zinc-500 hover:border-white/10 hover:text-zinc-300")}>
-                                      <Icon size={10} /> {skill.name.split(" ")[0]}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-
-                              <button type="button" onClick={() => setUseSearch(!useSearch)} className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all text-[10px] font-bold uppercase tracking-widest shrink-0", useSearch ? (theme === 'light' ? "bg-blue-50 text-blue-700 shadow-sm border border-blue-200/50" : "bg-blue-900/30 text-blue-300 shadow-md border border-blue-500/30") : (theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50" : "text-zinc-500 hover:text-white hover:bg-white/5"))}>
-                                <Search size={12} className={useSearch ? "text-blue-500" : "opacity-70"} /> Search
-                              </button>
-
                               <div className="relative shrink-0">
                                 <button type="button" onClick={() => setIsModelSelectorOpen(!isModelSelectorOpen)} className={cn("flex items-center gap-1.5 px-3 py-2 rounded-xl transition-all text-[10px] font-bold uppercase tracking-widest", isModelSelectorOpen ? (theme === 'light' ? "bg-slate-100 text-slate-800 shadow-sm border border-slate-200/50" : "bg-zinc-800/80 text-white shadow-md border border-white/5") : (theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50" : "text-zinc-500 hover:text-white hover:bg-white/5"))}>
                                   <Cpu size={12} className={isModelSelectorOpen ? (theme === 'light' ? "text-slate-800" : "text-zinc-300") : "opacity-70"} />
                                   {currentModel === ModelId.HYBRID ? "Hybrid" : [ModelId.PRO, ModelId.FLASH_3_8, ModelId.FLASH_3_5, ModelId.FLASH, ModelId.LITE].includes(currentModel as any) ? currentModel === ModelId.PRO ? "Pro" : currentModel === ModelId.FLASH_3_8 ? "Flash 3.8" : currentModel === ModelId.FLASH_3_5 ? "Flash 3.5" : currentModel === ModelId.FLASH ? "Flash" : "Lite" : (currentModel || "").split("/").pop()?.replace("gemini-", "").toUpperCase() || "UNKNOWN"}
                                 </button>
                               </div>
+                            </div>
 
-                              <div className={cn("flex items-center rounded-xl transition-all border relative group/deep shrink-0", thinkingMode !== "none" ? (theme === "light" ? "bg-amber-50 border-amber-200 shadow-sm" : "bg-[#1f1911] border-amber-900/30 shadow-md") : "bg-transparent border-transparent")}>
-                                <button type="button" onClick={() => setThinkingMode(thinkingMode === "none" ? "low" : "none")} className={cn("flex items-center gap-1.5 px-3 py-2 rounded-l-xl rounded-r-none transition-all text-[10px] font-bold uppercase tracking-widest", thinkingMode !== "none" ? (theme === 'light' ? "text-amber-700" : "text-amber-400") : (theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50 rounded-xl" : "text-zinc-500 hover:text-white hover:bg-white/5 rounded-xl"))}>
-                                  <Brain size={12} className={thinkingMode !== "none" ? "text-amber-500" : "opacity-70"} /> Deep
+                            {/* Right: Controls with popups, meters & send button (outside horizontal overflow) */}
+                            <div className="flex items-center gap-1 shrink-0 pb-1">
+                              {/* Deep Thinking Popover */}
+                              <div
+                                ref={deepMenuRef}
+                                id="chat-deep-thinking-toggle"
+                                className={cn(
+                                  "flex items-center rounded-xl transition-all border relative shrink-0 select-none",
+                                  !supportsThinking
+                                    ? (theme === "light"
+                                        ? "opacity-50 bg-slate-100/70 border-slate-200/60 cursor-not-allowed"
+                                        : "opacity-40 bg-zinc-900/40 border-white/5 cursor-not-allowed")
+                                    : (thinkingMode !== "none"
+                                        ? (theme === "light" ? "bg-amber-50 border-amber-200 shadow-sm" : "bg-[#1f1911] border-amber-900/40 shadow-md")
+                                        : (theme === "light" ? "bg-transparent border-transparent hover:border-slate-200" : "bg-transparent border-transparent hover:border-white/10")
+                                      )
+                                )}
+                                title={!supportsThinking ? "Reasoning is not supported for this model (cannot be changed)" : undefined}
+                              >
+                                <button
+                                  type="button"
+                                  disabled={!supportsThinking}
+                                  onClick={() => {
+                                    if (!supportsThinking) return;
+                                    setThinkingMode(thinkingMode === "none" ? "medium" : "none");
+                                    setIsDeepMenuOpen(false);
+                                  }}
+                                  className={cn(
+                                    "flex items-center gap-1.5 px-2.5 py-1.5 transition-all text-[10px] font-bold uppercase tracking-widest",
+                                    !supportsThinking
+                                      ? "cursor-not-allowed pointer-events-none text-zinc-500 rounded-l-xl rounded-r-none"
+                                      : "cursor-pointer",
+                                    !supportsThinking
+                                      ? ""
+                                      : thinkingMode !== "none"
+                                        ? cn("rounded-l-xl rounded-r-none", theme === 'light' ? "text-amber-700 hover:text-amber-800 hover:bg-amber-100/50" : "text-amber-400 hover:text-amber-300 hover:bg-amber-500/10")
+                                        : cn("rounded-l-xl rounded-r-none", theme === 'light' ? "text-slate-500 hover:text-slate-800 hover:bg-slate-50" : "text-zinc-500 hover:text-white hover:bg-white/5")
+                                  )}
+                                  title={!supportsThinking ? "Thinking disabled (unsupported by model)" : thinkingMode !== "none" ? "Deep Thinking is active (Click to disable)" : "Click to enable Deep Thinking (Normal)"}
+                                >
+                                  <Brain size={12} className={thinkingMode !== "none" && supportsThinking ? "text-amber-500" : "opacity-70"} />
+                                  <span>Deep</span>
                                 </button>
-                                {thinkingMode !== "none" && (
-                                  <div className={cn("flex items-center border-l pr-2 pl-1.5 py-2 cursor-pointer", theme === "light" ? "border-amber-200" : "border-amber-900/50")}>
-                                    <span className={cn("bg-transparent text-[9.5px] font-bold uppercase tracking-widest outline-none px-1.5 pointer-events-none", theme === "light" ? "text-amber-700/90" : "text-amber-400/80")}>{thinkingMode.replace("_", " ")}</span>
-                                    <ChevronDown size={10} className={theme === "light" ? "text-amber-600/60 -ml-0.5 pointer-events-none" : "text-amber-500/60 -ml-0.5 pointer-events-none"} />
-                                    <div className="absolute left-0 bottom-full mb-2 w-32 bg-zinc-900 border border-zinc-700 rounded-xl shadow-2xl opacity-0 invisible group-hover/deep:opacity-100 group-hover/deep:visible transition-all z-50 overflow-hidden flex flex-col">
-                                      {["low", "medium", "high", ...(currentModel !== ModelId.PRO ? ["extra_high"] : [])].map((level) => (
-                                        <button key={level} type="button" onClick={() => setThinkingMode(level)} className={cn("px-4 py-2 text-left text-[10px] font-bold uppercase tracking-wider transition-colors hover:bg-white/5", thinkingMode === level ? "text-amber-500 bg-black/20" : "text-zinc-400")}>{level.replace("_", " ")}</button>
-                                      ))}
+
+                                <button
+                                  type="button"
+                                  disabled={!supportsThinking}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (!supportsThinking) return;
+                                    setIsDeepMenuOpen((prev) => !prev);
+                                  }}
+                                  className={cn(
+                                    "flex items-center border-l px-1.5 py-1.5 transition-colors rounded-r-xl outline-none gap-0.5",
+                                    !supportsThinking
+                                      ? "cursor-not-allowed pointer-events-none text-zinc-500 border-transparent"
+                                      : "cursor-pointer",
+                                    !supportsThinking
+                                      ? ""
+                                      : thinkingMode !== "none"
+                                        ? theme === "light"
+                                          ? "border-amber-200 hover:bg-amber-100/60 text-amber-700"
+                                          : "border-amber-900/50 hover:bg-amber-500/10 text-amber-400/90"
+                                        : theme === "light"
+                                          ? "border-slate-200 hover:bg-slate-100 text-slate-500"
+                                          : "border-white/10 hover:bg-white/5 text-zinc-400"
+                                  )}
+                                  title={!supportsThinking ? "Reasoning level cannot be changed for this model" : "Choose reasoning level"}
+                                >
+                                  <span className="text-[9px] font-bold uppercase tracking-widest px-0.5">
+                                    {currentThinkingLabel}
+                                  </span>
+                                  <ChevronDown
+                                    size={10}
+                                    className={cn(
+                                      "transition-transform",
+                                      isDeepMenuOpen && "rotate-180",
+                                      thinkingMode !== "none" && supportsThinking
+                                        ? theme === "light" ? "text-amber-600" : "text-amber-500"
+                                        : "opacity-60"
+                                    )}
+                                  />
+                                </button>
+
+                                {isDeepMenuOpen && supportsThinking && (
+                                  <div
+                                    className={cn(
+                                      "absolute right-0 bottom-full mb-2 w-52 rounded-xl shadow-2xl transition-all z-50 overflow-hidden flex flex-col border animate-in fade-in-50 zoom-in-95 duration-150",
+                                      theme === "light"
+                                        ? "bg-white border-slate-200 shadow-slate-300/50 text-slate-700"
+                                        : "bg-[#141417] border-zinc-700 shadow-black/80 text-zinc-300"
+                                    )}
+                                  >
+                                    <div className={cn("px-3 py-2 text-[9px] font-mono uppercase tracking-wider border-b flex items-center justify-between", theme === "light" ? "border-slate-100 text-slate-400 bg-slate-50/60" : "border-white/5 text-zinc-500 bg-white/[0.02]")}>
+                                      <span>Reasoning Level</span>
+                                      <Brain size={10} className="text-amber-500" />
                                     </div>
+
+                                    {supportedThinkingLevels.map((option) => {
+                                      const isSelected =
+                                        thinkingMode === option.id ||
+                                        (option.id === "medium" && thinkingMode === "normal") ||
+                                        (option.id === "extra_high" && (thinkingMode === "xhigh" || thinkingMode === "extra_high"));
+                                      return (
+                                        <button
+                                          key={option.id}
+                                          type="button"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setThinkingMode(option.id);
+                                            setIsDeepMenuOpen(false);
+                                          }}
+                                          className={cn(
+                                            "px-3 py-2 text-left transition-colors flex items-center justify-between cursor-pointer border-b last:border-b-0",
+                                            theme === "light" ? "border-slate-100/60 hover:bg-slate-50" : "border-white/[0.03] hover:bg-white/[0.04]",
+                                            isSelected
+                                              ? (theme === "light" ? "text-amber-800 bg-amber-50/70 font-bold" : "text-amber-400 bg-amber-500/10 font-bold")
+                                              : (theme === "light" ? "text-slate-700" : "text-zinc-300")
+                                          )}
+                                        >
+                                          <div className="flex flex-col">
+                                            <span className="text-[10.5px] font-bold uppercase tracking-wider">{option.label}</span>
+                                            <span className={cn("text-[8.5px] font-normal", theme === "light" ? "text-slate-400" : "text-zinc-500")}>
+                                              {option.hint}
+                                            </span>
+                                          </div>
+                                          {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-amber-500 shrink-0 ml-2" />}
+                                        </button>
+                                      );
+                                    })}
                                   </div>
                                 )}
                               </div>
                               
-                              <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
+                              <div className={cn("w-px h-5 mx-0.5 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
                               <button
                                 type="button"
                                 onClick={() => setIsAutoCompact?.(!isAutoCompact)}
@@ -912,7 +1237,7 @@ export function ChatWindow(props: any) {
                                 <span>Auto Compact</span>
                               </button>
                               
-                              <div className={cn("w-px h-5 mx-1 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
+                              <div className={cn("w-px h-5 mx-0.5 shrink-0", theme === "light" ? "bg-slate-200" : "bg-white/[0.08]")} />
 
                               <div className={cn("flex flex-col justify-center px-1 shrink-0 cursor-help min-w-[70px]", theme === 'light' ? "text-slate-500" : "text-zinc-400")} title="Estimated Context Usage">
                                 <div className="flex items-center gap-1 text-[9px] font-mono uppercase tracking-wider font-bold whitespace-nowrap">

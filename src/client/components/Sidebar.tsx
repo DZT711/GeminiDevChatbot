@@ -12,8 +12,11 @@ export function Sidebar(props: any) {
   const {
     theme, isSidebarCollapsed, createNewSession, setView, view, user,
     apiKeys, activeKeyId, modelQueueManager, currentModel, modelCatalog,
-    sessions, renderSessionItem, showHistory, setShowHistory
+    sessions, renderSessionItem, showHistory, setShowHistory,
+    isKnowledgeLoading, knowledgeNodes, knowledgeProposals
   } = props;
+
+  const pendingKnowledgeProposalsCount = (knowledgeProposals || []).filter((p: any) => p.status === 'PENDING').length;
 
   return (
     <>
@@ -98,41 +101,87 @@ export function Sidebar(props: any) {
               <button
                 onClick={() => setView("knowledge")}
                 className={cn(
-                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs font-medium border group relative overflow-hidden transition-all duration-200 ease-out active:scale-[0.98]",
                   view === "knowledge"
                     ? theme === "light"
-                      ? "bg-white text-blue-600 shadow-sm border-blue-100"
-                      : "bg-blue-500/10 text-blue-400 border-blue-500/20"
+                      ? "bg-gradient-to-r from-blue-50 via-white to-blue-50/50 text-blue-600 shadow-xs border-blue-200 font-semibold"
+                      : "bg-gradient-to-r from-blue-500/15 via-blue-600/10 to-transparent text-blue-300 border-blue-500/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_16px_rgba(59,130,246,0.12)] font-semibold"
                     : theme === "light"
-                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                      ? "text-slate-600 border-transparent hover:text-blue-600 hover:bg-blue-50/60 hover:border-blue-100"
+                      : "text-zinc-400 border-transparent hover:text-blue-300 hover:bg-blue-950/20 hover:border-blue-900/30",
                 )}
               >
-                <Database size={16} className={cn("transition-transform group-hover:scale-110", view === "knowledge" ? "opacity-100 scale-110" : "opacity-60")} />
+                <Database
+                  size={16}
+                  className={cn(
+                    "transition-all duration-300 group-hover:scale-110",
+                    view === "knowledge"
+                      ? "text-blue-400 opacity-100 scale-110 drop-shadow-[0_0_8px_rgba(59,130,246,0.5)]"
+                      : "opacity-60 group-hover:opacity-100 group-hover:text-blue-400"
+                  )}
+                />
                 <span className="flex-1 text-left tracking-wide">Knowledge Index</span>
-                {view === "knowledge" && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-blue-400 shadow-[0_0_8px_rgba(59,130,246,0.5)]" />
-                )}
+
+                {/* Loading Skeleton / Badge / Active Indicator */}
+                {isKnowledgeLoading ? (
+                  <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded-md bg-blue-500/15 border border-blue-500/25 text-[9px] font-mono text-blue-300 skeleton-shimmer">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                    <span>Syncing</span>
+                  </div>
+                ) : pendingKnowledgeProposalsCount > 0 ? (
+                  <span className="px-1.5 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/20 border border-amber-500/30 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]">
+                    {pendingKnowledgeProposalsCount}
+                  </span>
+                ) : view === "knowledge" ? (
+                  <div className="relative flex items-center justify-center">
+                    <div className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_10px_rgba(59,130,246,0.8)]" />
+                    <div className="absolute w-3.5 h-3.5 rounded-full bg-blue-400/30 animate-ping" />
+                  </div>
+                ) : null}
               </button>
 
               <button
                 id="sidebar-nav-planning-playground"
                 onClick={() => setView("planning-playground")}
                 className={cn(
-                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs transition-all font-medium border border-transparent group",
+                  "w-full flex items-center gap-3 p-2.5 rounded-xl text-xs font-medium border group relative overflow-hidden transition-all duration-200 ease-out active:scale-[0.98]",
                   view === "planning-playground"
                     ? theme === "light"
-                      ? "bg-white text-indigo-600 shadow-sm border-indigo-100"
-                      : "bg-indigo-500/10 text-indigo-400 border-indigo-500/20"
+                      ? "bg-gradient-to-r from-indigo-50 via-white to-indigo-50/50 text-indigo-600 shadow-xs border-indigo-200 font-semibold"
+                      : "bg-gradient-to-r from-indigo-500/15 via-purple-500/10 to-transparent text-indigo-300 border-indigo-500/30 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_0_16px_rgba(99,102,241,0.12)] font-semibold"
                     : theme === "light"
-                      ? "text-slate-500 hover:text-slate-900 hover:bg-slate-50"
-                      : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 hover:border-zinc-700/50",
+                      ? "text-slate-600 border-transparent hover:text-indigo-600 hover:bg-indigo-50/60 hover:border-indigo-100"
+                      : "text-zinc-400 border-transparent hover:text-indigo-300 hover:bg-indigo-950/20 hover:border-indigo-900/30",
                 )}
               >
-                <Compass size={16} className={cn("transition-transform group-hover:scale-110", view === "planning-playground" ? "opacity-100 scale-110" : "opacity-60")} />
+                <Compass
+                  size={16}
+                  className={cn(
+                    "transition-all duration-300 group-hover:scale-110 group-hover:rotate-45",
+                    view === "planning-playground"
+                      ? "text-indigo-400 opacity-100 scale-110 rotate-12 drop-shadow-[0_0_8px_rgba(99,102,241,0.5)]"
+                      : "opacity-60 group-hover:opacity-100 group-hover:text-indigo-400"
+                  )}
+                />
                 <span className="flex-1 text-left tracking-wide">Planning Lab</span>
+
+                {/* Sub-tag & Active Indicator */}
+                <span
+                  className={cn(
+                    "px-1.5 py-0.5 rounded text-[9px] font-mono font-medium tracking-tight transition-all",
+                    view === "planning-playground"
+                      ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
+                      : "text-zinc-500 group-hover:text-indigo-400 opacity-60 group-hover:opacity-100"
+                  )}
+                >
+                  DAG
+                </span>
+
                 {view === "planning-playground" && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-indigo-400 shadow-[0_0_8px_rgba(99,102,241,0.5)]" />
+                  <div className="relative flex items-center justify-center ml-1">
+                    <div className="w-2 h-2 rounded-full bg-indigo-400 shadow-[0_0_10px_rgba(99,102,241,0.8)]" />
+                    <div className="absolute w-3.5 h-3.5 rounded-full bg-indigo-400/30 animate-ping" />
+                  </div>
                 )}
               </button>
 

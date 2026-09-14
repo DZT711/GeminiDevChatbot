@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { PlanningSimulator } from '../../../agent/playground/PlanningSimulator.js';
 import { PlanningPlaygroundSerializer } from '../../../agent/playground/PlanningPlaygroundSerializer.js';
 import type { PlanningScenarioFixture, PlanningSimulationState, PlanningSimulationStepLog } from '../../../agent/playground/PlanningPlaygroundTypes.js';
+import { PlanningPlaygroundSkeleton } from './PlanningPlaygroundSkeleton';
 
 type PlaybackSpeed = 'slow' | 'normal' | 'instant' | 'step';
 
@@ -348,6 +349,10 @@ export function PlanningPlaygroundView(props: { theme?: string }) {
 
   const totalStepCount = fullSimulationState?.timeline.length || 1;
   const progressPercent = Math.min(100, Math.round((visibleStepCount / totalStepCount) * 100));
+
+  if (!fullSimulationState) {
+    return <PlanningPlaygroundSkeleton theme={theme} />;
+  }
 
   return (
     <div id="planning-playground-view" className="flex-1 flex flex-col h-full overflow-hidden bg-transparent">

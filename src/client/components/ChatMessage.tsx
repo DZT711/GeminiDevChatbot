@@ -133,6 +133,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
     setTimeout(() => setMsgCopied(false), 2000);
   };
 
+  const hasContent = Boolean(content && content.trim());
+  const hasMedia = Boolean(imageUrl || videoUrl || (attachments && attachments.length > 0));
+
+  // If this is an assistant message with no content and no media, and it is not currently loading as the latest message, never render an empty card
+  if (!isUser && !hasContent && !hasMedia && !(isLoading && isLatest)) {
+    return null;
+  }
+
   const handleSave = () => {
     if (editValue.trim()) {
       onEdit?.(editValue);

@@ -15,6 +15,20 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, './src/client'),
       },
     },
+    optimizeDeps: {
+      exclude: ['mermaid'],
+      include: [
+        'react',
+        'react-dom',
+        'react-router-dom',
+        'lucide-react',
+        'clsx',
+        'tailwind-merge',
+        'motion/react',
+        'react-markdown',
+        'remark-gfm',
+      ],
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify - file watching is disabled to prevent flickering during agent edits.

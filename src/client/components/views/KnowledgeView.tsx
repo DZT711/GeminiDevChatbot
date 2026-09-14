@@ -1,7 +1,8 @@
-import React from 'react';
-import { Cpu, Search, Check, Sparkles, X, ChevronDown, Activity, Globe, Database, Settings2, Lock, Plus, Save, Clock, Bot, Terminal, BookOpen, Key, Link as LinkIcon, Trash2, Edit2, Download, LogOut, CheckCircle, XCircle, AlertTriangle, Shield, CheckSquare, Settings, RefreshCw, Eye, EyeOff, Zap, ShieldAlert, GitBranch, Github, Code, Play, Loader2 } from 'lucide-react';
+import React, { useState } from 'react';
+import { Cpu, Search, Check, Sparkles, X, ChevronDown, Activity, Globe, Database, Settings2, Lock, Plus, Save, Clock, Bot, Terminal, BookOpen, Key, Link as LinkIcon, Trash2, Edit2, Download, LogOut, CheckCircle, XCircle, AlertTriangle, Shield, CheckSquare, Settings, RefreshCw, Eye, EyeOff, Zap, ShieldAlert, GitBranch, Github, Code, Play, Loader2, RotateCcw } from 'lucide-react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
+import { KnowledgeSkeleton } from "./KnowledgeSkeleton";
 
 export function KnowledgeView(props: any) {
 
@@ -124,6 +125,8 @@ export function KnowledgeView(props: any) {
     fetchKnowledgeData,
     handleApproveProposal,
     handleRejectProposal,
+    handleDeleteProposal,
+    handleResetProposal,
     handleUpdateProposal,
     handleDeleteNode,
     handleProposeDeleteNode,
@@ -144,9 +147,26 @@ export function KnowledgeView(props: any) {
   const {
     handleCreateSkill, handleKSearch, handleCreateNewProposal, handleSaveProposalEdit, handleSaveNodeEdit,
     knowledgeProposals, isSubmittingProposal, editingProposalId, editingProposalContent, setEditingProposalContent,
-    setEditingProposalId, isKnowledgeActionLoading, editingNodeId, editingNodeContent, setEditingNodeContent, setEditingNodeId,
+    setEditingProposalId, isKnowledgeActionLoading, isKnowledgeLoading, editingNodeId, editingNodeContent, setEditingNodeContent, setEditingNodeId,
     kSearchResults, kSearchError, isKSearching,
   } = props;
+
+  const [proposalFilter, setProposalFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
+  const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.email === 'nguyensihuynsh711@gmail.com';
+
+  if (isKnowledgeLoading) {
+    return <KnowledgeSkeleton theme={theme} />;
+  }
+
+  const allProposals = knowledgeProposals || [];
+  const filteredProposals = allProposals.filter((prop: any) => {
+    if (proposalFilter === 'ALL') return true;
+    return prop.status === proposalFilter;
+  });
+
+  const pendingCount = allProposals.filter((p: any) => p.status === 'PENDING').length;
+  const approvedCount = allProposals.filter((p: any) => p.status === 'APPROVED').length;
+  const rejectedCount = allProposals.filter((p: any) => p.status === 'REJECTED').length;
 
   return (
           <div className="flex-1 overflow-y-auto p-12 custom-scrollbar">
@@ -293,197 +313,316 @@ export function KnowledgeView(props: any) {
                     </div>
                   </div>
 
-                  {/* Proposals Section */}
-                  <div className="space-y-4">
-                    <div className="flex justify-between items-center border-b border-border-dim pb-2">
-                      <label className="text-xs font-bold uppercase tracking-widest text-zinc-400">
-                        Pending & History Proposals
-                      </label>
-                      <span className="text-[10px] font-mono bg-zinc-900 text-zinc-500 px-2 py-0.5 rounded-full">
-                        {knowledgeProposals.length} total
-                      </span>
-                    </div>
+                  {/* Proposals Section - Administrator Moderation Queue */}
+                  {isAdmin && (
+                    <div className="space-y-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-border-dim pb-3">
+                        <div className="flex items-center gap-2">
+                          <label className="text-xs font-bold uppercase tracking-widest text-zinc-400">
+                            Pending & History Proposals
+                          </label>
+                          <span className="text-[10px] font-mono bg-zinc-900 text-zinc-400 px-2 py-0.5 rounded-full border border-zinc-800">
+                            {allProposals.length} total
+                          </span>
+                        </div>
 
-                    {knowledgeProposals.length === 0 ? (
-                      <div className="text-center py-12 border border-dashed border-zinc-800 rounded-2xl text-xs text-zinc-500">
-                        No model-proposed index modifications found.
-                      </div>
-                    ) : (
-                      <div className="space-y-4 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
-                        {knowledgeProposals.map((prop) => (
-                          <div
-                            key={prop.id}
-                            className={cn(
-                              "p-5 rounded-2xl border flex flex-col gap-4 shadow-sm transition-all",
-                              theme === "light"
-                                ? "bg-white border-slate-200"
-                                : "bg-[#0c0c0e] border-zinc-900",
-                            )}
-                          >
-                            <div className="flex justify-between items-start gap-2">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span
-                                  className={cn(
-                                    "px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider",
-                                    prop.actionType === "INSERT" &&
-                                      "bg-green-500/10 text-green-400 border border-green-500/20",
-                                    prop.actionType === "UPDATE" &&
-                                      "bg-blue-500/10 text-blue-400 border border-blue-500/20",
-                                    prop.actionType === "DELETE" &&
-                                      "bg-red-500/10 text-red-400 border border-red-500/20",
-                                  )}
-                                >
-                                  {prop.actionType}
-                                </span>
-                                {prop.targetNodeId && (
-                                  <span className="text-[9px] font-mono text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded">
-                                    Node Ref: {prop.targetNodeId.slice(0, 8)}...
-                                  </span>
-                                )}
-                              </div>
-                              <span
+                        {/* Status Filter Tabs */}
+                        <div className="flex items-center gap-1.5 p-1 bg-zinc-950/80 rounded-xl border border-zinc-800/80 text-xs">
+                          {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map((filter) => {
+                            const count =
+                              filter === 'ALL'
+                                ? allProposals.length
+                                : filter === 'PENDING'
+                                ? pendingCount
+                                : filter === 'APPROVED'
+                                ? approvedCount
+                                : rejectedCount;
+                            const isActive = proposalFilter === filter;
+                            return (
+                              <button
+                                key={filter}
+                                type="button"
+                                onClick={() => setProposalFilter(filter)}
                                 className={cn(
-                                  "text-[9px] px-2 py-0.5 rounded font-bold uppercase tracking-wider",
-                                  prop.status === "PENDING" &&
-                                    "bg-amber-500/10 text-amber-500",
-                                  prop.status === "APPROVED" &&
-                                    "bg-emerald-500/10 text-emerald-500",
-                                  prop.status === "REJECTED" &&
-                                    "bg-zinc-500/10 text-zinc-400",
+                                  "px-2.5 py-1 rounded-lg font-mono text-[11px] transition-all flex items-center gap-1.5",
+                                  isActive
+                                    ? "bg-zinc-800 text-white font-semibold shadow-sm"
+                                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-900/60"
                                 )}
                               >
-                                {prop.status}
-                              </span>
-                            </div>
-
-                            <div className="text-xs space-y-1">
-                              <span className="text-[9px] text-zinc-500 font-mono uppercase block">
-                                Proposed Content:
-                              </span>
-                              {editingProposalId === prop.id ? (
-                                <div className="space-y-3">
-                                  <textarea
-                                    value={editingProposalContent}
-                                    onChange={(e) =>
-                                      setEditingProposalContent(e.target.value)
-                                    }
-                                    className="w-full h-28 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs font-mono text-zinc-350 outline-none focus:border-cyan-500"
-                                  />
-                                  <div className="flex gap-2">
-                                    <button
-                                      onClick={() =>
-                                        handleSaveProposalEdit(prop.id)
-                                      }
-                                      className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-xs uppercase font-bold transition-colors"
-                                    >
-                                      Save Content
-                                    </button>
-                                    <button
-                                      onClick={() => setEditingProposalId(null)}
-                                      className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors"
-                                    >
-                                      Cancel
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : (
-                                <div className="space-y-3">
-                                  {prop.actionType === "UPDATE" &&
-                                    prop.targetNodeId && (
-                                      <div className="p-3 bg-zinc-950/40 rounded-xl border border-zinc-900 font-mono text-xs text-zinc-400">
-                                        <span className="text-[9px] text-zinc-500 font-mono uppercase block mb-1">
-                                          Original Active Memory:
-                                        </span>
-                                        {(() => {
-                                          const targetNode =
-                                            knowledgeNodes.find(
-                                              (node) =>
-                                                node.id === prop.targetNodeId,
-                                            );
-                                          return targetNode
-                                            ? targetNode.content
-                                            : "(Memory not found)";
-                                        })()}
-                                      </div>
-                                    )}
-                                  <div
-                                    className={cn(
-                                      "p-3 rounded-xl border font-mono text-xs text-zinc-300 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar",
-                                      prop.actionType === "DELETE"
-                                        ? "bg-red-950/15 border-red-900/25 text-red-200"
-                                        : "bg-black/40 border-zinc-900",
-                                    )}
-                                  >
-                                    {prop.actionType === "DELETE" ? (
-                                      <>
-                                        <span className="text-[9px] text-red-400 font-mono uppercase block mb-1">
-                                          Target Active Memory to Delete:
-                                        </span>
-                                        {(() => {
-                                          const targetNode =
-                                            knowledgeNodes.find(
-                                              (node) =>
-                                                node.id === prop.targetNodeId,
-                                            );
-                                          return targetNode
-                                            ? targetNode.content
-                                            : "(Memory content not active/already deleted)";
-                                        })()}
-                                      </>
-                                    ) : (
-                                      prop.proposedContent ||
-                                      "(No content proposed)"
-                                    )}
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-
-                            {prop.reason && (
-                              <p className="text-xs italic text-zinc-400 font-mono bg-zinc-950/20 p-3 rounded-lg border border-zinc-900/50">
-                                &ldquo;{prop.reason}&rdquo;
-                              </p>
-                            )}
-
-                            {prop.status === "PENDING" && (
-                              <div className="flex justify-end gap-2 pt-3 border-t border-zinc-900/50">
-                                {editingProposalId !== prop.id && (
-                                  <button
-                                    disabled={Object.keys(isKnowledgeActionLoading).length > 0}
-                                    onClick={() => {
-                                      setEditingProposalId(prop.id);
-                                      setEditingProposalContent(
-                                        prop.proposedContent || "",
-                                      );
-                                    }}
-                                    className="px-4 py-2 border border-zinc-805 hover:border-zinc-700 text-zinc-400 text-xs font-bold uppercase rounded-lg transition-all mr-auto"
-                                  >
-                                    Edit Details
-                                  </button>
-                                )}
-                                <button
-                                  disabled={Object.keys(isKnowledgeActionLoading).length > 0}
-                                  onClick={() => handleRejectProposal(prop.id)}
-                                  className="px-4 py-2 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-xs font-bold uppercase rounded-lg transition-all"
+                                <span>{filter === 'ALL' ? 'All' : filter.charAt(0) + filter.slice(1).toLowerCase()}</span>
+                                <span
+                                  className={cn(
+                                    "px-1.5 py-0.2 rounded-full text-[9px]",
+                                    isActive
+                                      ? "bg-zinc-700 text-zinc-200"
+                                      : "bg-zinc-900 text-zinc-500"
+                                  )}
                                 >
-                                  Reject
-                                </button>
-                                <button
-                                  disabled={Object.keys(isKnowledgeActionLoading).length > 0}
-                                  onClick={() => handleApproveProposal(prop.id)}
-                                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase rounded-lg transition-all shadow"
-                                >
-                                  {isKnowledgeActionLoading[prop.id]
-                                    ? "Approving..."
-                                    : "Approve & Index"}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        ))}
+                                  {count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
-                    )}
-                  </div>
+
+                      {filteredProposals.length === 0 ? (
+                        <div className="text-center py-12 border border-dashed border-zinc-800 rounded-2xl text-xs text-zinc-500 font-mono">
+                          {proposalFilter === 'ALL'
+                            ? "No model-proposed index modifications found."
+                            : `No proposals with status "${proposalFilter}" found.`}
+                        </div>
+                      ) : (
+                        <div className="space-y-4 max-h-[520px] overflow-y-auto pr-2 custom-scrollbar">
+                          {filteredProposals.map((prop: any) => {
+                            const actionLoading = isKnowledgeActionLoading[prop.id];
+                            const isThisLoading = Boolean(actionLoading);
+                            return (
+                              <div
+                                key={prop.id}
+                                className={cn(
+                                  "p-5 rounded-2xl border flex flex-col gap-4 shadow-sm transition-all",
+                                  theme === "light"
+                                    ? "bg-white border-slate-200"
+                                    : "bg-[#0c0c0e] border-zinc-900",
+                                )}
+                              >
+                                <div className="flex justify-between items-start gap-2">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span
+                                      className={cn(
+                                        "px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider",
+                                        prop.actionType === "INSERT" &&
+                                          "bg-green-500/10 text-green-400 border border-green-500/20",
+                                        prop.actionType === "UPDATE" &&
+                                          "bg-blue-500/10 text-blue-400 border border-blue-500/20",
+                                        prop.actionType === "DELETE" &&
+                                          "bg-red-500/10 text-red-400 border border-red-500/20",
+                                      )}
+                                    >
+                                      {prop.actionType}
+                                    </span>
+                                    {prop.targetNodeId && (
+                                      <span className="text-[9px] font-mono text-zinc-500 bg-zinc-950 px-2 py-0.5 rounded border border-zinc-800/40">
+                                        Node Ref: {prop.targetNodeId.slice(0, 8)}...
+                                      </span>
+                                    )}
+                                  </div>
+                                  <span
+                                    className={cn(
+                                      "text-[9px] px-2 py-0.5 rounded font-bold uppercase tracking-wider",
+                                      prop.status === "PENDING" &&
+                                        "bg-amber-500/10 text-amber-500 border border-amber-500/20",
+                                      prop.status === "APPROVED" &&
+                                        "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20",
+                                      prop.status === "REJECTED" &&
+                                        "bg-zinc-500/10 text-zinc-400 border border-zinc-700/30",
+                                    )}
+                                  >
+                                    {prop.status}
+                                  </span>
+                                </div>
+
+                                <div className="text-xs space-y-1">
+                                  <span className="text-[9px] text-zinc-500 font-mono uppercase block">
+                                    Proposed Content:
+                                  </span>
+                                  {editingProposalId === prop.id ? (
+                                    <div className="space-y-3">
+                                      <textarea
+                                        value={editingProposalContent}
+                                        disabled={isThisLoading}
+                                        onChange={(e) =>
+                                          setEditingProposalContent(e.target.value)
+                                        }
+                                        className="w-full h-28 bg-zinc-950 border border-zinc-800 rounded-xl p-3 text-xs font-mono text-zinc-200 outline-none focus:border-cyan-500 disabled:opacity-50"
+                                      />
+                                      <div className="flex gap-2">
+                                        <button
+                                          type="button"
+                                          disabled={isThisLoading}
+                                          onClick={() =>
+                                            handleSaveProposalEdit(prop.id)
+                                          }
+                                          className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white rounded-lg text-xs uppercase font-bold transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                                        >
+                                          {actionLoading === 'UPDATE' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                          <span>{actionLoading === 'UPDATE' ? "Saving..." : "Save Content"}</span>
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={isThisLoading}
+                                          onClick={() => setEditingProposalId(null)}
+                                          className="px-4 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded-lg text-xs uppercase font-bold transition-colors disabled:opacity-50"
+                                        >
+                                          Cancel
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : (
+                                    <div className="space-y-3">
+                                      {prop.actionType === "UPDATE" &&
+                                        prop.targetNodeId && (
+                                          <div className="p-3 bg-zinc-950/40 rounded-xl border border-zinc-900 font-mono text-xs text-zinc-400">
+                                            <span className="text-[9px] text-zinc-500 font-mono uppercase block mb-1">
+                                              Original Active Memory:
+                                            </span>
+                                            {(() => {
+                                              const targetNode =
+                                                knowledgeNodes.find(
+                                                  (node: any) =>
+                                                    node.id === prop.targetNodeId,
+                                                );
+                                              return targetNode
+                                                ? targetNode.content
+                                                : "(Memory not found)";
+                                            })()}
+                                          </div>
+                                        )}
+                                      <div
+                                        className={cn(
+                                          "p-3 rounded-xl border font-mono text-xs text-zinc-300 break-words whitespace-pre-wrap max-h-[160px] overflow-y-auto custom-scrollbar",
+                                          prop.actionType === "DELETE"
+                                            ? "bg-red-950/15 border-red-900/25 text-red-200"
+                                            : "bg-black/40 border-zinc-900",
+                                        )}
+                                      >
+                                        {prop.actionType === "DELETE" ? (
+                                          <>
+                                            <span className="text-[9px] text-red-400 font-mono uppercase block mb-1">
+                                              Target Active Memory to Delete:
+                                            </span>
+                                            {(() => {
+                                              const targetNode =
+                                                knowledgeNodes.find(
+                                                  (node: any) =>
+                                                    node.id === prop.targetNodeId,
+                                                );
+                                              return targetNode
+                                                ? targetNode.content
+                                                : "(Memory content not active/already deleted)";
+                                            })()}
+                                          </>
+                                        ) : (
+                                          prop.proposedContent ||
+                                          "(No content proposed)"
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+
+                                {prop.reason && (
+                                  <p className="text-xs italic text-zinc-400 font-mono bg-zinc-950/20 p-3 rounded-lg border border-zinc-900/50">
+                                    &ldquo;{prop.reason}&rdquo;
+                                  </p>
+                                )}
+
+                                {/* Action Buttons: PENDING vs HISTORY */}
+                                {prop.status === "PENDING" ? (
+                                  <div className="flex items-center justify-end gap-2 pt-3 border-t border-zinc-900/50">
+                                    {handleDeleteProposal && (
+                                      <button
+                                        type="button"
+                                        disabled={isThisLoading}
+                                        onClick={() => handleDeleteProposal(prop.id)}
+                                        className="px-3.5 py-2 border border-zinc-800 hover:border-red-900/40 hover:bg-red-950/20 text-zinc-400 hover:text-red-400 text-xs font-medium rounded-lg transition-all mr-auto flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Dismiss and remove proposal"
+                                      >
+                                        {actionLoading === 'DELETE' ? (
+                                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        ) : (
+                                          <Trash2 className="w-3.5 h-3.5" />
+                                        )}
+                                        <span>{actionLoading === 'DELETE' ? "Dismissing..." : "Dismiss"}</span>
+                                      </button>
+                                    )}
+                                    {editingProposalId !== prop.id && (
+                                      <button
+                                        type="button"
+                                        disabled={isThisLoading}
+                                        onClick={() => {
+                                          setEditingProposalId(prop.id);
+                                          setEditingProposalContent(
+                                            prop.proposedContent || "",
+                                          );
+                                        }}
+                                        className="px-4 py-2 border border-zinc-800 hover:border-zinc-700 text-zinc-300 hover:text-white text-xs font-bold uppercase rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                                      >
+                                        Edit Details
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      disabled={isThisLoading}
+                                      onClick={() => handleRejectProposal(prop.id)}
+                                      className="px-4 py-2 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-xs font-bold uppercase rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                    >
+                                      {actionLoading === 'REJECT' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      <span>{actionLoading === 'REJECT' ? "Rejecting..." : "Reject"}</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={isThisLoading}
+                                      onClick={() => handleApproveProposal(prop.id)}
+                                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase rounded-lg transition-all shadow disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                    >
+                                      {actionLoading === 'APPROVE' && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                      <span>{actionLoading === 'APPROVE' ? "Approving..." : "Approve & Index"}</span>
+                                    </button>
+                                  </div>
+                                ) : (
+                                  /* History Proposals (APPROVED or REJECTED) Actions */
+                                  <div className="flex items-center justify-between gap-2 pt-3 border-t border-zinc-900/50">
+                                    <span className="text-[11px] font-mono text-zinc-500">
+                                      {prop.status === "APPROVED"
+                                        ? "Memory proposal applied and indexed"
+                                        : "Memory proposal rejected"}
+                                    </span>
+                                    <div className="flex items-center gap-2">
+                                      {handleResetProposal && (
+                                        <button
+                                          type="button"
+                                          disabled={isThisLoading}
+                                          onClick={() => handleResetProposal(prop.id)}
+                                          className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-700 bg-zinc-900/40 hover:bg-zinc-800 text-zinc-300 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                          title="Re-open this proposal and move it back to Pending"
+                                        >
+                                          {actionLoading === 'RESET' ? (
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                          ) : (
+                                            <RotateCcw className="w-3.5 h-3.5" />
+                                          )}
+                                          <span>{actionLoading === 'RESET' ? "Restoring..." : "Restore to Pending"}</span>
+                                        </button>
+                                      )}
+                                      {handleDeleteProposal && (
+                                        <button
+                                          type="button"
+                                          disabled={isThisLoading}
+                                          onClick={() => handleDeleteProposal(prop.id)}
+                                          className="px-3 py-1.5 border border-red-900/30 hover:border-red-800/60 bg-red-950/10 hover:bg-red-950/30 text-red-400 text-xs font-medium rounded-lg transition-all flex items-center gap-1.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                                          title="Permanently remove from proposal history"
+                                        >
+                                          {actionLoading === 'DELETE' ? (
+                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                          ) : (
+                                            <Trash2 className="w-3.5 h-3.5" />
+                                          )}
+                                          <span>{actionLoading === 'DELETE' ? "Deleting..." : "Delete Record"}</span>
+                                        </button>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Right Column: active index list */}
@@ -568,8 +707,8 @@ export function KnowledgeView(props: any) {
                                     onClick={() => handleSaveNodeEdit(node.id)}
                                     className="flex items-center gap-1.5 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-white rounded-lg text-xs uppercase font-bold transition-colors"
                                   >
-                                    {isKnowledgeActionLoading[node.id] && <Loader2 className="w-3 h-3 animate-spin" />}
-                                    {isKnowledgeActionLoading[node.id] ? "Saving..." : user?.role === "ADMIN" ? "Update Node" : "Submit Edit Proposal"}
+                                    {isKnowledgeActionLoading[node.id] === 'UPDATE' && <Loader2 className="w-3 h-3 animate-spin" />}
+                                    <span>{isKnowledgeActionLoading[node.id] === 'UPDATE' ? "Saving..." : user?.role === "ADMIN" ? "Update Node" : "Submit Edit Proposal"}</span>
                                   </button>
                                   <button
                                     disabled={Boolean(isKnowledgeActionLoading[node.id])}
@@ -605,12 +744,12 @@ export function KnowledgeView(props: any) {
                                 onClick={() => handleDeleteNode(node.id)}
                                 className="flex items-center gap-1.5 px-3 py-1.5 border border-red-900/30 hover:bg-red-900/20 hover:border-red-900/50 disabled:opacity-50 text-red-400 hover:text-red-300 text-[10px] font-bold uppercase rounded-lg transition-colors"
                               >
-                                {isKnowledgeActionLoading[node.id] ? (
+                                {isKnowledgeActionLoading[node.id] === 'DELETE' ? (
                                   <Loader2 className="w-3 h-3 animate-spin" />
                                 ) : (
                                   <Trash2 className="w-3 h-3" />
                                 )}
-                                {isKnowledgeActionLoading[node.id] ? "Deleting..." : user?.role === "ADMIN" ? "Delete Node" : "Propose Deletion"}
+                                <span>{isKnowledgeActionLoading[node.id] === 'DELETE' ? "Deleting..." : user?.role === "ADMIN" ? "Delete Node" : "Propose Deletion"}</span>
                               </button>
                             </div>
                           )}

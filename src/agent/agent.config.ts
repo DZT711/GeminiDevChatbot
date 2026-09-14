@@ -60,9 +60,19 @@ export function isThoughtSignatureModel(model: string): boolean {
 export function isGeminiThinkingConfigSupported(model: string): boolean {
   if (!model) return false;
   const m = model.toLowerCase().replace('models/', '').replace('google/', '').split(':')[0];
+  if (
+    m.includes('image') ||
+    m.includes('veo') ||
+    m.includes('gemma') ||
+    m.includes('embedding')
+  ) {
+    return false;
+  }
   return (
+    m === 'hybrid' ||
     m.includes('3.8') ||
     m.includes('3.7') ||
+    m.includes('3.5') ||
     m.includes('3.1-pro') ||
     m.includes('3.1-flash-lite') ||
     m.includes('2.5-pro') ||
@@ -71,37 +81,114 @@ export function isGeminiThinkingConfigSupported(model: string): boolean {
   );
 }
 
+export interface ThinkingLevelOption {
+  id: string;
+  label: string;
+  hint: string;
+}
+
+export function getSupportedThinkingLevelsForModel(model: string): ThinkingLevelOption[] {
+  if (!isGeminiThinkingConfigSupported(model)) return [];
+  const m = model.toLowerCase().replace('models/', '').replace('google/', '').split(':')[0];
+  const isPro = m.includes('3.1-pro') || m.includes('2.5-pro');
+  const isLite = m.includes('flash-lite');
+
+  const options: ThinkingLevelOption[] = [
+    { id: "none", label: "Off", hint: "Standard generation without thinking tokens" }
+  ];
+
+  // Minimal is supported on Flash & Lite models
+  if (!isPro) {
+    options.push({ id: "minimal", label: "Minimal", hint: "Ultra-fast lightweight reasoning" });
+  }
+
+  options.push(
+    { id: "low", label: "Low", hint: "Fast concise reasoning" },
+    { id: "medium", label: "Normal", hint: "Balanced reasoning depth" },
+    { id: "high", label: "High", hint: "Deep step-by-step reasoning" }
+  );
+
+  // XHigh is supported on Flash models & Hybrid
+  if (!isPro && !isLite) {
+    options.push({ id: "extra_high", label: "XHigh", hint: "Maximum thinking budget (32k tokens)" });
+  }
+
+  return options;
+}
+
 export interface ThinkingConfigResult {
   thinkingLevel?: string;
+  thinkingBudget?: number;
   includeThoughts?: boolean;
 }
 
 export function getThinkingConfigForModel(model: string, userLevel?: string): ThinkingConfigResult | undefined {
   if (!model) return undefined;
+  if (!isGeminiThinkingConfigSupported(model)) return undefined;
+
   const m = model.toLowerCase().replace('models/', '').replace('google/', '').split(':')[0];
-  const isGemini3 = m.includes('3.8') || m.includes('3.7') || m.includes('3.1');
+  const isGemini3 = m.includes('3.8') || m.includes('3.7') || m.includes('3.5') || m.includes('3.1');
+  const isPro = m.includes('3.1-pro') || m.includes('2.5-pro');
   
   if (isGemini3) {
-    let level = (userLevel || 'LOW').toUpperCase();
-    if (level === 'NONE' || level === 'OFF') {
-      if (m.includes('3.1-flash-lite') || m.includes('3.8') || m.includes('3.7')) {
+    const rawLevel = (userLevel || 'LOW').toUpperCase();
+    let level = 'LOW';
+    let budget: number | undefined = undefined;
+    const isOff = rawLevel === 'NONE' || rawLevel === 'OFF';
+
+    if (rawLevel === 'MINIMAL') {
+      level = isPro ? 'LOW' : 'MINIMAL';
+    } else if (rawLevel === 'LOW') {
+      level = 'LOW';
+    } else if (rawLevel === 'NORMAL' || rawLevel === 'MEDIUM') {
+      level = 'MEDIUM';
+    } else if (rawLevel === 'HIGH') {
+      level = 'HIGH';
+    } else if (rawLevel === 'EXTRA_HIGH' || rawLevel === 'XHIGH') {
+      level = 'HIGH';
+      if (!isPro) {
+        budget = 32768;
+      }
+    } else if (isOff) {
+      if (m.includes('3.1-flash-lite') || m.includes('3.8') || m.includes('3.7') || m.includes('3.5')) {
         level = 'MINIMAL';
       } else {
         level = 'LOW';
       }
     }
-    if (m.includes('3.1-pro') && level === 'MINIMAL') {
+
+    if (isPro && level === 'MINIMAL') {
       level = 'LOW';
     }
+
     return {
       thinkingLevel: level,
-      includeThoughts: true
+      ...(budget ? { thinkingBudget: budget } : {}),
+      includeThoughts: !isOff
     };
   }
 
   if (m.includes('thinking') || m.includes('2.5') || m.includes('2.0')) {
+    const rawLevel = (userLevel || 'LOW').toUpperCase();
+    const isOff = rawLevel === 'NONE' || rawLevel === 'OFF';
+    let budget: number | undefined = undefined;
+    if (isOff) {
+      budget = 0;
+    } else if (rawLevel === 'EXTRA_HIGH' || rawLevel === 'XHIGH') {
+      budget = 32768;
+    } else if (rawLevel === 'HIGH') {
+      budget = 16384;
+    } else if (rawLevel === 'NORMAL' || rawLevel === 'MEDIUM') {
+      budget = 8192;
+    } else if (rawLevel === 'LOW') {
+      budget = 2048;
+    } else if (rawLevel === 'MINIMAL') {
+      budget = 1024;
+    }
+
     return {
-      includeThoughts: true
+      ...(budget !== undefined ? { thinkingBudget: budget } : {}),
+      includeThoughts: !isOff
     };
   }
 

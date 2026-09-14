@@ -159,6 +159,7 @@ export const modelInformation = pgTable('model_information', {
   topProviderRate: varchar('top_provider_rate', { length: 255 }),
   architecture: varchar('architecture', { length: 255 }),
   canUseTool: boolean('can_use_tool').default(false),
+  releaseNoticeUrl: text('release_notice_url'),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 

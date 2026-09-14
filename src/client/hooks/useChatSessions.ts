@@ -34,7 +34,16 @@ export function useChatSessions({
 }) {
   const loadSession = (session: ChatSession) => {
     setCurrentSessionId(session.id);
-    setMessages(session.messages);
+    const cleaned = (session.messages || []).filter(
+      (m) =>
+        m &&
+        (m.role === "user" ||
+          Boolean(m.content && m.content.trim()) ||
+          m.imageUrl ||
+          m.videoUrl ||
+          (m.attachments && m.attachments.length > 0)),
+    );
+    setMessages(cleaned);
     setView("chat");
     setShowHistory(false);
   };
@@ -56,6 +65,15 @@ export function useChatSessions({
     const seenMsgIds = new Set<string>();
     const dedupedMessages = updatedMessages.filter((m) => {
       if (!m || !m.id) return false;
+      if (
+        m.role === "model" &&
+        !m.content?.trim() &&
+        !m.imageUrl &&
+        !m.videoUrl &&
+        (!m.attachments || m.attachments.length === 0)
+      ) {
+        return false;
+      }
       if (seenMsgIds.has(m.id)) return false;
       seenMsgIds.add(m.id);
       return true;
@@ -206,7 +224,13 @@ export function useChatInteractions(options: any) {
           role: 'model',
           content: `⚠️ **Agent Execution Unsuccessful**\n\n**Situation:** ${diag.title} \`[${diag.badge}]\`\n${diag.description}\n\n💡 **Recommended Action:** ${diag.suggestion}\n\n*Target Goal:* ${goalIntent}`
         };
-        setMessages((prev: Message[]) => [...prev, failMsg]);
+        setMessages((prev: Message[]) => {
+          const last = prev[prev.length - 1];
+          if (last && last.role === 'model' && (!last.content || !last.content.trim())) {
+            return [...prev.slice(0, -1), failMsg];
+          }
+          return [...prev, failMsg];
+        });
         if (saveCurrentSession) {
           setTimeout(() => {
             setMessages((currentMsgs: Message[]) => {
@@ -812,11 +836,9 @@ export function useChatInteractions(options: any) {
           provider: activeKey?.provider,
           customBaseUrl: activeKey?.baseUrl,
           thinkingLevel:
-            currentModel === ModelId.PRO
-              ? undefined
-              : thinkingMode !== "none"
-                ? (thinkingMode as any)
-                : undefined,
+            thinkingMode !== "none"
+              ? (thinkingMode as any)
+              : undefined,
         },
         (content) => {
           setMessages((prev) => {
@@ -854,14 +876,21 @@ export function useChatInteractions(options: any) {
         return nextMessages;
       });
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `msg-${Date.now() + 2}`,
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        const errMsg: Message = {
+          id: last?.id || `msg-${Date.now() + 2}`,
           role: "model",
           content: `**Summarizer Skill Failure:** ${err.message}`,
-        },
-      ]);
+          modelName: "summarizer",
+        };
+        const updated =
+          last && last.role === "model" && (!last.content || !last.content.trim())
+            ? [...prev.slice(0, -1), errMsg]
+            : [...prev, errMsg];
+        setTimeout(() => saveCurrentSession(updated, sessionId), 0);
+        return updated;
+      });
     } finally {
       setIsLoading(false);
     }
@@ -1000,11 +1029,9 @@ export function useChatInteractions(options: any) {
             provider: activeKey?.provider,
             useSearch,
             thinkingLevel:
-              currentModel === ModelId.PRO
-                ? undefined
-                : thinkingMode !== "none"
-                  ? (thinkingMode as any)
-                  : undefined,
+              thinkingMode !== "none"
+                ? (thinkingMode as any)
+                : undefined,
           },
           "active",
         );
@@ -1069,11 +1096,9 @@ export function useChatInteractions(options: any) {
             session: sessions.find(s => s.id === currentSessionId),
             isAutoCompact,
             thinkingLevel:
-              currentModel === ModelId.PRO
-                ? undefined
-                : thinkingMode !== "none"
-                  ? (thinkingMode as any)
-                  : undefined,
+              thinkingMode !== "none"
+                ? (thinkingMode as any)
+                : undefined,
             signal: abortControllerRef.current.signal,
             attachments: userMessage.attachments,
             customKey: activeKey?.key,
@@ -1131,24 +1156,35 @@ export function useChatInteractions(options: any) {
         if (mainActionId)
           transparencyLogger.updateAction(mainActionId, { status: "failed" });
         if (error.message === "Operation aborted") {
-          setMessages((prev) => [
-            ...prev.slice(0, -1),
-            {
-              id: `err-${Date.now()}`,
-              role: "model",
-              content: `*Generation cancelled by (user || {}).*`,
-            },
-          ]);
+          setMessages((prev) => {
+            const updated = [
+              ...prev.slice(0, -1),
+              {
+                id: `err-${Date.now()}`,
+                role: "model" as const,
+                content: `*Generation cancelled by (user || {}).*`,
+              },
+            ];
+            setTimeout(() => saveCurrentSession(updated, sessionId), 0);
+            return updated;
+          });
         } else {
           const diag = diagnoseAgentError(error);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `err-${Date.now()}`,
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            const errorMsg: Message = {
+              id: last?.id || `err-${Date.now()}`,
               role: "model",
               content: `⚠️ **AI Service Notice: ${diag.title}** \`[${diag.badge}]\`\n\n${diag.description}\n\n💡 **Action:** ${diag.suggestion}`,
-            },
-          ]);
+              modelName: last?.modelName,
+            };
+            const updated =
+              last && last.role === "model" && (!last.content || !last.content.trim())
+                ? [...prev.slice(0, -1), errorMsg]
+                : [...prev, errorMsg];
+            setTimeout(() => saveCurrentSession(updated, sessionId), 0);
+            return updated;
+          });
           if (addNotification) {
             addNotification(`[${diag.badge}] ${diag.title}`, "error");
           }
@@ -1164,6 +1200,7 @@ export function useChatInteractions(options: any) {
       // Handle overrideMessages (edit case)
       // Similar logic but don't clear input
       let mainRetryActionId: string | undefined;
+      let sessionId = currentSessionId;
       try {
         mainRetryActionId = transparencyLogger.log(
           "Analysis",
@@ -1174,7 +1211,6 @@ export function useChatInteractions(options: any) {
         abortControllerRef.current = new AbortController();
         const processedInput = targetInput;
 
-        let sessionId = currentSessionId;
         if (!sessionId) {
           sessionId = `session-${Date.now()}`;
           setCurrentSessionId(sessionId);
@@ -1230,11 +1266,9 @@ export function useChatInteractions(options: any) {
             session: sessions.find(s => s.id === currentSessionId),
             isAutoCompact,
             thinkingLevel:
-              currentModel === ModelId.PRO
-                ? undefined
-                : thinkingMode !== "none"
-                  ? (thinkingMode as any)
-                  : undefined,
+              thinkingMode !== "none"
+                ? (thinkingMode as any)
+                : undefined,
             signal: abortControllerRef.current.signal,
             customKey: activeKey?.key,
             provider: activeKey?.provider,
@@ -1292,14 +1326,21 @@ export function useChatInteractions(options: any) {
             status: "failed",
           });
         const diag = diagnoseAgentError(error);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: `err-${Date.now()}`,
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          const errorMsg: Message = {
+            id: last?.id || `err-${Date.now()}`,
             role: "model",
             content: `⚠️ **AI Service Notice: ${diag.title}** \`[${diag.badge}]\`\n\n${diag.description}\n\n💡 **Action:** ${diag.suggestion}`,
-          },
-        ]);
+            modelName: last?.modelName,
+          };
+          const updated =
+            last && last.role === "model" && (!last.content || !last.content.trim())
+              ? [...prev.slice(0, -1), errorMsg]
+              : [...prev, errorMsg];
+          setTimeout(() => saveCurrentSession(updated, sessionId), 0);
+          return updated;
+        });
         if (addNotification) {
           addNotification(`[${diag.badge}] ${diag.title}`, "error");
         }

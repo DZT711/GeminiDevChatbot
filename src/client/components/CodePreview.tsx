@@ -4,14 +4,27 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SandpackProvider, SandpackPreview } from '@codesandbox/sandpack-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import mermaid from 'mermaid';
 import { cn } from '@/lib/utils';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Copy, Check, Eye, Code } from 'lucide-react';
 import { motion } from 'motion/react';
 
-mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+let mermaidInstance: any = null;
+let mermaidInitPromise: Promise<any> | null = null;
+
+async function getMermaid(): Promise<any> {
+  if (mermaidInstance) return mermaidInstance;
+  if (!mermaidInitPromise) {
+    mermaidInitPromise = import('mermaid').then((m: any) => {
+      const instance = m.default || m;
+      instance.initialize({ startOnLoad: false, theme: 'dark' });
+      mermaidInstance = instance;
+      return instance;
+    });
+  }
+  return mermaidInitPromise;
+}
 
 let mermaidRenderQueue = Promise.resolve();
 
@@ -113,6 +126,7 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
             }
 
             const id = `mermaid-${Math.random().toString(36).substring(2, 10)}`;
+            const mermaid = await getMermaid();
             const { svg } = await mermaid.render(id, codeToRender, mermaidRef.current);
             
             if (!isCancelled && mermaidRef.current) {

@@ -25,7 +25,7 @@ export function useKnowledgeBase() {
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
   const [knowledgeProposals, setKnowledgeProposals] = useState<KnowledgeProposal[]>([]);
   const [isKnowledgeLoading, setIsKnowledgeLoading] = useState(false);
-  const [isKnowledgeActionLoading, setIsKnowledgeActionLoading] = useState<Record<string, boolean>>({});
+  const [isKnowledgeActionLoading, setIsKnowledgeActionLoading] = useState<Record<string, string | boolean>>({});
   
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingNodeContent, setEditingNodeContent] = useState("");
@@ -62,56 +62,109 @@ export function useKnowledgeBase() {
   }, []);
 
   const handleApproveProposal = async (proposalId: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: 'APPROVE' }));
     try {
       await apiClient.post(`/api/knowledge/proposals/${proposalId}/approve`);
       await fetchKnowledgeData();
     } catch (e) {
       console.error("Failed to approve proposal:", e);
+      throw e;
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
     }
   };
 
   const handleRejectProposal = async (proposalId: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: 'REJECT' }));
     try {
       await apiClient.post(`/api/knowledge/proposals/${proposalId}/reject`);
       await fetchKnowledgeData();
     } catch (e) {
       console.error("Failed to reject proposal:", e);
+      throw e;
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
+    }
+  };
+
+  const handleDeleteProposal = async (proposalId: string) => {
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: 'DELETE' }));
+    try {
+      await apiClient.delete(`/api/knowledge/proposals/${proposalId}`);
+      await fetchKnowledgeData();
+    } catch (e) {
+      console.error("Failed to delete proposal:", e);
+      throw e;
+    } finally {
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
+    }
+  };
+
+  const handleResetProposal = async (proposalId: string) => {
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: 'RESET' }));
+    try {
+      await apiClient.post(`/api/knowledge/proposals/${proposalId}/reset`);
+      await fetchKnowledgeData();
+    } catch (e) {
+      console.error("Failed to reset proposal:", e);
+      throw e;
+    } finally {
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
     }
   };
 
   const handleUpdateProposal = async (proposalId: string, content: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: 'UPDATE' }));
     try {
-      await apiClient.put(`/api/knowledge/proposals/${proposalId}`, { content });
+      await apiClient.put(`/api/knowledge/proposals/${proposalId}`, { proposedContent: content });
       await fetchKnowledgeData();
       setEditingProposalId(null);
     } catch (e) {
       console.error("Failed to update proposal:", e);
+      throw e;
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [proposalId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[proposalId];
+        return next;
+      });
     }
   };
 
   const handleDeleteNode = async (nodeId: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: 'DELETE' }));
     try {
       await apiClient.delete(`/api/knowledge/${nodeId}`);
       await fetchKnowledgeData();
     } catch (e) {
       console.error("Failed to delete node:", e);
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
     }
   };
 
   const handleProposeDeleteNode = async (nodeId: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: 'DELETE' }));
     try {
       await apiClient.post("/api/knowledge/proposals", {
         actionType: "DELETE",
@@ -122,12 +175,16 @@ export function useKnowledgeBase() {
     } catch (e) {
       console.error("Failed to propose deletion:", e);
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
     }
   };
 
   const handleUpdateNode = async (nodeId: string, content: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: 'UPDATE' }));
     try {
       await apiClient.put(`/api/knowledge/${nodeId}`, { content });
       await fetchKnowledgeData();
@@ -135,12 +192,16 @@ export function useKnowledgeBase() {
     } catch (e) {
       console.error("Failed to update node:", e);
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
     }
   };
 
   const handleProposeUpdateNode = async (nodeId: string, content: string) => {
-    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: true }));
+    setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: 'UPDATE' }));
     try {
       await apiClient.post("/api/knowledge/proposals", {
         actionType: "UPDATE",
@@ -153,7 +214,11 @@ export function useKnowledgeBase() {
     } catch (e) {
       console.error("Failed to propose edit:", e);
     } finally {
-      setIsKnowledgeActionLoading((prev) => ({ ...prev, [nodeId]: false }));
+      setIsKnowledgeActionLoading((prev) => {
+        const next = { ...prev };
+        delete next[nodeId];
+        return next;
+      });
     }
   };
 
@@ -226,6 +291,8 @@ export function useKnowledgeBase() {
     fetchKnowledgeData,
     handleApproveProposal,
     handleRejectProposal,
+    handleDeleteProposal,
+    handleResetProposal,
     handleUpdateProposal,
     handleDeleteNode,
     handleProposeDeleteNode,

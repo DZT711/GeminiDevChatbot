@@ -341,6 +341,14 @@ router.get('/knowledge/proposals', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
+    if (!isAdmin) {
+      return res.json([]);
+    }
+
     const { knowledgeProposals } = await import('../db/schema.js');
     const proposals = await txWithUser(payload.id as string, async (tx) => {
       return await tx.select().from(knowledgeProposals);
@@ -367,7 +375,8 @@ router.put('/knowledge/proposals/:id', async (req, res) => {
       return res.status(401).json({ error: 'Invalid token' });
     }
 
-    const { proposedContent, reason, status } = req.body;
+    const proposedContent = req.body.proposedContent !== undefined ? req.body.proposedContent : req.body.content;
+    const { reason, status } = req.body;
     const { users, knowledgeProposals } = await import('../db/schema.js');
 
     const [proposal] = await txWithUser(payload.id as string, async (tx) => {
@@ -380,8 +389,9 @@ router.put('/knowledge/proposals/:id', async (req, res) => {
     const userObj = await db.query.users.findFirst({
       where: eq(users.id, payload.id as string)
     });
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
 
-    if (proposal.userId !== (payload.id as string) && (!userObj || userObj.role !== 'ADMIN')) {
+    if (proposal.userId !== (payload.id as string) && !isAdmin) {
       return res.status(403).json({ error: 'Unauthorized to modify this proposal' });
     }
 
@@ -419,7 +429,8 @@ router.post('/knowledge/proposals/:id/approve', async (req, res) => {
     const userObj = await db.query.users.findFirst({
       where: eq(users.id, payload.id as string)
     });
-    if (!userObj || userObj.role !== 'ADMIN') {
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Forbidden: Only administrators can approve proposals.' });
     }
 
@@ -539,7 +550,8 @@ router.post('/knowledge/proposals/:id/reject', async (req, res) => {
     const userObj = await db.query.users.findFirst({
       where: eq(users.id, payload.id as string)
     });
-    if (!userObj || userObj.role !== 'ADMIN') {
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
+    if (!isAdmin) {
       return res.status(403).json({ error: 'Forbidden: Only administrators can reject proposals.' });
     }
 
@@ -553,6 +565,74 @@ router.post('/knowledge/proposals/:id/reject', async (req, res) => {
     const [updatedProposal] = await txWithUser(payload.id as string, async (tx) => {
       return await tx.update(knowledgeProposals).set({
         status: 'REJECTED'
+      }).where(eq(knowledgeProposals.id, req.params.id)).returning();
+    });
+
+    res.json(updatedProposal);
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /knowledge/proposals/:id - Delete a proposal from pending queue or history
+router.delete('/knowledge/proposals/:id', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { users, knowledgeProposals } = await import('../db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can delete proposals.' });
+    }
+
+    await txWithUser(payload.id as string, async (tx) => {
+      await tx.delete(knowledgeProposals).where(eq(knowledgeProposals.id, req.params.id));
+    });
+
+    res.json({ success: true, deletedId: req.params.id });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /knowledge/proposals/:id/reset - Reopen / reset a rejected or processed proposal back to PENDING
+router.post('/knowledge/proposals/:id/reset', async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: 'No token' });
+    }
+    
+    const token = authHeader.split(' ')[1];
+    const { payload } = await jose.jwtVerify(token, JWT_SECRET);
+    if (!payload || !payload.id) {
+      return res.status(401).json({ error: 'Invalid token' });
+    }
+
+    const { users, knowledgeProposals } = await import('../db/schema.js');
+    const userObj = await db.query.users.findFirst({
+      where: eq(users.id, payload.id as string)
+    });
+    const isAdmin = userObj?.role?.toUpperCase() === 'ADMIN' || userObj?.email === 'nguyensihuynsh711@gmail.com';
+    if (!isAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Only administrators can reset proposals.' });
+    }
+
+    const [updatedProposal] = await txWithUser(payload.id as string, async (tx) => {
+      return await tx.update(knowledgeProposals).set({
+        status: 'PENDING'
       }).where(eq(knowledgeProposals.id, req.params.id)).returning();
     });
 

@@ -52,17 +52,44 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
     }
   }, [currentModel]);
 
-  useEffect(() => {
-    const fetchModels = async () => {
-      try {
-        const data = await apiClient.get<any[]>('/api/models/info');
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+
+  const fetchModels = useCallback(async () => {
+    setIsLoadingModels(true);
+    try {
+      const data = await apiClient.get<any[]>('/api/models/info');
+      if (Array.isArray(data) && data.length > 0) {
         setGlobalModelCatalog(data);
-      } catch (err) {
-        console.warn("Failed to fetch model catalog", err);
+        setModelCatalog(data);
       }
-    };
-    fetchModels();
+    } catch (err) {
+      console.warn("Failed to fetch model catalog", err);
+    } finally {
+      setIsLoadingModels(false);
+    }
   }, []);
+
+  useEffect(() => {
+    fetchModels();
+  }, [fetchModels]);
+
+  const refreshModels = useCallback(async () => {
+    setIsLoadingModels(true);
+    try {
+      const refreshed = await apiClient.post<any[]>('/api/models/refresh', {});
+      if (Array.isArray(refreshed) && refreshed.length > 0) {
+        setGlobalModelCatalog(refreshed);
+        setModelCatalog(refreshed);
+      } else {
+        await fetchModels();
+      }
+    } catch (err) {
+      console.warn("Failed to refresh models, fallback to fetchModels", err);
+      await fetchModels();
+    } finally {
+      setIsLoadingModels(false);
+    }
+  }, [fetchModels]);
 
   useEffect(() => {
     const activeKey = apiKeys.find((k) => k.id === activeKeyId);
@@ -168,6 +195,8 @@ export function useModelSettings(apiKeys: any[], activeKeyId: string, globalEnab
     globalModelCatalog, setGlobalModelCatalog,
     modelCatalog,
     setModelCatalog,
+    isLoadingModels, setIsLoadingModels,
+    refreshModels,
     newModelName, setNewModelName,
     newModelId, setNewModelId,
     newModelContext, setNewModelContext,

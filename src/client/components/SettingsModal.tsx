@@ -1,7 +1,7 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
-import { Copy, Plus, Save, Settings2, Trash2, X, Github, Sun, Palette, Terminal, Bot, Database, AlertTriangle, FileText, Shield, Paperclip } from "lucide-react";
+import { Copy, Plus, Save, Settings2, Trash2, X, Github, Sun, Palette, Terminal, Bot, Database, AlertTriangle, FileText, Shield, Paperclip, RotateCcw, Loader2 } from "lucide-react";
 import { storageService } from '../services/storageService';
 import { handleCopyFullChat } from "../hooks/useChatSessions";
 
@@ -17,11 +17,24 @@ export function SettingsModal(props: any) {
     kSearchQuery, setKSearchQuery, handleKSearch, isKSearching, kSearchError, kSearchResults,
     newProposalContent, setNewProposalContent, newProposalReason, setNewProposalReason, handleCreateNewProposal, isSubmittingProposal,
     knowledgeProposals, editingProposalId, editingProposalContent, setEditingProposalContent, handleSaveProposalEdit, setEditingProposalId,
-    knowledgeNodes, isKnowledgeActionLoading, handleRejectProposal, handleApproveProposal,
+    knowledgeNodes, isKnowledgeActionLoading, handleRejectProposal, handleApproveProposal, handleDeleteProposal, handleResetProposal,
     editingNodeId, editingNodeContent, setEditingNodeContent, handleSaveNodeEdit, setEditingNodeId, handleDeleteNode,
     isEditingSkill, setIsEditingSkill, saveSkillEdit,
     toggleSkillSuggestions, showSkillSuggestions, autoScroll, setAutoScroll, handleSummarizeChat, isLoading, setShowTransparency
   } = props;
+
+  const [proposalFilter, setProposalFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
+  const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.email === 'nguyensihuynsh711@gmail.com';
+
+  const allProposals = knowledgeProposals || [];
+  const filteredProposals = allProposals.filter((prop: any) => {
+    if (proposalFilter === 'ALL') return true;
+    return prop.status === proposalFilter;
+  });
+
+  const pendingCount = allProposals.filter((p: any) => p.status === 'PENDING').length;
+  const approvedCount = allProposals.filter((p: any) => p.status === 'APPROVED').length;
+  const rejectedCount = allProposals.filter((p: any) => p.status === 'REJECTED').length;
 
   return (
     <>
@@ -507,7 +520,7 @@ export function SettingsModal(props: any) {
                           value={kSearchQuery}
                           onChange={(e) => setKSearchQuery(e.target.value)}
                           placeholder="Type model memories query to test..."
-                          className="flex-1 bg-black/40 border border-zinc-850 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-cyan-500"
+                          className="flex-1 bg-black/40 border border-zinc-800 rounded-lg px-3 py-2 text-xs font-mono text-white outline-none focus:border-cyan-500"
                         />
                         <button
                           onClick={handleKSearch}
@@ -570,7 +583,7 @@ export function SettingsModal(props: any) {
                               setNewProposalContent(e.target.value)
                             }
                             placeholder="Type or paste knowledge description here..."
-                            className="w-full bg-black/40 border border-zinc-850 rounded-lg p-2.5 text-xs font-mono text-white outline-none focus:border-emerald-500 placeholder:text-zinc-650"
+                            className="w-full bg-black/40 border border-zinc-800 rounded-lg p-2.5 text-xs font-mono text-white outline-none focus:border-emerald-500 placeholder:text-zinc-600"
                           />
                         </div>
 
@@ -582,7 +595,7 @@ export function SettingsModal(props: any) {
                               setNewProposalReason(e.target.value)
                             }
                             placeholder="Justification reason (optional)..."
-                            className="w-full bg-black/40 border border-zinc-850 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-500"
+                            className="w-full bg-black/40 border border-zinc-800 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white outline-none focus:border-emerald-500"
                           />
                         </div>
 
@@ -598,24 +611,65 @@ export function SettingsModal(props: any) {
                       </div>
                     </div>
 
-                    {/* Proposals Section */}
+                    {/* Proposals Section - Administrator Moderation Queue */}
+                    {isAdmin && (
                     <div className="space-y-3">
-                      <div className="flex justify-between items-center">
-                        <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                          Pending & History Proposals
-                        </label>
-                        <span className="text-[10px] font-mono text-zinc-500">
-                          {knowledgeProposals.length} total
-                        </span>
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-zinc-800/80 pb-2">
+                        <div className="flex items-center gap-2">
+                          <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+                            Pending & History Proposals
+                          </label>
+                          <span className="text-[9px] font-mono bg-zinc-900 text-zinc-400 px-1.5 py-0.2 rounded border border-zinc-800">
+                            {allProposals.length} total
+                          </span>
+                        </div>
+
+                        {/* Status Filter Tabs */}
+                        <div className="flex items-center gap-1 p-0.5 bg-zinc-950/80 rounded-lg border border-zinc-800/80 text-[10px]">
+                          {(['ALL', 'PENDING', 'APPROVED', 'REJECTED'] as const).map((filter) => {
+                            const count =
+                              filter === 'ALL'
+                                ? allProposals.length
+                                : filter === 'PENDING'
+                                ? pendingCount
+                                : filter === 'APPROVED'
+                                ? approvedCount
+                                : rejectedCount;
+                            const isActive = proposalFilter === filter;
+                            return (
+                              <button
+                                key={filter}
+                                type="button"
+                                onClick={() => setProposalFilter(filter)}
+                                className={cn(
+                                  "px-2 py-0.5 rounded font-mono text-[10px] transition-all flex items-center gap-1",
+                                  isActive
+                                    ? "bg-zinc-800 text-white font-semibold"
+                                    : "text-zinc-500 hover:text-zinc-300"
+                                )}
+                              >
+                                <span>{filter === 'ALL' ? 'All' : filter.charAt(0) + filter.slice(1).toLowerCase()}</span>
+                                <span className={cn("px-1 py-0.1 rounded text-[8px]", isActive ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900 text-zinc-500")}>
+                                  {count}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
 
-                      {knowledgeProposals.length === 0 ? (
-                        <div className="text-center py-6 border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500">
-                          No model-proposed index modifications found.
+                      {filteredProposals.length === 0 ? (
+                        <div className="text-center py-6 border border-dashed border-zinc-800 rounded-xl text-xs text-zinc-500 font-mono">
+                          {proposalFilter === 'ALL'
+                            ? "No model-proposed index modifications found."
+                            : `No proposals with status "${proposalFilter}" found.`}
                         </div>
                       ) : (
-                        <div className="space-y-3">
-                          {knowledgeProposals.map((prop) => (
+                        <div className="space-y-3 max-h-[400px] overflow-y-auto pr-1 custom-scrollbar">
+                          {filteredProposals.map((prop: any) => {
+                            const actionLoading = isKnowledgeActionLoading[prop.id];
+                            const isThisLoading = Boolean(actionLoading);
+                            return (
                             <div
                               key={prop.id}
                               className={cn(
@@ -651,11 +705,11 @@ export function SettingsModal(props: any) {
                                   className={cn(
                                     "text-[8px] px-1.5 py-0.5 rounded font-bold uppercase",
                                     prop.status === "PENDING" &&
-                                      "bg-amber-500/10 text-amber-500",
+                                      "bg-amber-500/10 text-amber-500 border border-amber-500/20",
                                     prop.status === "APPROVED" &&
-                                      "bg-emerald-500/10 text-emerald-500",
+                                      "bg-emerald-500/10 text-emerald-500 border border-emerald-500/20",
                                     prop.status === "REJECTED" &&
-                                      "bg-zinc-500/10 text-zinc-400",
+                                      "bg-zinc-500/10 text-zinc-400 border border-zinc-700/30",
                                   )}
                                 >
                                   {prop.status}
@@ -670,27 +724,33 @@ export function SettingsModal(props: any) {
                                   <div className="space-y-2">
                                     <textarea
                                       value={editingProposalContent}
+                                      disabled={isThisLoading}
                                       onChange={(e) =>
                                         setEditingProposalContent(
                                           e.target.value,
                                         )
                                       }
-                                      className="w-full h-24 bg-zinc-950 border border-zinc-805 rounded-lg p-2 text-xs font-mono text-zinc-300 outline-none focus:border-cyan-500"
+                                      className="w-full h-24 bg-zinc-950 border border-zinc-805 rounded-lg p-2 text-xs font-mono text-zinc-300 outline-none focus:border-cyan-500 disabled:opacity-50"
                                     />
                                     <div className="flex gap-2">
                                       <button
+                                        type="button"
+                                        disabled={isThisLoading}
                                         onClick={() =>
                                           handleSaveProposalEdit(prop.id)
                                         }
-                                        className="px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-[10px] uppercase font-bold"
+                                        className="px-3 py-1 bg-green-600 hover:bg-green-500 text-white rounded text-[10px] uppercase font-bold disabled:opacity-50 flex items-center gap-1"
                                       >
-                                        Save
+                                        {actionLoading === 'UPDATE' && <Loader2 className="w-3 h-3 animate-spin" />}
+                                        {actionLoading === 'UPDATE' ? "Saving..." : "Save"}
                                       </button>
                                       <button
+                                        type="button"
+                                        disabled={isThisLoading}
                                         onClick={() =>
                                           setEditingProposalId(null)
                                         }
-                                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] uppercase font-bold"
+                                        className="px-3 py-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded text-[10px] uppercase font-bold disabled:opacity-50"
                                       >
                                         Cancel
                                       </button>
@@ -707,7 +767,7 @@ export function SettingsModal(props: any) {
                                           {(() => {
                                             const targetNode =
                                               knowledgeNodes.find(
-                                                (node) =>
+                                                (node: any) =>
                                                   node.id === prop.targetNodeId,
                                               );
                                             return targetNode
@@ -732,7 +792,7 @@ export function SettingsModal(props: any) {
                                           {(() => {
                                             const targetNode =
                                               knowledgeNodes.find(
-                                                (node) =>
+                                                (node: any) =>
                                                   node.id === prop.targetNodeId,
                                               );
                                             return targetNode
@@ -755,51 +815,112 @@ export function SettingsModal(props: any) {
                                 </p>
                               )}
 
-                              {prop.status === "PENDING" && (
-                                <div className="flex justify-end gap-2 pt-1 border-t border-zinc-900">
+                              {prop.status === "PENDING" ? (
+                                <div className="flex items-center justify-end gap-2 pt-1 border-t border-zinc-900">
+                                  {handleDeleteProposal && (
+                                    <button
+                                      type="button"
+                                      disabled={isThisLoading}
+                                      onClick={() => handleDeleteProposal(prop.id)}
+                                      className="px-2 py-1 border border-zinc-800 hover:border-red-900/40 hover:bg-red-950/20 text-zinc-400 hover:text-red-400 text-[9px] font-medium rounded transition-all mr-auto flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                      title="Dismiss proposal"
+                                    >
+                                      {actionLoading === 'DELETE' ? (
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="w-3 h-3" />
+                                      )}
+                                      <span>{actionLoading === 'DELETE' ? "Dismissing..." : "Dismiss"}</span>
+                                    </button>
+                                  )}
                                   {editingProposalId !== prop.id && (
                                     <button
-                                      disabled={
-                                        Object.keys(isKnowledgeActionLoading).length > 0
-                                      }
+                                      type="button"
+                                      disabled={isThisLoading}
                                       onClick={() => {
                                         setEditingProposalId(prop.id);
                                         setEditingProposalContent(
                                           prop.proposedContent || "",
                                         );
                                       }}
-                                      className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-700 text-zinc-400 text-[9px] font-bold uppercase rounded transition-all mr-auto"
+                                      className="px-3 py-1.5 border border-zinc-800 hover:border-zinc-700 text-zinc-400 text-[9px] font-bold uppercase rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       Edit
                                     </button>
                                   )}
                                   <button
-                                    disabled={Object.keys(isKnowledgeActionLoading).length > 0}
+                                    type="button"
+                                    disabled={isThisLoading}
                                     onClick={() =>
                                       handleRejectProposal(prop.id)
                                     }
-                                    className="px-3 py-1.5 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-[9px] font-bold uppercase rounded transition-all"
+                                    className="px-3 py-1.5 border border-red-900/40 bg-red-950/10 hover:bg-red-950/20 text-red-400 text-[9px] font-bold uppercase rounded transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                                   >
-                                    Reject
+                                    {actionLoading === 'REJECT' && <Loader2 className="w-3 h-3 animate-spin" />}
+                                    <span>{actionLoading === 'REJECT' ? "Rejecting..." : "Reject"}</span>
                                   </button>
                                   <button
-                                    disabled={Object.keys(isKnowledgeActionLoading).length > 0}
+                                    type="button"
+                                    disabled={isThisLoading}
                                     onClick={() =>
                                       handleApproveProposal(prop.id)
                                     }
-                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold uppercase rounded transition-all shadow"
+                                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[9px] font-bold uppercase rounded transition-all shadow disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
                                   >
-                                    {isKnowledgeActionLoading[prop.id]
+                                    {actionLoading === 'APPROVE' && <Loader2 className="w-3 h-3 animate-spin" />}
+                                    <span>{actionLoading === 'APPROVE'
                                       ? "Approving..."
-                                      : "Approve & Index"}
+                                      : "Approve & Index"}</span>
                                   </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center justify-between gap-2 pt-1 border-t border-zinc-900">
+                                  <span className="text-[9px] font-mono text-zinc-500">
+                                    {prop.status === "APPROVED" ? "Approved & Indexed" : "Rejected"}
+                                  </span>
+                                  <div className="flex items-center gap-1.5">
+                                    {handleResetProposal && (
+                                      <button
+                                        type="button"
+                                        disabled={isThisLoading}
+                                        onClick={() => handleResetProposal(prop.id)}
+                                        className="px-2 py-1 border border-zinc-800 hover:border-zinc-700 bg-zinc-900/40 hover:bg-zinc-800 text-zinc-300 text-[9px] font-medium rounded transition-all flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Restore to Pending"
+                                      >
+                                        {actionLoading === 'RESET' ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <RotateCcw className="w-3 h-3" />
+                                        )}
+                                        <span>{actionLoading === 'RESET' ? "Restoring..." : "Restore"}</span>
+                                      </button>
+                                    )}
+                                    {handleDeleteProposal && (
+                                      <button
+                                        type="button"
+                                        disabled={isThisLoading}
+                                        onClick={() => handleDeleteProposal(prop.id)}
+                                        className="px-2 py-1 border border-red-900/30 hover:border-red-800/60 bg-red-950/10 hover:bg-red-950/30 text-red-400 text-[9px] font-medium rounded transition-all flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
+                                        title="Delete from history"
+                                      >
+                                        {actionLoading === 'DELETE' ? (
+                                          <Loader2 className="w-3 h-3 animate-spin" />
+                                        ) : (
+                                          <Trash2 className="w-3 h-3" />
+                                        )}
+                                        <span>{actionLoading === 'DELETE' ? "Deleting..." : "Delete"}</span>
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
+                    )}
 
                     {/* Active Nodes Section */}
                     <div className="space-y-3">

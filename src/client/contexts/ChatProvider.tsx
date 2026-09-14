@@ -21,7 +21,23 @@ export const ChatProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (!storageService.getItem("session")) return [];
       const saved = storageService.getItem("devengine_sessions") || storageService.getItem("chat_sessions");
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const parsed: ChatSession[] = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed.map((s) => ({
+            ...s,
+            messages: (s.messages || []).filter(
+              (m) =>
+                m &&
+                (m.role === "user" ||
+                  Boolean(m.content && m.content.trim()) ||
+                  m.imageUrl ||
+                  m.videoUrl ||
+                  (m.attachments && m.attachments.length > 0)),
+            ),
+          }));
+        }
+      }
     } catch {}
     return [];
   });
