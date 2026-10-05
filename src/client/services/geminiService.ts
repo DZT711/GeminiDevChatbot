@@ -295,21 +295,106 @@ class GeminiService {
     return new GoogleGenAI({ apiKey });
   }
 
-  async checkKey(key: string, provider: Provider = Provider.GOOGLE, baseUrl?: string) {
+  async checkKey(key: string, provider: Provider = Provider.GOOGLE, baseUrl?: string): Promise<{ valid: boolean; models?: any[]; error?: string; warning?: string }> {
     try {
       if (provider === Provider.GOOGLE) {
-        const ai = new GoogleGenAI({ apiKey: key });
-        const models = [];
-        const pager = await ai.models.list();
-        for await (const m of pager as any) {
-          models.push({
-            id: m.name,
-            displayName: m.displayName,
-            description: m.description,
-            supportedGenerationMethods: m.supportedGenerationMethods || []
-          });
+        if (!key || !key.trim()) {
+          return { valid: false, error: "API key cannot be empty" };
         }
-        return { valid: true, models };
+
+        const ai = new GoogleGenAI({ apiKey: key.trim() });
+        const defaultGoogleModels = [
+          { id: 'gemini-3.8-flash', displayName: 'Gemini 3.8 Flash', description: 'Advanced frontier reasoning model', supportedGenerationMethods: ['generateContent'] },
+          { id: 'gemini-3.1-pro-preview', displayName: 'Gemini 3.1 Pro', description: 'High-intelligence reasoning model', supportedGenerationMethods: ['generateContent'] },
+          { id: 'gemini-3.1-flash-lite', displayName: 'Gemini 3.1 Flash Lite', description: 'Cost-effective, high-throughput model', supportedGenerationMethods: ['generateContent'] }
+        ];
+
+        try {
+          const pager = await ai.models.list();
+          const models: any[] = [];
+          for await (const m of pager as any) {
+            models.push({
+              id: m.name?.replace(/^models\//, '') || m.name,
+              displayName: m.displayName || m.name,
+              description: m.description || '',
+              supportedGenerationMethods: m.supportedGenerationMethods || []
+            });
+          }
+          if (models.length > 0) {
+            return { valid: true, models };
+          }
+        } catch (listError: any) {
+          const rawMsg = typeof listError === 'string' ? listError : (listError?.message || JSON.stringify(listError));
+          const isExplicitInvalid =
+            listError?.status === 400 ||
+            listError?.status === 403 ||
+            rawMsg.includes('API_KEY_INVALID') ||
+            rawMsg.includes('API key not valid') ||
+            rawMsg.includes('PERMISSION_DENIED');
+
+          if (isExplicitInvalid) {
+            console.error(`${provider} Key Validation Error:`, listError);
+            return {
+              valid: false,
+              error: "Invalid Google API key. Please check your credentials."
+            };
+          }
+
+          console.warn(`[geminiService] models.list check encountered upstream warning; probing with countTokens: ${rawMsg}`);
+
+          // Probe key validity via lightweight countTokens call
+          try {
+            await ai.models.countTokens({
+              model: 'gemini-2.5-flash',
+              contents: 'test'
+            });
+            return { valid: true, models: defaultGoogleModels };
+          } catch (probeError: any) {
+            const probeMsg = typeof probeError === 'string' ? probeError : (probeError?.message || JSON.stringify(probeError));
+            const isProbeExplicitInvalid =
+              probeError?.status === 400 ||
+              probeError?.status === 403 ||
+              probeMsg.includes('API_KEY_INVALID') ||
+              probeMsg.includes('API key not valid') ||
+              probeMsg.includes('PERMISSION_DENIED');
+
+            if (isProbeExplicitInvalid) {
+              console.error(`${provider} Key Validation Error:`, probeError);
+              return {
+                valid: false,
+                error: "Invalid Google API key. Please check your credentials."
+              };
+            }
+
+            // If Google returned 500 / INTERNAL (temporary Google infrastructure issue)
+            const is500Internal =
+              listError?.status === 500 ||
+              probeError?.status === 500 ||
+              rawMsg.includes('"code":500') ||
+              rawMsg.includes('Internal error') ||
+              rawMsg.includes('INTERNAL') ||
+              probeMsg.includes('"code":500') ||
+              probeMsg.includes('Internal error') ||
+              probeMsg.includes('INTERNAL');
+
+            if (is500Internal) {
+              console.warn(`[geminiService] Google API temporarily returned 500 Internal error. Key accepted with default models.`);
+              return {
+                valid: true,
+                models: defaultGoogleModels,
+                warning: 'Google API temporarily reported an internal error (500). Credentials accepted.'
+              };
+            }
+
+            console.error(`${provider} Key Validation Error:`, probeError);
+            return {
+              valid: false,
+              error: "Google API connection probe failed. Please try again."
+            };
+          }
+        }
+
+        return { valid: true, models: defaultGoogleModels };
       } else {
         const { getProvider } = await import('./providers');
         const providerInstance = getProvider(provider);
@@ -317,9 +402,18 @@ class GeminiService {
       }
     } catch (error: any) {
       console.error(`${provider} Key Validation Error:`, error);
+      let cleanMsg = "Authentication Failed";
+      if (error?.message) {
+        try {
+          const parsed = JSON.parse(error.message);
+          if (parsed?.error?.message) cleanMsg = parsed.error.message;
+        } catch {
+          cleanMsg = error.message;
+        }
+      }
       return {
         valid: false,
-        error: error.message || "Authentication Failed"
+        error: cleanMsg
       };
     }
   }
@@ -373,10 +467,26 @@ class GeminiService {
       customInstructions?: string | null;
       githubToken?: string;
       session?: ChatSession;
+      sessionId?: string;
+      workspaceId?: string;
+      userMessageId?: string;
+      assistantMessageId?: string;
+      parentMessageId?: string;
+      interactionType?: 'CHAT' | 'AGENT' | 'UNKNOWN';
+      surface?: string;
+      codingContext?: {
+        currentFile?: string;
+        selection?: string | { text: string; startLine?: number; endLine?: number };
+        selectedCode?: string;
+        openFiles?: string[];
+        recentErrors?: string[];
+        planContext?: any;
+      };
       isAutoCompact?: boolean;
       onModelSwitch?: (model: string, isFallback?: boolean) => void;
       onTokenUpdate?: (tokens: number) => void;
       onEvent?: (event: any) => void;
+      onMessageSaved?: (message: any) => void;
     } = {},
     onChunk?: (chunk: string) => void
   ) {
@@ -400,7 +510,15 @@ class GeminiService {
           customKey: config.customKey,
           customInstructions: config.customInstructions,
           provider: config.provider,
-          customBaseUrl: config.customBaseUrl
+          customBaseUrl: config.customBaseUrl,
+          sessionId: config.sessionId,
+          workspaceId: config.workspaceId,
+          codingContext: config.codingContext,
+          userMessageId: config.userMessageId,
+          assistantMessageId: config.assistantMessageId,
+          parentMessageId: config.parentMessageId,
+          interactionType: config.interactionType,
+          surface: config.surface
         };
 
         thinkingStore.reset();
@@ -485,11 +603,20 @@ class GeminiService {
                 } else if (parsed.type === 'system_event') {
                   if (parsed.data && parsed.data.type === 'knowledge_proposal_created') {
                     config.onEvent?.({ type: 'knowledge_update_needed' });
+                  } else if (parsed.data && parsed.data.type === 'workspace_file_changed') {
+                    config.onEvent?.({ type: 'workspace_file_changed', ...parsed.data });
+                    if (typeof window !== 'undefined') {
+                      window.dispatchEvent(new CustomEvent('workspace:refresh', { detail: parsed.data }));
+                    }
                   }
                 } else if (parsed.type === 'model_switch') {
                   console.log('[geminiService] RECEIVED MODEL SWITCH', parsed.data?.model, 'isFallback:', parsed.data?.isFallback);
                   if (config.onModelSwitch) {
                     config.onModelSwitch(parsed.data?.model, parsed.data?.isFallback !== false);
+                  }
+                } else if (parsed.type === 'message_saved') {
+                  if (config.onMessageSaved) {
+                    config.onMessageSaved(parsed.data);
                   }
                 } else if (parsed.type === 'error') {
                   throw new Error(parsed.data);
@@ -540,6 +667,7 @@ class GeminiService {
 - Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
 - Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
 - Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+- Mathematical & Theoretical Equations: The UI features native KaTeX math rendering. Whenever formulating theoretical concepts, algorithms, loss functions, vectors, or proofs, always write mathematical formulas in LaTeX: use inline \`$...$\` for single variables/terms (e.g. $\\theta$, $\\mathcal{D}$, $P(x)$, $f(q, \\mathcal{D}) \\rightarrow y$) and block \`$$...$$\` on dedicated lines for standalone equations, derivations, optimization objectives, and matrices.
 - Always provide full, runnable code blocks where applicable. Use Markdown for formatting. If you provide a full, runnable code block (like a complete React app or HTML file) that is meant to be rendered and previewed visually, append \`preview\` to the markdown language tag (e.g., \\\`\\\`\\\`tsx preview). Do NOT use the \`preview\` tag for partial snippets or utility files.
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL
@@ -733,77 +861,86 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
                 let functionCallParts: Array<{ functionCall: any; thoughtSignature?: string; thought_signature?: string }> = [];
                 let latestThoughtSignature: string | undefined = undefined;
 
-                for await (const chunk of stream) {
-                  if (config.signal?.aborted) throw new Error("Operation aborted");
-                  
-                  // Extract usage metadata if available (usually in the last chunk)
-                  if (chunk.usageMetadata) {
-                    usageMetadata = chunk.usageMetadata;
-                  }
-
-                  const candidateParts = (chunk as any).candidates?.[0]?.content?.parts || [];
-                  for (const part of candidateParts) {
-                    const sig = part.thoughtSignature || part.thought_signature || part.functionCall?.thoughtSignature || part.functionCall?.thought_signature;
-                    if (sig) {
-                      latestThoughtSignature = sig;
+                try {
+                  for await (const chunk of stream) {
+                    if (config.signal?.aborted) throw new Error("Operation aborted");
+                    
+                    // Extract usage metadata if available (usually in the last chunk)
+                    if (chunk.usageMetadata) {
+                      usageMetadata = chunk.usageMetadata;
                     }
-                    if (part.functionCall) {
-                      const partSig = sig || latestThoughtSignature;
-                      functionCallParts.push({
-                        functionCall: part.functionCall,
-                        ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
-                      });
+
+                    const candidateParts = (chunk as any).candidates?.[0]?.content?.parts || [];
+                    for (const part of candidateParts) {
+                      const sig = part.thoughtSignature || part.thought_signature || part.functionCall?.thoughtSignature || part.functionCall?.thought_signature;
+                      if (sig) {
+                        latestThoughtSignature = sig;
+                      }
+                      if (part.functionCall) {
+                        const partSig = sig || latestThoughtSignature;
+                        functionCallParts.push({
+                          functionCall: part.functionCall,
+                          ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
+                        });
+                      }
+                    }
+
+                    const calls = chunk.functionCalls;
+                    if (calls && calls.length > 0) {
+                      functionCalls.push(...calls);
+                      onChunk?.(`[Neural Link Scaling: Accessing ${calls[0].name}...]`);
+                    }
+
+                    // Handle Search Grounding Data implicitly
+                    if ((chunk as any).candidates?.[0]?.groundingMetadata) {
+                       const meta = (chunk as any).candidates[0].groundingMetadata;
+                       // only log once
+                       if (!finalAccumulatedText.includes('[Search Context Captured]')) {
+                          const queries = meta.webSearchQueries || [];
+                          if (queries.length > 0) {
+                             transparencyLogger.log(
+                               'Research/Retrieval',
+                               'Google Search Engine Interrogated',
+                               {
+                                 intent: `Queries: ${queries.join(', ')}`,
+                                 rationale: "Model required external ground truth to formulate response accurately.",
+                                 sources: meta.groundingChunks?.map((c: any) => c.web?.uri).filter(Boolean)
+                               },
+                               'completed'
+                             );
+                          }
+                       }
+                    }
+
+                    const text = chunk.text;
+                    if (text) {
+                      chunkText += text;
+                      finalAccumulatedText += text;
+                      onChunk?.(finalAccumulatedText);
+                    }
+
+                    // Capture thinking logic if available
+                    const parts = (chunk as any).candidates?.[0]?.content?.parts || [];
+                    for (const part of parts) {
+                      if (part.thought) {
+                         transparencyLogger.log(
+                           'Analysis',
+                           'Neural Cognition & Reasoning',
+                           {
+                             rationale: part.thought,
+                             intent: 'Formulating complex internal representation'
+                           },
+                           'completed'
+                         );
+                      }
                     }
                   }
-
-                  const calls = chunk.functionCalls;
-                  if (calls && calls.length > 0) {
-                    functionCalls.push(...calls);
-                    onChunk?.(`[Neural Link Scaling: Accessing ${calls[0].name}...]`);
-                  }
-
-                  // Handle Search Grounding Data implicitly
-                  if ((chunk as any).candidates?.[0]?.groundingMetadata) {
-                     const meta = (chunk as any).candidates[0].groundingMetadata;
-                     // only log once
-                     if (!finalAccumulatedText.includes('[Search Context Captured]')) {
-                        const queries = meta.webSearchQueries || [];
-                        if (queries.length > 0) {
-                           transparencyLogger.log(
-                             'Research/Retrieval',
-                             'Google Search Engine Interrogated',
-                             {
-                               intent: `Queries: ${queries.join(', ')}`,
-                               rationale: "Model required external ground truth to formulate response accurately.",
-                               sources: meta.groundingChunks?.map((c: any) => c.web?.uri).filter(Boolean)
-                             },
-                             'completed'
-                           );
-                        }
-                     }
-                  }
-
-                  const text = chunk.text;
-                  if (text) {
-                    chunkText += text;
-                    finalAccumulatedText += text;
-                    onChunk?.(finalAccumulatedText);
-                  }
-
-                  // Capture thinking logic if available
-                  const parts = (chunk as any).candidates?.[0]?.content?.parts || [];
-                  for (const part of parts) {
-                    if (part.thought) {
-                       transparencyLogger.log(
-                         'Analysis',
-                         'Neural Cognition & Reasoning',
-                         {
-                           rationale: part.thought,
-                           intent: 'Formulating complex internal representation'
-                         },
-                         'completed'
-                       );
-                    }
+                } catch (streamErr: unknown) {
+                  const errMsg = streamErr instanceof Error ? (streamErr as Error).message : String(streamErr);
+                  if (errMsg.includes('Incomplete JSON segment at the end')) {
+                    console.warn('[geminiService] Handled trailing Incomplete JSON segment in stream.');
+                  } else {
+                    throw streamErr;
                   }
                 }
 
@@ -1287,6 +1424,7 @@ Always provide full, runnable code blocks where applicable. Use Markdown for for
 - Address the engineer directly, maintaining a highly technical, efficient, and objective tone.
 - Use clean Markdown syntax. Use bolding to highlight critical paths or command parameters.
 - Provide comprehensive, syntax-highlighted code blocks with inline documentation comments for any code changes.
+- Mathematical & Theoretical Equations: The UI features native KaTeX math rendering. Whenever formulating theoretical concepts, algorithms, loss functions, vectors, or proofs, always write mathematical formulas in LaTeX: use inline \`$...$\` for single variables/terms (e.g. $\\theta$, $\\mathcal{D}$, $P(x)$, $f(q, \\mathcal{D}) \\rightarrow y$) and block \`$$...$$\` on dedicated lines for standalone equations, derivations, optimization objectives, and matrices.
 - Always provide full, runnable code blocks where applicable. Use Markdown for formatting. If you provide a full, runnable code block (like a complete React app or HTML file) that is meant to be rendered and previewed visually, append \`preview\` to the markdown language tag (e.g., \\\`\\\`\\\`tsx preview). Do NOT use the \`preview\` tag for partial snippets or utility files.
 
 ### HUMAN-IN-THE-LOOP KNOWLEDGE PROPOSAL

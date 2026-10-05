@@ -10,6 +10,10 @@ import { cn } from '../lib/utils';
 
 interface Props {
   theme?: string;
+  thinkingContent?: string;
+  thoughtDurationSeconds?: number;
+  isStreaming?: boolean;
+  defaultOpen?: boolean;
 }
 
 // ─── Tool icon mapper ───────────────────────────────────────────────────────
@@ -52,21 +56,36 @@ const prettifyTool = (description: string): string => {
 type Tab = 'thoughts' | 'actions';
 
 // ─── Main component ─────────────────────────────────────────────────────────
-export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
+export const ThinkingProcessDrawer: React.FC<Props> = ({
+  theme = 'dark',
+  thinkingContent,
+  thoughtDurationSeconds,
+  isStreaming,
+  defaultOpen = false,
+}) => {
   const allActions     = useTransparencyLog();
-  const { text: thinkingText, isThinking } = useThinkingStore();
+  const { text: storeThinkingText, isThinking: storeIsThinking } = useThinkingStore();
 
-  const [isMinimized, setIsMinimized]   = useState(false);
+  const isThinking = isStreaming !== undefined ? isStreaming : storeIsThinking;
+  const thinkingText = thinkingContent !== undefined ? thinkingContent : storeThinkingText;
+
+  const [isMinimized, setIsMinimized]   = useState(!defaultOpen && !isThinking);
   const [closed, setClosed]             = useState(false);
   const [tab, setTab]                   = useState<Tab>('thoughts');
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
-  const [elapsed, setElapsed]           = useState(0);
+  const [elapsed, setElapsed]           = useState(thoughtDurationSeconds || 0);
   const thoughtsRef                     = useRef<HTMLDivElement>(null);
   const prevIsThinking                  = useRef(false);
 
   const hasActive   = allActions.some(a => a.status === 'active' || a.status === 'pending');
   const hasThoughts = thinkingText.length > 0;
   const isAnyActive = isThinking || hasActive;
+
+  useEffect(() => {
+    if (thoughtDurationSeconds) {
+      setElapsed(thoughtDurationSeconds);
+    }
+  }, [thoughtDurationSeconds]);
 
   // ── Lifecycle: auto-open / auto-collapse ──
   useEffect(() => {
@@ -76,11 +95,11 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
       setTab('thoughts');
       setSessionStartTime(Date.now());
     } else if (!isThinking && prevIsThinking.current && thinkingText.length > 0) {
-      // Thinking done → collapse so the response is readable
+      // Thinking done → collapse so the response is readable, but user can expand with button
       setIsMinimized(true);
     }
     prevIsThinking.current = isThinking;
-  }, [isThinking]);
+  }, [isThinking, thinkingText.length]);
 
   useEffect(() => {
     if (hasActive && !isThinking) {
@@ -112,7 +131,7 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
       thoughtsRef.current.scrollTop = thoughtsRef.current.scrollHeight;
   }, [thinkingText, tab, isThinking]);
 
-  const hasContent = hasThoughts || allActions.length > 0;
+  const hasContent = hasThoughts || isThinking || allActions.length > 0;
   if (closed || !hasContent) return null;
 
   const isLight  = theme === 'light';
@@ -127,7 +146,7 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
   }
 
   /* ══════════════════════════════════════════════════════════════════════════
-     THINKING MODEL PATH — full drawer with tabs
+     THINKING MODEL PATH — full drawer with tabs (Codex / Antigravity style)
   ══════════════════════════════════════════════════════════════════════════ */
   return (
     <motion.div
@@ -136,7 +155,7 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
       exit={{ opacity: 0, y: 6 }}
       transition={{ duration: 0.22, ease: 'easeOut' }}
       className={cn(
-        'w-full rounded-xl border overflow-hidden mt-3 mb-3 max-w-3xl mx-auto',
+        'w-full rounded-xl border overflow-hidden mt-3 mb-3 max-w-3xl mx-auto select-none',
         'shadow-[0_0_0_1px_rgba(255,255,255,0.04),0_4px_24px_rgba(0,0,0,0.4)]',
         isLight
           ? 'bg-slate-50/90 border-slate-200 backdrop-blur-sm'
@@ -146,35 +165,39 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
       {/* Header */}
       <div
         className={cn(
-          'px-4 py-2.5 flex items-center justify-between cursor-pointer select-none',
+          'px-4 py-2.5 flex items-center justify-between cursor-pointer select-none transition-colors',
           isLight ? 'hover:bg-slate-100/80' : 'hover:bg-white/[0.03]'
         )}
-        onClick={() => setIsMinimized(!isMinimized)}
+        onClick={() => setIsMinimized((prev) => !prev)}
       >
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2.5 min-w-0">
           {isThinking ? (
             <motion.div
               animate={{ scale: [1, 1.18, 1] }}
               transition={{ repeat: Infinity, duration: 1.4, ease: 'easeInOut' }}
             >
-              <Brain size={14} className="text-violet-400" />
+              <Brain size={14} className="text-violet-400 shrink-0" />
             </motion.div>
           ) : hasActive ? (
-            <Loader2 size={14} className="animate-spin text-amber-400" />
+            <Loader2 size={14} className="animate-spin text-amber-400 shrink-0" />
           ) : (
-            <Brain size={14} className="text-zinc-500" />
+            <Brain size={14} className="text-zinc-500 shrink-0" />
           )}
 
           <span className={cn(
-            'text-[10px] font-mono uppercase tracking-[0.15em] font-bold',
+            'text-[10px] font-mono uppercase tracking-[0.15em] font-bold truncate',
             isLight ? 'text-slate-600' : 'text-zinc-400'
           )}>
-            {isThinking ? 'Model Reasoning…' : hasActive ? 'Executing Tools…' : 'Thought Process'}
+            {isThinking
+              ? (elapsed > 0 ? `Thinking (${elapsed}s)…` : 'Model Reasoning…')
+              : elapsed > 0
+              ? `Thought for ${elapsed}s`
+              : 'Thought Process'}
           </span>
 
           {sessionStartTime && (
             <span className={cn(
-              'text-[9px] font-mono flex items-center gap-1 px-1.5 py-0.5 rounded',
+              'text-[9px] font-mono flex items-center gap-1 px-1.5 py-0.5 rounded shrink-0',
               isLight ? 'bg-slate-200 text-slate-500' : 'bg-white/[0.05] text-zinc-600'
             )}>
               <Clock size={9} /> {elapsed}s
@@ -182,27 +205,87 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
           )}
         </div>
 
-        <div className="flex items-center gap-1">
-          {hasThoughts && (
-            <TabPill active={tab === 'thoughts'} onClick={(e) => { e.stopPropagation(); setTab('thoughts'); }}
-              icon={<Brain size={9} />} label="Thoughts" pulse={isThinking} theme={theme} />
+        <div className="flex items-center gap-1 shrink-0">
+          {(hasThoughts || isThinking) && (
+            <TabPill
+              active={tab === 'thoughts'}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isMinimized) {
+                  setIsMinimized(false);
+                  setTab('thoughts');
+                } else if (tab === 'thoughts') {
+                  setIsMinimized(true);
+                } else {
+                  setTab('thoughts');
+                }
+              }}
+              icon={<Brain size={9} />}
+              label="Thoughts"
+              pulse={isThinking}
+              theme={theme}
+            />
           )}
           {allActions.length > 0 && (
-            <TabPill active={tab === 'actions'} onClick={(e) => { e.stopPropagation(); setTab('actions'); }}
-              icon={<Cpu size={9} />} label={`Tools (${allActions.length})`} pulse={hasActive} theme={theme} />
+            <TabPill
+              active={tab === 'actions'}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isMinimized) {
+                  setIsMinimized(false);
+                  setTab('actions');
+                } else if (tab === 'actions') {
+                  setIsMinimized(true);
+                } else {
+                  setTab('actions');
+                }
+              }}
+              icon={<Cpu size={9} />}
+              label={`Tools (${allActions.length})`}
+              pulse={hasActive}
+              theme={theme}
+            />
           )}
+
+          <span className={cn(
+            'text-[10px] font-mono select-none px-1 cursor-pointer hidden xs:inline',
+            isLight ? 'text-slate-400 hover:text-slate-600' : 'text-zinc-500 hover:text-zinc-300'
+          )}>
+            {isMinimized ? 'inspect' : 'hide'}
+          </span>
+
           {!isAnyActive && (
-            <button onClick={(e) => { e.stopPropagation(); setClosed(true); }}
-              className={cn('p-1 rounded transition-colors ml-1',
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setClosed(true);
+              }}
+              className={cn(
+                'p-1 rounded transition-colors ml-0.5 cursor-pointer',
                 isLight ? 'text-slate-400 hover:text-red-500 hover:bg-red-50'
-                         : 'text-zinc-600 hover:text-red-400 hover:bg-red-500/10')}
-              title="Dismiss">
+                         : 'text-zinc-600 hover:text-red-400 hover:bg-red-500/10'
+              )}
+              title="Dismiss"
+            >
               <X size={12} />
             </button>
           )}
-          <div className={cn('ml-1', isLight ? 'text-slate-400' : 'text-zinc-600')}>
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsMinimized((prev) => !prev);
+            }}
+            className={cn(
+              'p-1 rounded ml-0.5 transition-colors cursor-pointer',
+              isLight ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-200/50' : 'text-zinc-500 hover:text-zinc-300 hover:bg-white/5'
+            )}
+            title={isMinimized ? 'Expand thoughts' : 'Collapse thoughts'}
+          >
             {isMinimized ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-          </div>
+          </button>
         </div>
       </div>
 
@@ -214,10 +297,10 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
             animate={{ height: 'auto', opacity: 1 }}
             exit={{ height: 0, opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className={cn('border-t', isLight ? 'border-slate-200' : 'border-zinc-800/60')}
+            className={cn('border-t select-text', isLight ? 'border-slate-200' : 'border-zinc-800/60')}
           >
             {/* Thoughts tab */}
-            {tab === 'thoughts' && hasThoughts && (
+            {tab === 'thoughts' && (hasThoughts || isThinking) && (
               <div ref={thoughtsRef} className="p-3 max-h-72 overflow-y-auto custom-scrollbar">
                 {isThinking && (
                   <div className="flex items-center gap-2 mb-2">
@@ -238,7 +321,7 @@ export const ThinkingProcessDrawer: React.FC<Props> = ({ theme = 'dark' }) => {
                     <Brain size={10} className="text-violet-500" />
                     <span className="text-[9px] uppercase tracking-[0.15em] font-bold text-violet-500">Internal Monologue</span>
                   </div>
-                  {thinkingText}
+                  {thinkingText || (isThinking ? 'Analyzing query and planning implementation steps...' : '')}
                   {isThinking && (
                     <motion.span className="inline-block w-1.5 h-3 bg-violet-400 ml-0.5 align-middle rounded-sm"
                       animate={{ opacity: [1, 0] }} transition={{ repeat: Infinity, duration: 0.7 }} />
@@ -488,16 +571,20 @@ const TabPill: React.FC<{
 }> = ({ active, onClick, icon, label, pulse = false, theme = 'dark' }) => {
   const isLight = theme === 'light';
   return (
-    <button onClick={onClick} className={cn(
-      'flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-widest font-bold transition-all',
-      active
-        ? isLight
-          ? 'bg-violet-100 text-violet-700 border border-violet-200'
-          : 'bg-violet-900/30 text-violet-300 border border-violet-800/50'
-        : isLight
-          ? 'text-slate-400 hover:text-slate-600'
-          : 'text-zinc-600 hover:text-zinc-400'
-    )}>
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-mono uppercase tracking-widest font-bold transition-all cursor-pointer',
+        active
+          ? isLight
+            ? 'bg-violet-100 text-violet-700 border border-violet-200'
+            : 'bg-violet-900/30 text-violet-300 border border-violet-800/50'
+          : isLight
+            ? 'text-slate-400 hover:text-slate-600 hover:bg-slate-200/50'
+            : 'text-zinc-600 hover:text-zinc-400 hover:bg-white/[0.05]'
+      )}
+    >
       {pulse && active ? (
         <motion.span animate={{ opacity: [1, 0.3, 1] }} transition={{ repeat: Infinity, duration: 1 }}>
           {icon}

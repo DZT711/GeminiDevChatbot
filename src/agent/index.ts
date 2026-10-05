@@ -62,4 +62,7 @@ export * from './promotion';
 export * from './goal';
 export * from './decomposition';
 export * from './replanning';
+export * from './session/index.js';
+export * from './changes/ChangeSetTypes.js';
+export * from './changes/DiffGenerator.js';
 export * from './playground/planning.js';

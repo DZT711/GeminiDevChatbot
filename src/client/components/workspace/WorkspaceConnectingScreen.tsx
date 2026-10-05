@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Terminal, Cpu, HardDrive, ShieldCheck, Sparkles, FolderTree, CheckCircle2 } from 'lucide-react';
+import { Terminal, Cpu, HardDrive, ShieldCheck, FolderTree, CheckCircle2 } from 'lucide-react';
 import { cn } from '@/lib/utils.js';
+import { AiSparkIcon } from '../AiSparkIcon';
 
 interface WorkspaceConnectingScreenProps {
   theme?: 'light' | 'dark';
@@ -221,7 +222,7 @@ export function WorkspaceConnectingScreen({
           <div className="flex-1 flex flex-col items-center justify-center max-w-xl mx-auto text-center px-6 py-8 gap-5 z-10">
             <div className="relative">
               <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_35px_rgba(6,182,212,0.25)]">
-                <Sparkles className="w-8 h-8 text-cyan-400 animate-spin" style={{ animationDuration: '7s' }} />
+                <AiSparkIcon size={32} variant="thinking" className="text-cyan-400" />
               </div>
               <div className="absolute -inset-1 rounded-2xl bg-cyan-500/20 blur-xl -z-10 animate-pulse" />
             </div>

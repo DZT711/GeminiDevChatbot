@@ -6,6 +6,7 @@ import type { WorkspaceRef } from '../workspace/WorkspaceTypes';
 
 export interface ExecutionSnapshot {
   readonly executionId: string;
+  readonly sessionId?: string;
   readonly taskId?: string;
   readonly parentTaskId?: string;
   readonly workspaceId?: string;

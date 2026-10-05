@@ -4,6 +4,10 @@ import React, { useState, useEffect, useRef } from 'react';
 import { SandpackProvider, SandpackPreview } from '@codesandbox/sandpack-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import katex from 'katex';
+import { preprocessMath, katexOptions } from '@/lib/mathUtils';
 import { cn } from '@/lib/utils';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -55,12 +59,13 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
   const isMarkdown = ['markdown', 'md'].includes(normalizedLang);
   const isMermaid = ['mermaid', 'uml', 'diagram'].includes(normalizedLang);
   const isSVG = normalizedLang === 'svg';
+  const isMath = ['math', 'latex', 'tex', 'katex'].includes(normalizedLang);
   const isGithub = ['github', 'repo'].includes(normalizedLang) || Boolean(code.trim().match(/^https?:\/\/github\.com\/[^\/]+\/[^\/]+/i));
   const isBackendE2B = ['python', 'py', 'c', 'cpp', 'c++', 'csharp', 'cs', 'c#', 'java', 'bash', 'sh', 'javascript', 'js', 'typescript', 'ts', 'rust', 'rs', 'go', 'php', 'ruby', 'rb'].includes(normalizedLang);
   
-  const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B || isGithub;
+  const isPreviewable = isHtmlCss || effectiveIsReact || effectiveIsJs || effectiveIsTs || isMermaid || isSVG || isMarkdown || isBackendE2B || isGithub || isMath;
   
-  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG || isMarkdown || isGithub) ? 'preview' : 'code');
+  const [activeTab, setActiveTab] = useState<'code' | 'preview'>(isPreviewable && (defaultShowPreview || isMermaid || isSVG || isMarkdown || isGithub || isMath) ? 'preview' : 'code');
   const [copied, setCopied] = useState(false);
   const mermaidRef = useRef<HTMLDivElement>(null);
 
@@ -235,11 +240,44 @@ export const CodePreview: React.FC<CodePreviewProps> = ({ code, language, isLate
           <div className="bg-[#121212] overflow-auto custom-scrollbar items-center justify-center min-h-[200px] w-full flex flex-col">
              {isMermaid && <div ref={mermaidRef} className="flex justify-center w-full bg-white/5 p-4" />}
              {isSVG && <div dangerouslySetInnerHTML={{ __html: debouncedCode }} className="flex justify-center w-full bg-white/5 p-4 rounded" />}
+             {isMath && (
+               <div className="w-full relative z-0 p-6 bg-[#0a0d14] text-zinc-100 flex flex-col items-center justify-center min-h-[200px]">
+                 <div className="w-full max-w-2xl bg-black/60 border border-cyan-500/25 rounded-2xl p-6 shadow-2xl flex flex-col">
+                   <div className="flex items-center justify-between pb-3 mb-4 border-b border-zinc-800 text-[11px] font-mono text-cyan-400">
+                     <span className="font-bold uppercase tracking-wider flex items-center gap-1.5">
+                       <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                       KaTeX Rendered Formula
+                     </span>
+                     <span className="text-[10px] text-zinc-500 font-mono">Display Mode</span>
+                   </div>
+                   <div
+                     className="katex-display-container py-4 px-2 overflow-x-auto custom-scrollbar text-center text-zinc-100 select-text"
+                     dangerouslySetInnerHTML={{
+                       __html: (() => {
+                         try {
+                           return katex.renderToString(debouncedCode.trim(), {
+                             displayMode: true,
+                             throwOnError: false,
+                             strict: false,
+                             trust: true
+                           });
+                         } catch (err: any) {
+                           return `<span class="text-rose-400 text-xs font-mono">KaTeX syntax error: ${err.message}</span>`;
+                         }
+                       })()
+                     }}
+                   />
+                 </div>
+               </div>
+             )}
              {isMarkdown && (
                <div className="w-full relative z-0 p-6 bg-[#0d1117] text-[#c9d1d9] max-w-none overflow-y-auto">
                  <div className="markdown-body font-sans prose prose-invert max-w-none">
-                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                     {debouncedCode}
+                   <ReactMarkdown
+                     remarkPlugins={[remarkGfm, remarkMath]}
+                     rehypePlugins={[[rehypeKatex, katexOptions]]}
+                   >
+                     {preprocessMath(debouncedCode)}
                    </ReactMarkdown>
                  </div>
                </div>

@@ -7,6 +7,7 @@ import { router as knowledgeRouter } from './controllers/KnowledgeController.js'
 import { router as modelRouter } from './controllers/ModelController.js';
 import { router as userRouter } from './controllers/UserController.js';
 import { router as workspaceRouter } from './controllers/WorkspaceController.js';
+import { router as agentSessionRouter } from './controllers/AgentSessionController.js';
 
 export const apiRouter = express.Router();
 
@@ -39,4 +40,5 @@ apiRouter.use(knowledgeRouter);
 apiRouter.use(modelRouter);
 apiRouter.use(userRouter);
 apiRouter.use(workspaceRouter);
+apiRouter.use(agentSessionRouter);
 

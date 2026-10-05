@@ -663,13 +663,24 @@ exit $__DEVGENIE_EC
         detached: true
       });
 
+      let isTimedOut = false;
       const cleanupTimer = setTimeout(() => {
         if (!isResolved) {
+          isTimedOut = true;
           try {
             if (child.pid) process.kill(-child.pid, 'SIGTERM');
           } catch {
             // ignore
           }
+          setTimeout(() => {
+            if (!isResolved) {
+              try {
+                if (child.pid && !child.killed) process.kill(-child.pid, 'SIGKILL');
+              } catch {
+                // ignore
+              }
+            }
+          }, 1000);
         }
       }, timeoutMs);
 
@@ -745,16 +756,22 @@ exit $__DEVGENIE_EC
           formattedStderr += `\n💡 Tip: Python input() requested interactive stdin. You can type in the terminal and press Enter while running, or pipe it: echo "your_input" | ${command}\n`;
         }
 
+        if (isTimedOut && !formattedStderr.includes('timed out')) {
+          formattedStderr += (formattedStderr ? '\n' : '') + 'Command timed out (exceeded time limit)';
+        }
+
         const isSigint = signal === 'SIGINT' || code === 130;
-        const resolvedExitCode = isSigint ? 130 : (code ?? 0);
+        const resolvedExitCode = isTimedOut ? 124 : isSigint ? 130 : (code ?? 0);
 
         resolve({
           exitCode: resolvedExitCode,
           stdout: sanitizeOutput(stdout),
           stderr: sanitizeOutput(formattedStderr),
           durationMs: Date.now() - startTime,
-          workingDirectory: this.workingDirectory
-        });
+          workingDirectory: this.workingDirectory,
+          isTimeout: isTimedOut,
+          isAborted: isSigint
+        } as any);
       };
 
       child.stdout?.on('data', (chunk) => {

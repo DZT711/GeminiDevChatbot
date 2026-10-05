@@ -7,7 +7,9 @@ import {
   PromotionDecision,
   PromotionResult,
   PromotionCategory,
-  PromotionEvidence
+  PromotionEvidence,
+  DurableBrainDestination,
+  DurableBrainDestinationResult
 } from './PromotionTypes.js';
 import { PromotionPolicy, RuleBasedPromotionPolicy } from './PromotionPolicy.js';
 
@@ -37,15 +39,18 @@ export class DefaultPromotionService implements PromotionService {
   private knowledgeStore: KnowledgeStore;
   private policy: PromotionPolicy;
   private experienceStore?: ExperienceStore;
+  private brainDestination?: DurableBrainDestination;
 
   constructor(
     knowledgeStore: KnowledgeStore,
     policy: PromotionPolicy = new RuleBasedPromotionPolicy(),
-    experienceStore?: ExperienceStore
+    experienceStore?: ExperienceStore,
+    brainDestination?: DurableBrainDestination
   ) {
     this.knowledgeStore = knowledgeStore;
     this.policy = policy;
     this.experienceStore = experienceStore;
+    this.brainDestination = brainDestination;
   }
 
   public evaluateCandidate(candidate: PromotionCandidate): PromotionDecision {
@@ -76,6 +81,11 @@ export class DefaultPromotionService implements PromotionService {
       if (!decision.approved) {
         candidate.status = 'REJECTED';
         candidate.rejectionReason = decision.reason;
+        if (this.brainDestination?.recordRejection) {
+          await this.brainDestination.recordRejection(candidate, decision).catch((err) => {
+            console.warn('[PromotionService] Non-fatal rejection record error:', err);
+          });
+        }
         return {
           candidateId: candidate.id,
           status: 'REJECTED',
@@ -130,13 +140,24 @@ export class DefaultPromotionService implements PromotionService {
         source: candidate.sourceTaskId ? `task:${candidate.sourceTaskId}` : 'learning_engine'
       });
 
+      // Dispatch to durable brain destination (Notion DevGenie Brain) if configured
+      let brainDestinationResult: DurableBrainDestinationResult | undefined;
+      if (this.brainDestination) {
+        try {
+          brainDestinationResult = await this.brainDestination.persistCandidate(candidate, decision);
+        } catch (destErr) {
+          console.warn('[PromotionService] Non-fatal error persisting to durable brain destination:', destErr);
+        }
+      }
+
       candidate.status = 'PROMOTED';
 
       return {
         candidateId: candidate.id,
         status: 'PROMOTED',
         decision,
-        promotedRecordId: record.id
+        promotedRecordId: record.id,
+        brainDestinationResult
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -253,7 +274,7 @@ export class DefaultPromotionService implements PromotionService {
     const tags = (kp.tags || []).map(t => t.toLowerCase());
     const content = kp.content.toLowerCase();
 
-    if (tags.includes('error') || tags.includes('mistake') || content.includes('mistake') || content.includes('avoid')) {
+    if (tags.includes('error') || tags.includes('mistake') || tags.includes('failure_lesson') || content.includes('mistake') || content.includes('avoid') || content.includes('failure lesson')) {
       return 'ERROR_AVOIDANCE';
     }
     if (tags.includes('tool') || context.toolName || content.includes('tool')) {
@@ -265,7 +286,7 @@ export class DefaultPromotionService implements PromotionService {
     if (tags.includes('framework') || content.includes('react') || content.includes('typescript') || content.includes('node')) {
       return 'FRAMEWORK_SPECIFIC';
     }
-    if (tags.includes('workflow') || content.includes('pipeline') || content.includes('step')) {
+    if (tags.includes('dependency_order') || tags.includes('workflow') || tags.includes('replan_repair') || content.includes('pipeline') || content.includes('step') || content.includes('repair pattern') || content.includes('dependency ordering')) {
       return 'WORKFLOW_OPTIMIZATION';
     }
     return 'GENERAL_HEURISTIC';
@@ -287,8 +308,18 @@ export class DefaultPromotionService implements PromotionService {
             return true;
           }
         }
-        if (record.metadata && record.metadata.candidateId === candidate.id) {
-          return true;
+        if (record.metadata) {
+          if (record.metadata.candidateId === candidate.id) {
+            return true;
+          }
+          // Plan-level deduplication: check if already promoted for this plan/execution
+          const candPlanId = candidate.metadata?.planId;
+          const candExecId = candidate.metadata?.executionId;
+          if (candPlanId && record.metadata.planId === candPlanId) {
+            if (candExecId && record.metadata.executionId === candExecId) {
+              return true;
+            }
+          }
         }
       }
       return false;

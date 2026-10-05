@@ -15,6 +15,17 @@ export interface Message {
   editHistory?: string[];
   id: string;
   rating?: number;
+  thinkingContent?: string;
+  thoughtDurationSeconds?: number;
+  interactionType?: 'CHAT' | 'AGENT' | 'UNKNOWN';
+  messageRole?: 'USER' | 'ASSISTANT' | 'SYSTEM' | 'TOOL' | 'UNKNOWN';
+  messageKind?: string;
+  responseCode?: string;
+  surface?: string;
+  executionId?: string;
+  planId?: string;
+  toolCallId?: string;
+  parentMessageId?: string;
 }
 
 export interface ChatSession {

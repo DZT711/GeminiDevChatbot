@@ -4,7 +4,7 @@ import { githubService } from "@/services/githubService";
 import { geminiService, DEFAULT_SKILLS, PROVIDER_CONFIGS } from "@/services/geminiService";
 
 import { apiClient } from "@/services/apiClient";
-import { transparencyLogger } from "@/utils/transparencyLogger";
+import { transparencyLogger, thinkingStore } from "@/utils/transparencyLogger";
 import { Attachment } from "@/services/chatSessionManager";
 import JSZip from "jszip";
 import { useDropzone } from "react-dropzone";
@@ -259,12 +259,22 @@ export function useChatInteractions(options: any) {
     }
   };
 
-  const handleEditMessage = async (index: number, newContent: string) => {
+  const handleEditMessage = async (indexOrId: number | string, newContent: string) => {
     if (isLoading) return;
 
-    const messageToEdit = messages[index];
-    if (!messageToEdit) return;
+    let targetIdx = -1;
+    if (typeof indexOrId === "string") {
+      targetIdx = messages.findIndex((m: Message) => m.id === indexOrId);
+    } else if (typeof indexOrId === "number") {
+      targetIdx = indexOrId;
+    }
 
+    if (targetIdx === -1 || !messages[targetIdx]) {
+      console.warn("[handleEditMessage] Target message not found for identifier:", indexOrId);
+      return;
+    }
+
+    const messageToEdit = messages[targetIdx];
     const oldContent = messageToEdit.content;
     const history = messageToEdit.editHistory || [];
 
@@ -275,30 +285,75 @@ export function useChatInteractions(options: any) {
       editHistory: [...history, oldContent],
     };
 
-    const updatedMessages = [...messages.slice(0, index), updatedMessage];
+    const updatedMessages = [...messages.slice(0, targetIdx), updatedMessage];
     setMessages(updatedMessages);
+
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      sessionId = `session-${Date.now()}`;
+      setCurrentSessionId(sessionId);
+    }
+    if (saveCurrentSession) {
+      saveCurrentSession(updatedMessages, sessionId);
+    }
+
     handleSubmit(undefined, updatedMessages);
   };
 
-  const handleRevertMessage = (index: number, versionContent: string) => {
-    setMessages((prev) => {
-      const next = [...prev];
-      const msg = next[index];
-      if (!msg) return prev;
+  const handleRevertMessage = (indexOrId: number | string, versionContent: string) => {
+    if (isLoading) return;
 
-      const history = msg.editHistory || [];
-      const currentContent = msg.content;
+    let targetIdx = -1;
+    if (typeof indexOrId === "string") {
+      targetIdx = messages.findIndex((m: Message) => m.id === indexOrId);
+    } else if (typeof indexOrId === "number") {
+      targetIdx = indexOrId;
+    }
 
-      // Move current to history and pick version
-      next[index] = {
-        ...msg,
-        content: versionContent,
-        editHistory: history
-          .filter((h) => h !== versionContent)
-          .concat(currentContent),
-      };
-      return next;
-    });
+    // Fallback: search by version content in editHistory if index is invalid
+    if (targetIdx === -1 || !messages[targetIdx]) {
+      targetIdx = messages.findIndex((m: Message) =>
+        m.editHistory && m.editHistory.includes(versionContent)
+      );
+    }
+
+    if (targetIdx === -1 || !messages[targetIdx]) {
+      console.warn("[handleRevertMessage] Target message not found for identifier:", indexOrId);
+      return;
+    }
+
+    const messageToRevert = messages[targetIdx];
+    const oldContent = messageToRevert.content;
+    const history = messageToRevert.editHistory || [];
+
+    // Create restored message object: restores previous version and stores current content in history
+    const updatedMessage: Message = {
+      ...messageToRevert,
+      content: versionContent,
+      editHistory: history
+        .filter((h: string) => h !== versionContent)
+        .concat(oldContent),
+    };
+
+    // Restore to this checkpoint: truncate subsequent messages and resubmit to regenerate response
+    const updatedMessages = [...messages.slice(0, targetIdx), updatedMessage];
+    setMessages(updatedMessages);
+
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      sessionId = `session-${Date.now()}`;
+      setCurrentSessionId(sessionId);
+    }
+    if (saveCurrentSession) {
+      saveCurrentSession(updatedMessages, sessionId);
+    }
+
+    if (addNotification) {
+      addNotification("Restored message to previous state.", "info");
+    }
+
+    // Resubmit to generate fresh assistant response for the restored state
+    handleSubmit(undefined, updatedMessages);
   };
 
   const handleRateMessage = async (messageId: string, rating: number) => {
@@ -973,6 +1028,11 @@ export function useChatInteractions(options: any) {
         attachments:
           finalAttachments.length > 0 ? finalAttachments : undefined,
         editHistory: [],
+        interactionType: 'CHAT',
+        messageRole: 'USER',
+        messageKind: 'USER_INPUT',
+        responseCode: 'USER_INPUT',
+        surface: 'CHAT'
       };
 
       const newMessages = [...messages, userMessage];
@@ -1053,6 +1113,11 @@ export function useChatInteractions(options: any) {
           role: "model",
           content: "",
           modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ""}`,
+          interactionType: 'CHAT',
+          messageRole: 'ASSISTANT',
+          messageKind: 'CHAT_RESPONSE',
+          responseCode: 'CHAT_FINAL',
+          surface: 'CHAT'
         };
 
         setMessages((prev) => [...prev, assistantMessage]);
@@ -1091,9 +1156,14 @@ export function useChatInteractions(options: any) {
           customSkills,
           history,
           {
+            sessionId: sessionId || currentSessionId,
+            userMessageId: userMessage.id,
+            assistantMessageId: assistantMessage.id,
+            interactionType: 'CHAT',
+            surface: 'CHAT',
             model: currentModel,
             useSearch,
-            session: sessions.find(s => s.id === currentSessionId),
+            session: sessions.find(s => s.id === (sessionId || currentSessionId)),
             isAutoCompact,
             thinkingLevel:
               thinkingMode !== "none"
@@ -1147,9 +1217,18 @@ export function useChatInteractions(options: any) {
           },
         );
 
+        const finalThought = thinkingStore.get().text;
         setMessages((prev) => {
-          setTimeout(() => saveCurrentSession(prev, sessionId), 0);
-          return prev;
+          const last = [...prev];
+          const msg = { ...last[last.length - 1] };
+          if (msg && msg.role === "model") {
+            if (finalThought) {
+              msg.thinkingContent = finalThought;
+            }
+            last[last.length - 1] = msg;
+          }
+          setTimeout(() => saveCurrentSession(last, sessionId), 0);
+          return last;
         });
         //
       } catch (error: any) {
@@ -1225,6 +1304,11 @@ export function useChatInteractions(options: any) {
           role: "model",
           content: "",
           modelName: `${effectiveModel}${activeKey ? ` (${activeKey.name})` : ""}`,
+          interactionType: 'CHAT',
+          messageRole: 'ASSISTANT',
+          messageKind: 'CHAT_RESPONSE',
+          responseCode: 'CHAT_FINAL',
+          surface: 'CHAT'
         };
 
         setMessages((prev) => [
@@ -1255,15 +1339,21 @@ export function useChatInteractions(options: any) {
             return { role: m.role, parts: parts };
           });
 
+        const targetUserMsg = overrideMessages[overrideMessages.length - 1];
         await geminiService.generateResponse(
           processedInput,
           activeSkillIds,
           customSkills,
           history,
           {
+            sessionId: sessionId || currentSessionId,
+            userMessageId: targetUserMsg?.id,
+            assistantMessageId: assistantMessage.id,
+            interactionType: 'CHAT',
+            surface: 'CHAT',
             model: currentModel,
             useSearch,
-            session: sessions.find(s => s.id === currentSessionId),
+            session: sessions.find(s => s.id === (sessionId || currentSessionId)),
             isAutoCompact,
             thinkingLevel:
               thinkingMode !== "none"
@@ -1316,9 +1406,18 @@ export function useChatInteractions(options: any) {
           },
         );
 
+        const finalThought = thinkingStore.get().text;
         setMessages((prev) => {
-          setTimeout(() => saveCurrentSession(prev, sessionId), 0);
-          return prev;
+          const last = [...prev];
+          const msg = { ...last[last.length - 1] };
+          if (msg && msg.role === "model") {
+            if (finalThought) {
+              msg.thinkingContent = finalThought;
+            }
+            last[last.length - 1] = msg;
+          }
+          setTimeout(() => saveCurrentSession(last, sessionId), 0);
+          return last;
         });
       } catch (error: any) {
         if (mainRetryActionId)

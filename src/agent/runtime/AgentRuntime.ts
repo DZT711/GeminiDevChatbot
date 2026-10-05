@@ -35,15 +35,15 @@ export class AgentRuntime implements ExecutionLifecycle {
   }
 
   public getContext(executionId: string): ExecutionContext {
-    const context = this.activeContexts.get(executionId);
+    let context = this.activeContexts.get(executionId);
     if (!context) {
-      throw new Error(`Execution context not found for ID: ${executionId}`);
+      context = this.createExecution(undefined, executionId);
     }
     return context;
   }
 
-  public createExecution(taskId?: string): ExecutionContext {
-    const executionId = `exec_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  public createExecution(taskId?: string, preferredExecutionId?: string): ExecutionContext {
+    const executionId = preferredExecutionId || `exec_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     const context = createInitialContext(executionId, taskId);
     this.activeContexts.set(executionId, context);
     return context;

@@ -63,10 +63,30 @@ export interface PromotionDecision {
   adjustedConfidence?: number;
 }
 
+export interface DurableBrainDestinationResult {
+  persisted: boolean;
+  destination: string;
+  recordId?: string;
+  auditLogId?: string;
+  error?: string;
+}
+
+export interface DurableBrainDestination {
+  persistCandidate(
+    candidate: PromotionCandidate,
+    decision: PromotionDecision
+  ): Promise<DurableBrainDestinationResult>;
+  recordRejection?(
+    candidate: PromotionCandidate,
+    decision: PromotionDecision
+  ): Promise<void>;
+}
+
 export interface PromotionResult {
   candidateId: string;
   status: PromotionStatus;
   decision: PromotionDecision;
   promotedRecordId?: string;
+  brainDestinationResult?: DurableBrainDestinationResult;
   error?: string;
 }

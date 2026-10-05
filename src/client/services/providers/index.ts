@@ -1,4 +1,4 @@
-import { ProviderInterface } from './ProviderInterface';
+import type { ProviderInterface } from './ProviderInterface';
 import { OpenAICompatibleProvider } from './OpenAICompatibleProvider';
 import { OllamaProvider } from './OllamaProvider';
 import { NvidiaProvider } from './NvidiaProvider';
@@ -8,8 +8,10 @@ import { TogetherProvider } from './TogetherProvider';
 import { CerebrasProvider } from './CerebrasProvider';
 import { HuggingFaceProvider } from './HuggingFaceProvider';
 import { GithubProvider } from './GithubProvider';
-import { PROVIDER_CONFIGS } from '../geminiService';
+import { PROVIDER_CONFIGS } from '../providerConfigs';
 import { Provider } from '../types';
+
+export type { ProviderInterface };
 
 const providerCache = new Map<string, ProviderInterface>();
 
@@ -26,19 +28,19 @@ export function getProvider(providerKey: string, customBaseUrl?: string): Provid
   if (providerKey === Provider.OLLAMA) {
     instance = new OllamaProvider();
   } else if (providerKey === Provider.NVIDIA) {
-    instance = new NvidiaProvider(config.name, baseUrl!);
+    instance = new NvidiaProvider(config?.name || "Nvidia NIM", baseUrl!);
   } else if (providerKey === Provider.GROQ) {
-    instance = new GroqProvider(config.name, baseUrl!);
+    instance = new GroqProvider(config?.name || "Groq", baseUrl!);
   } else if (providerKey === Provider.MISTRAL) {
-    instance = new MistralProvider(config.name, baseUrl!);
+    instance = new MistralProvider(config?.name || "Mistral", baseUrl!);
   } else if (providerKey === Provider.TOGETHER) {
-    instance = new TogetherProvider(config.name, baseUrl!);
+    instance = new TogetherProvider(config?.name || "Together AI", baseUrl!);
   } else if (providerKey === Provider.CEREBRAS) {
-    instance = new CerebrasProvider(config.name, baseUrl!);
+    instance = new CerebrasProvider(config?.name || "Cerebras", baseUrl!);
   } else if (providerKey === Provider.HUGGINGFACE) {
-    instance = new HuggingFaceProvider(config.name, baseUrl!);
+    instance = new HuggingFaceProvider(config?.name || "Hugging Face", baseUrl!);
   } else if (providerKey === Provider.GITHUB) {
-    instance = new GithubProvider(config.name, baseUrl!);
+    instance = new GithubProvider(config?.name || "GitHub Models", baseUrl!);
   } else {
     // Other providers like OpenAI, OpenRouter, DeepSeek, xAI, Custom etc.
     if (!baseUrl) {
@@ -50,4 +52,3 @@ export function getProvider(providerKey: string, customBaseUrl?: string): Provid
   providerCache.set(cacheKey, instance);
   return instance;
 }
-

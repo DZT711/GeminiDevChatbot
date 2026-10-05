@@ -71,10 +71,14 @@ export function useValidation(apiKeys: any[]) {
 
         if (!isMounted) return;
 
-        // Ignore 429 rate limits or temporary network issues from causing false invalid warnings
-        const invalid = results.filter(
-          (r) => !r.valid && !r.error?.toLowerCase().includes('rate limit') && !r.error?.includes('429')
-        );
+        // Ignore 429 rate limits, 500 internal server errors, or temporary network issues from causing false invalid warnings
+        const invalid = results.filter((r) => {
+          if (r.valid) return false;
+          const err = (r.error || '').toLowerCase();
+          if (err.includes('rate limit') || err.includes('429')) return false;
+          if (err.includes('500') || err.includes('internal error') || err.includes('internal') || err.includes('temporary')) return false;
+          return true;
+        });
 
         if (invalid.length > 0) {
           setApiKeyWarning(

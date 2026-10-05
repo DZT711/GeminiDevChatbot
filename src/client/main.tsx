@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import './index.css';
+import 'katex/dist/katex.min.css';
 
 // Ensure browser-safe polyfills for global and Buffer if accessed by isomorphic utilities
 if (typeof window !== 'undefined') {

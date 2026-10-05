@@ -18,9 +18,12 @@ import {
   Send
 } from 'lucide-react';
 import type { CommandExecutionResult, WorkspaceDirectoryEntry } from '../../services/workspaceService.js';
+import { agentSessionService } from '../../services/agentSessionService.js';
+import type { AgentSessionEvent, TerminalEventData } from '../../../agent/session/AgentSessionEvents.js';
 
 interface TerminalLogEntry {
   id: string;
+  executionId?: string;
   command: string;
   stdout: string;
   stderr: string;
@@ -29,6 +32,7 @@ interface TerminalLogEntry {
   timestamp: number;
   cwd?: string;
   isAborted?: boolean;
+  isTimeout?: boolean;
   stdinUsed?: string;
   showsInputPrompt?: boolean;
   inputPromptTip?: string;
@@ -55,6 +59,10 @@ interface WorkspaceTerminalProps {
   isMaximized?: boolean;
   externalCommand?: string | null;
   onClearExternalCommand?: () => void;
+  sessionId?: string | null;
+  workspaceId?: string | null;
+  activeExecutionId?: string | null;
+  onClearActiveExecutionId?: () => void;
 }
 
 const STORAGE_KEY_HISTORY = 'devgenie_terminal_history';
@@ -240,15 +248,73 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
   onToggleMaximize,
   isMaximized = false,
   externalCommand,
-  onClearExternalCommand
+  onClearExternalCommand,
+  sessionId,
+  workspaceId,
+  activeExecutionId,
+  onClearActiveExecutionId
 }) => {
-  const [logs, setLogs] = useState<TerminalLogEntry[]>([]);
+  const storageKey = useMemo(() => {
+    return `devgenie_terminal_logs_${workspaceId || 'default'}`;
+  }, [workspaceId]);
+
+  const [logs, setLogs] = useState<TerminalLogEntry[]>(() => {
+    try {
+      const key = `devgenie_terminal_logs_${workspaceId || 'default'}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch (e) {
+      console.warn('[WorkspaceTerminal] Failed to load terminal logs from storage:', e);
+    }
+    return [];
+  });
+
+  // Persist logs to localStorage whenever logs change
+  useEffect(() => {
+    try {
+      const toSave = logs.slice(-100);
+      localStorage.setItem(storageKey, JSON.stringify(toSave));
+    } catch (e) {
+      console.warn('[WorkspaceTerminal] Failed to persist terminal logs:', e);
+    }
+  }, [logs, storageKey]);
+
+  const isFirstMountRef = useRef(true);
+  // Reload logs when workspace changes
+  useEffect(() => {
+    if (isFirstMountRef.current) {
+      isFirstMountRef.current = false;
+      return;
+    }
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setLogs(parsed);
+          return;
+        }
+      }
+      setLogs([]);
+    } catch {
+      setLogs([]);
+    }
+  }, [storageKey]);
+
   const [currentInput, setCurrentInput] = useState<string>('');
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [activeCommand, setActiveCommand] = useState<string>('');
   const [liveStdout, setLiveStdout] = useState<string>('');
   const [liveStderr, setLiveStderr] = useState<string>('');
   const activeSessionIdRef = useRef<string>('');
+  const liveStdoutRef = useRef<string>('');
+  const liveStderrRef = useRef<string>('');
+  const activeCommandRef = useRef<string>('');
+  const currentCwdRef = useRef<string>(workingDirectory || '/workspace');
+
   const [historyIndex, setHistoryIndex] = useState<number>(-1);
   const [commandHistory, setCommandHistory] = useState<string[]>(() => {
     try {
@@ -258,6 +324,40 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
       return [];
     }
   });
+
+  // Listen for terminal:add-log events dispatched from Agent cards or external triggers
+  useEffect(() => {
+    const handleAddLog = (e: any) => {
+      const detail = e?.detail;
+      if (!detail || !detail.command) return;
+
+      const execId = detail.executionId;
+      setLogs((prev) => {
+        if (execId && prev.some((l) => l.executionId === execId || l.id === `agent_cmd_${execId}`)) {
+          return prev;
+        }
+        const newEntry: TerminalLogEntry = {
+          id: execId ? `agent_cmd_${execId}` : `log_${Date.now()}_ext`,
+          executionId: execId,
+          command: detail.command,
+          stdout: detail.stdout || '',
+          stderr: detail.stderr || '',
+          exitCode: detail.exitCode ?? 0,
+          durationMs: detail.durationMs || 0,
+          timestamp: detail.timestamp || Date.now(),
+          cwd: detail.cwd || currentCwdRef.current,
+          isAborted: Boolean(detail.isAborted),
+          isTimeout: Boolean(detail.isTimeout)
+        };
+        return [...prev, newEntry];
+      });
+    };
+
+    window.addEventListener('terminal:add-log', handleAddLog);
+    return () => {
+      window.removeEventListener('terminal:add-log', handleAddLog);
+    };
+  }, []);
 
   const [fontSize, setFontSize] = useState<'sm' | 'base' | 'lg'>('sm');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -271,8 +371,29 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
   useEffect(() => {
     if (workingDirectory) {
       setCurrentCwd(workingDirectory);
+      currentCwdRef.current = workingDirectory;
     }
   }, [workingDirectory]);
+
+  useEffect(() => {
+    currentCwdRef.current = currentCwd;
+  }, [currentCwd]);
+
+  // Focus and scroll to activeExecutionId when requested
+  useEffect(() => {
+    if (activeExecutionId) {
+      const timer = setTimeout(() => {
+        const el =
+          document.getElementById(`term-exec-${activeExecutionId}`) ||
+          document.getElementById(`term-log-${activeExecutionId}`) ||
+          document.getElementById(`term-log-agent_cmd_${activeExecutionId}`);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }, 60);
+      return () => clearTimeout(timer);
+    }
+  }, [activeExecutionId]);
 
   // Stdin states
   const [stdinText, setStdinText] = useState<string>('');
@@ -284,6 +405,10 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
   const abortControllerRef = useRef<AbortController | null>(null);
   const lastHandledExternalRef = useRef<string | null>(null);
   const runStartTimeRef = useRef<number>(0);
+
+  const focusInput = useCallback(() => {
+    inputRef.current?.focus({ preventScroll: true });
+  }, []);
 
   // Live timer while running - runs cleanly without state re-trigger loops
   useEffect(() => {
@@ -324,12 +449,12 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
     setShowScrollBottom(!isAtBottom);
   };
 
-  const scrollToBottom = (): void => {
+  const scrollToBottom = useCallback((): void => {
     if (scrollRef.current) {
       scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
     }
     setShowScrollBottom(false);
-  };
+  }, []);
 
   // Auto scroll on new logs if near bottom
   useEffect(() => {
@@ -389,7 +514,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
     setActiveCommand('');
     setLiveStdout('');
     setLiveStderr('');
-    setTimeout(() => inputRef.current?.focus(), 50);
+    setTimeout(focusInput, 50);
   }, [isRunning, activeCommand, liveStdout, liveStderr, onAbortCommand, currentCwd]);
 
   // Send interactive input to currently running command process
@@ -434,7 +559,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
     // Fast-path client-side commands
     if (cmd === 'clear' || cmd === 'cls') {
       setLogs([]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -452,7 +577,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -470,7 +595,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -488,7 +613,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -528,7 +653,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -549,7 +674,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -567,7 +692,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           cwd: currentCwd
         }
       ]);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
       return;
     }
 
@@ -671,7 +796,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
       setActiveCommand('');
       setLiveStdout('');
       setLiveStderr('');
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(focusInput, 50);
     }
   };
 
@@ -683,6 +808,77 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
       handleSubmit(externalCommand);
     }
   }, [externalCommand, isRunning, isAgentCoding]);
+
+  // Synchronize terminal with Agent Session execution events (M06-04)
+  // Preserves invariant: "One Agent Session, multiple UI representations"
+  // The terminal observes agent command executions rather than re-executing them.
+  useEffect(() => {
+    if (!sessionId) return;
+
+    const unsubscribe = agentSessionService.subscribeSessionEvents(
+      sessionId,
+      (event: AgentSessionEvent) => {
+        // Enforce session and workspace filtering (Section 6)
+        if (event.sessionId !== sessionId) return;
+        if (workspaceId && event.workspaceId && event.workspaceId !== workspaceId) return;
+
+        if (event.type === 'terminal_event') {
+          const data = event.data as (TerminalEventData & { isTimeout?: boolean }) | undefined;
+          if (!data) return;
+
+          if (data.type === 'terminal_started') {
+            const cmd = data.command || 'Agent command';
+            activeCommandRef.current = cmd;
+            liveStdoutRef.current = '';
+            liveStderrRef.current = '';
+          } else if (data.type === 'terminal_output') {
+            const chunk = data.chunk || data.line || '';
+            if (data.stream === 'stderr') {
+              liveStderrRef.current += chunk;
+            } else {
+              liveStdoutRef.current += chunk;
+            }
+          } else if (data.type === 'terminal_exit' || data.type === 'terminal_error') {
+            const finalStdout = data.stdout !== undefined ? data.stdout : liveStdoutRef.current;
+            const finalStderr = data.stderr !== undefined ? data.stderr : liveStderrRef.current;
+            liveStdoutRef.current = '';
+            liveStderrRef.current = '';
+
+            const isTimeout = Boolean(data.isTimeout || data.exitCode === 124);
+            const isAborted = Boolean(data.isAborted || data.exitCode === 130);
+            const execId = data.executionId || event.executionId;
+
+            setLogs((prev) => {
+              if (execId && prev.some((l) => l.executionId === execId || l.id === `agent_cmd_${execId}`)) {
+                return prev;
+              }
+              return [
+                ...prev,
+                {
+                  id: execId ? `agent_cmd_${execId}` : `log_${Date.now()}_agent`,
+                  executionId: execId,
+                  command: data.command || activeCommandRef.current || 'Agent command',
+                  stdout: finalStdout,
+                  stderr: finalStderr || (data.error ? String(data.error) : ''),
+                  exitCode: data.exitCode ?? (data.type === 'terminal_error' ? 1 : 0),
+                  durationMs: data.durationMs || 0,
+                  timestamp: event.timestamp || Date.now(),
+                  cwd: data.cwd || currentCwdRef.current,
+                  isAborted,
+                  isTimeout
+                }
+              ];
+            });
+            activeSessionIdRef.current = '';
+          }
+        }
+      }
+    );
+
+    return () => {
+      unsubscribe();
+    };
+  }, [sessionId, workspaceId]);
 
   // Tab autocompletion handler
   const handleTabCompletion = (e: React.KeyboardEvent<HTMLInputElement>): void => {
@@ -834,7 +1030,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
     if (target.closest('button') || target.closest('input') || target.closest('a') || target.closest('form')) {
       return;
     }
-    inputRef.current?.focus();
+    focusInput();
   };
 
   const isDark = theme === 'dark';
@@ -1025,78 +1221,103 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
           </div>
         )}
 
-        {filteredLogs.map((log) => (
-          <div key={log.id} className="group space-y-1.5">
-            {/* Command Header Line with Linux Prompt */}
-            <div className="flex items-center justify-between text-zinc-400">
-              <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
-                <LinuxPrompt cwd={log.cwd || currentCwd} />
-                <span className="text-zinc-100 font-semibold truncate">{log.command}</span>
-                {log.stdinUsed && (
-                  <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-950/80 text-indigo-300 border border-indigo-700/40 font-mono">
-                    input: &quot;{log.stdinUsed.trim()}&quot;
-                  </span>
-                )}
-              </div>
+        {filteredLogs.map((log) => {
+          const isSelected = Boolean(
+            activeExecutionId &&
+            (log.executionId === activeExecutionId ||
+             log.id === activeExecutionId ||
+             log.id === `agent_cmd_${activeExecutionId}`)
+          );
 
-              {/* Action Toolbar on Hover */}
-              <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
-                {/* Rerun */}
-                <button
-                  type="button"
-                  onClick={() => handleSubmit(log.command)}
-                  disabled={isRunning}
-                  className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200 transition-colors"
-                  title="Re-run this command"
-                >
-                  <RotateCcw className="w-3 h-3" />
-                </button>
-
-                {/* Copy Output */}
-                <button
-                  type="button"
-                  onClick={() =>
-                    copyToClipboard(
-                      `${log.stdout}${log.stderr ? '\n' + log.stderr : ''}`,
-                      `out_${log.id}`
-                    )
-                  }
-                  className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200 transition-colors"
-                  title="Copy output"
-                >
-                  {copiedId === `out_${log.id}` ? (
-                    <Check className="w-3 h-3 text-emerald-400" />
-                  ) : (
-                    <Copy className="w-3 h-3" />
+          return (
+            <div
+              key={log.id}
+              id={log.executionId ? `term-exec-${log.executionId}` : `term-log-${log.id}`}
+              className={`group space-y-1.5 rounded-lg transition-all duration-300 ${
+                isSelected
+                  ? 'p-2.5 ring-2 ring-indigo-500/80 bg-indigo-950/30'
+                  : ''
+              }`}
+            >
+              {/* Command Header Line with Linux Prompt */}
+              <div className="flex items-center justify-between text-zinc-400">
+                <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
+                  <LinuxPrompt cwd={log.cwd || currentCwd} />
+                  <span className="text-zinc-100 font-semibold truncate">{log.command}</span>
+                  {isSelected && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-600/40 text-indigo-300 border border-indigo-500/50 font-mono">
+                      focused execution
+                    </span>
                   )}
-                </button>
+                  {log.stdinUsed && (
+                    <span className="px-1.5 py-0.5 rounded text-[10px] bg-indigo-950/80 text-indigo-300 border border-indigo-700/40 font-mono">
+                      input: &quot;{log.stdinUsed.trim()}&quot;
+                    </span>
+                  )}
+                </div>
 
-                {/* Duration */}
-                <span className="flex items-center gap-0.5 text-[10px] text-zinc-500 ml-1">
-                  <Clock className="w-2.5 h-2.5" />
-                  {log.durationMs >= 1000
-                    ? `${(log.durationMs / 1000).toFixed(1)}s`
-                    : `${log.durationMs}ms`}
-                </span>
-
-                {/* Exit status badge */}
-                {log.isAborted ? (
-                  <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40">
-                    aborted (130)
-                  </span>
-                ) : (
-                  <span
-                    className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${
-                      log.exitCode === 0
-                        ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/40'
-                        : 'bg-rose-950/80 text-rose-400 border-rose-800/40'
-                    }`}
+                {/* Action Toolbar on Hover */}
+                <div className="flex items-center gap-1.5 opacity-80 group-hover:opacity-100 transition-opacity">
+                  {/* Rerun */}
+                  <button
+                    type="button"
+                    onClick={() => handleSubmit(log.command)}
+                    disabled={isRunning}
+                    className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200 transition-colors"
+                    title="Re-run this command"
                   >
-                    exit {log.exitCode}
+                    <RotateCcw className="w-3 h-3" />
+                  </button>
+
+                  {/* Copy Output */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      copyToClipboard(
+                        `${log.stdout}${log.stderr ? '\n' + log.stderr : ''}`,
+                        `out_${log.id}`
+                      )
+                    }
+                    className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-200 transition-colors"
+                    title="Copy output"
+                  >
+                    {copiedId === `out_${log.id}` ? (
+                      <Check className="w-3 h-3 text-emerald-400" />
+                    ) : (
+                      <Copy className="w-3 h-3" />
+                    )}
+                  </button>
+
+                  {/* Duration */}
+                  <span className="flex items-center gap-0.5 text-[10px] text-zinc-500 ml-1">
+                    <Clock className="w-2.5 h-2.5" />
+                    {log.durationMs >= 1000
+                      ? `${(log.durationMs / 1000).toFixed(1)}s`
+                      : `${log.durationMs}ms`}
                   </span>
-                )}
+
+                  {/* Exit status badge */}
+                  {log.isTimeout || log.exitCode === 124 ? (
+                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-rose-950 text-rose-300 border border-rose-800/40">
+                      timeout (124)
+                    </span>
+                  ) : log.isAborted ? (
+                    <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-950 text-amber-400 border border-amber-800/40">
+                      aborted (130)
+                    </span>
+                  ) : (
+                    <span
+                      className={`px-1.5 py-0.2 rounded text-[10px] font-bold border ${
+                        log.exitCode === 0
+                          ? 'bg-emerald-950/80 text-emerald-400 border-emerald-800/40'
+                          : 'bg-rose-950/80 text-rose-400 border-rose-800/40'
+                      }`}
+                    >
+                      exit {log.exitCode}
+                    </span>
+                  )}
+                </div>
               </div>
-            </div>
 
             {/* Stdout Output */}
             {log.stdout && (
@@ -1161,7 +1382,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
                       type="button"
                       onClick={() => {
                         setCurrentInput(log.inputPromptTip || '');
-                        inputRef.current?.focus();
+                        focusInput();
                       }}
                       className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-indigo-300 font-mono text-[10px] transition-colors border border-zinc-700"
                     >
@@ -1172,7 +1393,8 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
               </div>
             )}
           </div>
-        ))}
+        );
+      })}
 
         {/* Live Execution Indicator */}
         {isRunning && (
@@ -1271,7 +1493,7 @@ export const WorkspaceTerminal: React.FC<WorkspaceTerminalProps> = ({
                 words[words.length - 1] = sug;
                 setCurrentInput(words.join(' ') + (sug.endsWith('/') ? '' : ' '));
                 setTabSuggestions([]);
-                inputRef.current?.focus();
+                focusInput();
               }}
               className="px-1.5 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-sky-300 hover:text-white text-[11px] font-mono border border-zinc-700/60 transition-colors"
             >

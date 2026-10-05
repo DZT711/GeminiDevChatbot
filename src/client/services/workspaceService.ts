@@ -2,6 +2,9 @@ import { apiClient } from './apiClient.js';
 import { storageService } from './storageService.js';
 import type { GoalPlanningResult } from '../../server/services/agentIntegration/planning/GoalPlanningTypes.js';
 import type { PlanExecutionApproval, PlanExecutionSummary } from '../../server/services/agentIntegration/planning/PlanExecutionService.js';
+import type { ChangeSet, FileChange, ChangeSetStatus } from '../../agent/changes/ChangeSetTypes.js';
+
+export type { ChangeSet, FileChange, ChangeSetStatus };
 
 export type WorkspaceStatus = 'CREATING' | 'READY' | 'RUNNING' | 'STOPPED' | 'ERROR';
 export type MutationActor = 'USER' | 'AGENT';
@@ -17,6 +20,10 @@ export interface FileProvenanceRecord {
   timestamp: number;
   previousContent?: string;
   newContent?: string;
+  changeSetId?: string;
+  sessionId?: string;
+  changeSetAction?: 'apply' | 'reject' | 'conflict';
+  result?: string;
 }
 
 export interface WorkspaceSummary {
@@ -298,7 +305,8 @@ export const workspaceService = {
     approval: PlanExecutionApproval,
     workspaceId?: string,
     apiKey?: string,
-    model?: string
+    model?: string,
+    sessionId?: string
   ): Promise<{ success: boolean; summary: PlanExecutionSummary; diagnosis?: unknown }> {
     const activeModel = model || storageService.getItem("devengine_last_model") || undefined;
     return apiClient.post('/api/workspace/execute', {
@@ -306,7 +314,8 @@ export const workspaceService = {
       approval,
       workspaceId,
       apiKey,
-      model: activeModel
+      model: activeModel,
+      sessionId
     });
   },
 
@@ -356,5 +365,34 @@ export const workspaceService = {
     return () => {
       eventSource.close();
     };
+  },
+
+  async getChangeSets(sessionId?: string, workspaceId?: string): Promise<ChangeSet[]> {
+    const params = new URLSearchParams();
+    if (sessionId) params.append('sessionId', sessionId);
+    if (workspaceId) params.append('workspaceId', workspaceId);
+    const res = await apiClient.get<{ changeSets: ChangeSet[] }>(`/api/workspace/changesets?${params.toString()}`);
+    return res.changeSets || [];
+  },
+
+  async getChangeSet(changeSetId: string): Promise<ChangeSet> {
+    const res = await apiClient.get<{ changeSet: ChangeSet }>(`/api/workspace/changeset/${encodeURIComponent(changeSetId)}`);
+    return res.changeSet;
+  },
+
+  async applyChangeSet(changeSetId: string, sessionId?: string, workspaceId?: string): Promise<ChangeSet> {
+    const res = await apiClient.post<{ success: boolean; changeSet: ChangeSet }>(
+      `/api/workspace/changeset/${encodeURIComponent(changeSetId)}/apply`,
+      { sessionId, workspaceId }
+    );
+    return res.changeSet;
+  },
+
+  async rejectChangeSet(changeSetId: string, sessionId?: string, workspaceId?: string): Promise<ChangeSet> {
+    const res = await apiClient.post<{ success: boolean; changeSet: ChangeSet }>(
+      `/api/workspace/changeset/${encodeURIComponent(changeSetId)}/reject`,
+      { sessionId, workspaceId }
+    );
+    return res.changeSet;
   }
 };

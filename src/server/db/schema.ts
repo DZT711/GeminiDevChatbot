@@ -64,6 +64,13 @@ export const sessions = pgTable('sessions', {
   title: varchar('title', { length: 255 }),
   pinned: boolean('pinned').default(false).notNull(),
   summary: text('summary'),
+  workspaceId: varchar('workspace_id', { length: 255 }),
+  executionId: varchar('execution_id', { length: 255 }),
+  goalId: varchar('goal_id', { length: 255 }),
+  planId: varchar('plan_id', { length: 255 }),
+  activeModel: varchar('active_model', { length: 255 }),
+  status: varchar('status', { length: 50 }).default('IDLE'),
+  metadata: jsonb('metadata').default('{}'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (t) => [
@@ -84,6 +91,16 @@ export const messages = pgTable('messages', {
   videoUrl: text('video_url'),
   attachments: jsonb('attachments').default('[]'),
   rating: integer('rating'),
+  // Canonical classification & correlation fields
+  interactionType: varchar('interaction_type', { length: 50 }).notNull().default('UNKNOWN'),
+  messageRole: varchar('message_role', { length: 50 }).notNull().default('UNKNOWN'),
+  messageKind: varchar('message_kind', { length: 50 }).notNull().default('UNKNOWN'),
+  responseCode: varchar('response_code', { length: 50 }).default('UNKNOWN'),
+  surface: varchar('surface', { length: 50 }).default('UNKNOWN'),
+  executionId: varchar('execution_id', { length: 255 }),
+  planId: varchar('plan_id', { length: 255 }),
+  toolCallId: varchar('tool_call_id', { length: 255 }),
+  parentMessageId: varchar('parent_message_id', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (t) => [
   pgPolicy('users can view messages in their sessions', {

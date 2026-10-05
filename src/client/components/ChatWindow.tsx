@@ -6,10 +6,13 @@ import {
   AlertCircle, ArrowDown, AtSign, Check, ChevronDown, Circle, Code, Cpu, 
   FileIcon, FileText, Image as ImageIcon, Maximize2, Mic, Minimize2, 
   Paperclip, Play, Plus, Search, Send, Settings, Settings as SettingsIcon, Sparkles, Terminal, 
-  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database, LogOut, ArrowUpRight
+  Trash2, Video, X, Github, AlertTriangle, Shield, Brain, Video as VideoIcon, Code2, Database, LogOut, ArrowUpRight, Bot
 } from "lucide-react";
 import { ChatMessage } from "./ChatMessage";
+import { AiSparkIcon } from "./AiSparkIcon";
+import type { Message } from '../services/chatSessionManager';
 import { storageService } from '../services/storageService';
+import { agentSessionService } from '../services/agentSessionService';
 import { useNavigate } from 'react-router-dom';
 import { LogoutTransitionModal } from './LogoutTransitionModal';
 import { isGeminiThinkingConfigSupported, getSupportedThinkingLevelsForModel } from '../../agent/agent.config';
@@ -69,6 +72,86 @@ export function ChatWindow(props: any) {
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const backdropRef = React.useRef<HTMLDivElement | null>(null);
+
+  const [agentHandoffBanner, setAgentHandoffBanner] = React.useState<{
+    sessionId: string;
+    summary?: string;
+  } | null>(props.activeHandoff || null);
+
+  React.useEffect(() => {
+    const handleContinueInChat = (e: any) => {
+      const handoff = e?.detail?.handoff;
+      if (handoff) {
+        setAgentHandoffBanner({
+          sessionId: handoff.sessionId,
+          summary: handoff.summary
+        });
+        if (handoff.recentMessages && handoff.recentMessages.length > 0) {
+          const chatMessages: Message[] = handoff.recentMessages
+            .filter((m: any) => m && typeof m.content === 'string' && m.content.trim().length > 0)
+            .map((m: any) => ({
+              id: m.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+              role: (m.role === 'model' || m.role === 'assistant') ? ('model' as const) : ('user' as const),
+              content: m.content
+            }));
+          if (chatMessages.length > 0) {
+            setMessages(chatMessages);
+            saveCurrentSession?.(chatMessages, handoff.sessionId);
+          }
+        }
+      }
+    };
+    window.addEventListener('continue-in-chat', handleContinueInChat);
+    return () => window.removeEventListener('continue-in-chat', handleContinueInChat);
+  }, [setMessages, saveCurrentSession]);
+
+  const handleOpenInAgent = async () => {
+    try {
+      const targetSessionId = currentSessionId || 'default-chat-session';
+      const handoff = await agentSessionService.createContextHandoff({
+        sessionId: targetSessionId,
+        sourceSurface: 'chat',
+        targetSurface: 'agent',
+        includeConversation: true,
+        includeWorkspace: true,
+        includeCurrentFile: true,
+        includeSelection: true,
+        includePlan: false,
+        messages: (messages || []).map((m: any) => ({
+          id: m.id || String(Math.random()),
+          role: m.role || 'user',
+          content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
+          timestamp: m.timestamp
+        }))
+      });
+
+      window.dispatchEvent(new CustomEvent('open-agent', {
+        detail: {
+          sessionId: targetSessionId,
+          handoff
+        }
+      }));
+    } catch (err) {
+      console.warn('[ChatWindow] Handoff request error, proceeding with fallback:', err);
+      window.dispatchEvent(new CustomEvent('open-agent', {
+        detail: {
+          sessionId: currentSessionId || 'default-chat-session',
+          handoff: {
+            sessionId: currentSessionId || 'default-chat-session',
+            sourceSurface: 'chat' as const,
+            targetSurface: 'agent' as const,
+            timestamp: Date.now(),
+            recentMessages: (messages || []).map((m: any) => ({
+              id: m.id || String(Math.random()),
+              role: m.role || 'user',
+              content: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
+              timestamp: m.timestamp || Date.now()
+            }))
+          }
+        }
+      }));
+    }
+  };
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -247,6 +330,16 @@ export function ChatWindow(props: any) {
                 <div className="h-4 w-px bg-zinc-800 hidden xs:block" />
 
                 <button
+                  type="button"
+                  onClick={handleOpenInAgent}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 hover:text-cyan-300 border border-cyan-500/30 rounded-xl text-xs font-mono transition-all active:scale-95"
+                  title="Open this conversation in Workspace Agent"
+                >
+                  <Bot size={14} />
+                  <span className="hidden sm:inline">Open in Agent</span>
+                </button>
+
+                <button
                   onClick={() => {
                     setSettingsTab("general");
                     setShowSettings(true);
@@ -317,6 +410,27 @@ export function ChatWindow(props: any) {
               className="flex-1 overflow-y-auto custom-scrollbar px-4 pt-4"
             >
               <div className="max-w-4xl mx-auto pb-[50vh]">
+                {agentHandoffBanner && (
+                  <div className="mb-4 p-3 rounded-xl border border-cyan-500/30 bg-cyan-950/20 text-cyan-300 text-xs flex items-center justify-between shadow-sm">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Bot size={16} className="shrink-0 text-cyan-400" />
+                      <div className="flex flex-col min-w-0">
+                        <span className="font-semibold text-cyan-200">Context Linked from Workspace Agent</span>
+                        <span className="text-[11px] text-cyan-300/80 truncate">
+                          {agentHandoffBanner.summary || `Session ID: ${agentHandoffBanner.sessionId}`}
+                        </span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAgentHandoffBanner(null)}
+                      className="text-cyan-400/60 hover:text-cyan-200 p-1 transition-colors shrink-0 ml-2"
+                      title="Dismiss notice"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                )}
                 {messages.length === 0 ? (
                   <div className="h-full min-h-[60vh] flex flex-col items-center justify-center text-center opacity-40">
                     <div className="w-16 h-16 rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center mb-6">
@@ -355,8 +469,8 @@ export function ChatWindow(props: any) {
                         isFallback={m.isFallback}
                         imageUrl={m.imageUrl}
                         videoUrl={m.videoUrl}
-                        onEdit={(content) => handleEditMessage(i, content)}
-                        onRevert={(content) => handleRevertMessage(i, content)}
+                        onEdit={(content) => handleEditMessage(m.id || i, content)}
+                        onRevert={(content) => handleRevertMessage(m.id || i, content)}
                         attachments={m.attachments}
                         history={m.editHistory}
                         isLatest={i === arr.length - 1}
@@ -365,6 +479,8 @@ export function ChatWindow(props: any) {
                         userAvatarUrl={user?.avatarUrl}
                         rating={m.rating || 0}
                         onRate={(rating) => handleRateMessage(m.id, rating)}
+                        thinkingContent={m.thinkingContent}
+                        thoughtDurationSeconds={m.thoughtDurationSeconds}
                       />
                     ))
                 )}
@@ -578,7 +694,7 @@ export function ChatWindow(props: any) {
                               )}
                             >
                               <div className="flex items-center gap-1.5 shrink-0">
-                                <Sparkles size={13} className="text-cyan-500 animate-pulse" />
+                                <AiSparkIcon size={13} variant="pulse" className="text-cyan-500" />
                                 <span className={cn("text-[10px] font-bold uppercase tracking-wider", theme === "light" ? "text-cyan-800" : "text-cyan-400")}>
                                   Suggested Skills:
                                 </span>
@@ -1018,7 +1134,7 @@ export function ChatWindow(props: any) {
                             <div className="flex items-center justify-between px-2 pt-1 pb-2">
                                <div className="flex items-center gap-1">
                                   <button type="button" onClick={handleEnhancePrompt} disabled={!input.trim() || isEnhancingPrompt} className={cn("p-1.5 rounded-lg transition-all active:scale-95 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5", isEnhancingPrompt ? "text-amber-400" : theme === 'light' ? "text-slate-400 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-50" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/5 disabled:opacity-50")} title="Neural Refinement">
-                                    <Sparkles size={11} className={isEnhancingPrompt ? "animate-spin" : ""} />
+                                    <AiSparkIcon size={11} variant={isEnhancingPrompt ? "thinking" : "idle"} />
                                     Refine
                                   </button>
                                   <button type="button" onClick={() => setIsInputMaximized(!isInputMaximized)} className={cn("p-1.5 rounded-lg transition-all active:scale-95 text-[10px] font-bold uppercase tracking-widest flex items-center gap-1.5", theme === 'light' ? "text-slate-400 hover:text-slate-700 hover:bg-slate-100" : "text-zinc-500 hover:text-zinc-300 hover:bg-white/5")} title={isInputMaximized ? "Minimize Text Area" : "Maximize Text Area"}>

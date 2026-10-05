@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
-import { Cpu, Sparkles, Terminal } from "lucide-react";
+import { Cpu, Terminal } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { AiSparkIcon } from "./AiSparkIcon";
 
 interface WorkspaceLoadingSkeletonProps {
   theme?: "midnight" | "cyberpunk" | "monochrome" | "light";
@@ -264,7 +265,7 @@ export function WorkspaceLoadingSkeleton({ theme = "midnight", onSkip }: Workspa
           <div className="flex-1 flex flex-col items-center justify-center max-w-xl mx-auto text-center gap-6 py-12">
             <div className="relative">
               <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center shadow-[0_0_35px_rgba(6,182,212,0.2)]">
-                <Sparkles className="w-8 h-8 text-cyan-400 animate-spin" style={{ animationDuration: '6s' }} />
+                <AiSparkIcon size={32} variant="thinking" className="text-cyan-400" />
               </div>
               <div className="absolute -inset-1 rounded-2xl bg-cyan-500/20 blur-xl -z-10 animate-pulse" />
             </div>

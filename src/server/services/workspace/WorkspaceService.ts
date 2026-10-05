@@ -17,6 +17,8 @@ import {
   PlanExecutionSummary,
   PlanExecutionProgressEvent
 } from '../agentIntegration/planning/PlanExecutionService.js';
+import { ExecutionIntegrationService } from '../agentIntegration/execution/ExecutionIntegrationService.js';
+import { di } from '../../di.js';
 
 export type WorkspaceStatus = 'CREATING' | 'READY' | 'RUNNING' | 'STOPPED' | 'ERROR';
 export type MutationActor = 'USER' | 'AGENT';
@@ -32,6 +34,10 @@ export interface FileProvenanceRecord {
   timestamp: number;
   previousContent?: string;
   newContent?: string;
+  changeSetId?: string;
+  sessionId?: string;
+  changeSetAction?: 'apply' | 'reject' | 'conflict';
+  result?: string;
 }
 
 export interface WorkspaceSummary {
@@ -61,7 +67,7 @@ export interface FileWithMeta {
 
 export class WorkspaceService {
   private workspaceProvider: WorkspaceProvider;
-  private planExecutionService: PlanExecutionService;
+  private planExecutionService?: PlanExecutionService;
   private userActiveWorkspaces: Map<string, string> = new Map(); // userId -> workspaceId
   private workspaceStatuses: Map<string, WorkspaceStatus> = new Map(); // workspaceId -> status
   private workspaceActiveExecution: Map<string, string> = new Map(); // workspaceId -> executionId
@@ -72,7 +78,6 @@ export class WorkspaceService {
 
   constructor(workspaceProvider?: WorkspaceProvider) {
     this.workspaceProvider = workspaceProvider || new E2BWorkspaceProvider();
-    this.planExecutionService = new PlanExecutionService(this.workspaceProvider);
   }
 
   public getWorkspaceProvider(): WorkspaceProvider {
@@ -80,6 +85,9 @@ export class WorkspaceService {
   }
 
   public getPlanExecutionService(): PlanExecutionService {
+    if (!this.planExecutionService) {
+      this.planExecutionService = new PlanExecutionService(this.workspaceProvider);
+    }
     return this.planExecutionService;
   }
 
@@ -455,8 +463,34 @@ export class WorkspaceService {
     userId: string,
     options: PlanExecutionOptions
   ): Promise<PlanExecutionSummary> {
+    const planWsId = (options.planningResult as any)?.workspaceId || (options.planningResult as any)?.goal?.workspaceId;
+    if (planWsId && options.workspaceId && planWsId !== options.workspaceId) {
+      throw new Error(`Workspace mismatch: Plan belongs to workspace ${planWsId}, cannot execute against ${options.workspaceId}`);
+    }
+
     const workspace = await this.resolveUserWorkspace(userId, options.workspaceId);
     const wsId = workspace.getId();
+
+    if (planWsId && planWsId !== wsId) {
+      throw new Error(`Workspace mismatch: Plan belongs to workspace ${planWsId}, cannot execute against ${wsId}`);
+    }
+
+    const goalId = options.planningResult?.goal?.id;
+    const planId = (options.planningResult?.repairedPlan || options.planningResult?.plan)?.id;
+    if (options.sessionId && planId) {
+      try {
+        await di.agentSessionService.associateGoalAndPlan(options.sessionId, goalId, planId, userId);
+      } catch {
+        // Non-blocking
+      }
+    }
+
+    if (this.workspaceActiveExecution.has(wsId)) {
+      const activeExecId = this.workspaceActiveExecution.get(wsId);
+      if (activeExecId && this.getPlanExecutionService().isExecutionActive(activeExecId)) {
+        throw new Error(`Workspace ${wsId} is already running active execution ${activeExecId}. Concurrent executions on the same workspace are rejected.`);
+      }
+    }
 
     this.workspaceStatuses.set(wsId, 'RUNNING');
 
@@ -506,7 +540,7 @@ export class WorkspaceService {
     };
 
     try {
-      const summary = await this.planExecutionService.executePlan({
+      const summary = await this.getPlanExecutionService().executePlan({
         ...options,
         userId,
         workspaceId: wsId,
@@ -519,6 +553,16 @@ export class WorkspaceService {
       this.workspaceStatuses.set(wsId, summary.success ? 'READY' : 'STOPPED');
       this.workspaceActiveExecution.delete(wsId);
 
+      // Passive observation boundary: dispatch plan lifecycle observation to canonical learning integration
+      if (summary.observation) {
+        try {
+          const execIntegration = new ExecutionIntegrationService();
+          await execIntegration.observePlanExecution(summary.observation);
+        } catch (learnErr) {
+          console.warn('[WorkspaceService] Non-fatal plan learning observation error:', learnErr);
+        }
+      }
+
       return summary;
     } catch (err: unknown) {
       this.workspaceStatuses.set(wsId, 'ERROR');
@@ -528,7 +572,7 @@ export class WorkspaceService {
   }
 
   public stopExecution(userId: string, executionId: string): boolean {
-    const stopped = this.planExecutionService.stopExecution(executionId);
+    const stopped = this.getPlanExecutionService().stopExecution(executionId);
     if (stopped) {
       for (const [wsId, activeExecId] of this.workspaceActiveExecution.entries()) {
         if (activeExecId === executionId) {
@@ -557,6 +601,39 @@ export class WorkspaceService {
     return () => {
       this.eventEmitter.off(eventName, handler);
     };
+  }
+
+  public recordChangeSetAudit(entry: {
+    changeSetId: string;
+    sessionId?: string;
+    executionId?: string;
+    workspaceId: string;
+    action: 'apply' | 'reject' | 'conflict';
+    timestamp: number;
+    result: 'success' | 'conflict' | 'rejected' | 'applied';
+    path?: string;
+    details?: string;
+  }): void {
+    const wsId = entry.workspaceId;
+    const record: FileProvenanceRecord = {
+      id: `cs_audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      workspaceId: wsId,
+      path: entry.path || `[changeset:${entry.changeSetId}]`,
+      action: entry.action === 'reject' ? 'delete' : 'edit',
+      actor: 'USER',
+      executionId: entry.executionId,
+      timestamp: entry.timestamp,
+      changeSetId: entry.changeSetId,
+      sessionId: entry.sessionId,
+      changeSetAction: entry.action,
+      result: entry.result
+    };
+
+    if (!this.provenanceLogs.has(wsId)) {
+      this.provenanceLogs.set(wsId, []);
+    }
+    this.provenanceLogs.get(wsId)!.push(record);
+    this.eventEmitter.emit(`file_changed:${wsId}`, record);
   }
 
   public getFileAuditLog(workspaceId: string, filePath?: string): FileProvenanceRecord[] {

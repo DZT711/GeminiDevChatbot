@@ -121,3 +121,124 @@ select option {
   background-color: #0c0d12;
   color: #e2e8f0;
 }
+
+/* KaTeX Mathematical Formula Styling */
+.katex {
+  font-size: 1.05em;
+  text-rendering: auto;
+  line-height: 1.2;
+}
+
+.katex-display {
+  display: block;
+  margin: 1.25rem 0;
+  padding: 1rem 1.25rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-radius: 0.75rem;
+  background: rgba(12, 14, 22, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 4px 16px -2px rgba(0, 0, 0, 0.35);
+  text-align: center;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.katex-display:hover {
+  border-color: rgba(6, 182, 212, 0.3);
+  background: rgba(15, 18, 28, 0.75);
+}
+
+.katex-display::-webkit-scrollbar {
+  height: 4px;
+}
+
+.katex-display::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.katex-display::-webkit-scrollbar-thumb {
+  background: rgba(113, 113, 122, 0.4);
+  border-radius: 9999px;
+}
+
+.katex-display::-webkit-scrollbar-thumb:hover {
+  background: rgba(161, 161, 170, 0.6);
+}
+
+/* Inline math tag pill hint on hover */
+span.katex {
+  padding: 0 0.15rem;
+}
+
+/* AI Spark & Neural Micro-Animations (subtle breathing & radial beacon pulses, no lopsided spinning) */
+@keyframes aiSparkBreathe {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.75;
+    filter: drop-shadow(0 0 2px currentColor);
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 1;
+    filter: drop-shadow(0 0 6px currentColor);
+  }
+}
+
+@keyframes aiSparkPulse {
+  0%, 100% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.05);
+    opacity: 1;
+  }
+}
+
+@keyframes aiSparkTwinkle {
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.7;
+  }
+  40% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+  75% {
+    transform: scale(0.98);
+    opacity: 0.85;
+  }
+}
+
+@keyframes aiOrbitPulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+  50% {
+    transform: scale(1.4);
+    opacity: 0.15;
+  }
+  100% {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+.animate-ai-breathe {
+  animation: aiSparkBreathe 2s infinite ease-in-out;
+}
+
+.animate-ai-pulse {
+  animation: aiSparkPulse 1.8s infinite ease-in-out;
+}
+
+.animate-ai-twinkle {
+  animation: aiSparkTwinkle 1.6s infinite ease-in-out;
+}
+
+.animate-ai-orbit {
+  animation: aiOrbitPulse 2.2s infinite cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+

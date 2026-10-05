@@ -2,6 +2,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 import * as schema from './schema.js';
 import dotenv from 'dotenv';
+import { runDatabaseMigrations } from './run-sql-migration.js';
 dotenv.config();
 
 function getSafeDbUrl(url: string | undefined): string | undefined {
@@ -38,7 +39,7 @@ const { Pool } = pg;
 const dbUrl = process.env.DATABASE_URL;
 const isLocal = !dbUrl || dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
 
-const pool = new Pool({
+export const pool = new Pool({
   connectionString: getSafeDbUrl(dbUrl),
   ssl: isLocal ? undefined : { rejectUnauthorized: false },
   max: 10,
@@ -49,4 +50,12 @@ pool.on('error', (err, client) => {
   console.error('Unexpected error on idle client', err);
 });
 
+// Run non-blocking schema migration check on startup
+if (dbUrl) {
+  runDatabaseMigrations(pool).catch((err) => {
+    console.warn('[DB] Automatic migration check failed:', err);
+  });
+}
+
 export const db = drizzle(pool, { schema });
+

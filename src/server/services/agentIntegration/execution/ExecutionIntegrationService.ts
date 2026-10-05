@@ -13,12 +13,14 @@ import { RuleBasedReflection } from '../../../../agent/reflection/RuleBasedRefle
 import { ReflectionRecord } from '../../../../agent/reflection/ReflectionTypes.js';
 import { ExecutionState } from '../../../../agent/runtime/ExecutionState.js';
 import { RuleBasedLearningEngine } from '../../../../agent/learning/RuleBasedLearningEngine.js';
-import { LearningResult } from '../../../../agent/learning/LearningTypes.js';
+import { LearningResult, LearningDecision, PlanLifecycleObservation } from '../../../../agent/learning/LearningTypes.js';
 import { DurableExperienceStore } from '../../experience/DurableExperienceStore.js';
 import { ExperienceStore } from '../../../../agent/experience/ExperienceStore.js';
-import { DefaultPromotionService, PromotionService } from '../../../../agent/promotion/index.js';
+import { DefaultPromotionService, PromotionService, PromotionResult } from '../../../../agent/promotion/index.js';
 import { InMemoryKnowledgeStore } from '../../../../agent/knowledge/InMemoryKnowledgeStore.js';
 import { KnowledgeStore } from '../../../../agent/knowledge/KnowledgeStore.js';
+import { NotionBrainDestination } from '../../brain/NotionBrainDestination.js';
+import { NotionBrainService } from '../../brain/NotionBrainService.js';
 
 export class ExecutionIntegrationService {
     private pipeline: ExecutionPipeline;
@@ -38,10 +40,12 @@ export class ExecutionIntegrationService {
         if (knowledgeStore) {
             this.knowledgeStore = knowledgeStore;
         }
+        const brainDestination = new NotionBrainDestination(NotionBrainService.getInstance());
         this.promotionService = new DefaultPromotionService(
             this.knowledgeStore,
             undefined,
-            ExecutionIntegrationService.experienceStore
+            ExecutionIntegrationService.experienceStore,
+            brainDestination
         );
         this.registry = new DefaultToolRegistry();
         const resolver = new ToolResolver(this.registry);
@@ -61,17 +65,67 @@ export class ExecutionIntegrationService {
         );
     }
     
-    public async registerProductionTools(payload: any, sendEvent: (type: string, data: any) => void) {
+    public async registerProductionTools(
+        payload: any,
+        sendEvent: (type: string, data: any) => void,
+        workspaceId?: string
+    ) {
         const adapter = new ToolExecutionAdapter(payload, sendEvent);
         await this.registry.register(adapter.createProposeKnowledgeTool());
         await this.registry.register(adapter.createExecuteCodeTool());
         await this.registry.register(adapter.createReadGithubRepoTool());
+
+        // Register workspace coding tools
+        await this.registry.register(adapter.createViewFileTool(workspaceId));
+        // Register read_file alias for view_file
+        const readFileTool = adapter.createViewFileTool(workspaceId);
+        (readFileTool.getDescriptor().metadata as any).name = 'read_file';
+        await this.registry.register(readFileTool);
+
+        await this.registry.register(adapter.createCreateFileTool(workspaceId));
+        await this.registry.register(adapter.createEditFileTool(workspaceId));
+        await this.registry.register(adapter.createDeleteFileTool(workspaceId));
+        await this.registry.register(adapter.createListDirTool(workspaceId));
+        await this.registry.register(adapter.createRunCommandTool(workspaceId));
     }
 
-    public async executeTool(name: string, args: any): Promise<any> {
+    public async registerWorkspaceTools(workspaceDirOrId?: string): Promise<void> {
+        const adapter = new ToolExecutionAdapter({}, () => {});
+        await this.registry.register(adapter.createViewFileTool(workspaceDirOrId));
+        const readFileTool = adapter.createViewFileTool(workspaceDirOrId);
+        (readFileTool.getDescriptor().metadata as any).name = 'read_file';
+        await this.registry.register(readFileTool);
+
+        await this.registry.register(adapter.createCreateFileTool(workspaceDirOrId));
+        await this.registry.register(adapter.createEditFileTool(workspaceDirOrId));
+        await this.registry.register(adapter.createDeleteFileTool(workspaceDirOrId));
+        await this.registry.register(adapter.createListDirTool(workspaceDirOrId));
+        await this.registry.register(adapter.createRunCommandTool(workspaceDirOrId));
+    }
+
+    public getRegisteredTools(): { name: string; description?: string }[] {
+        const result: { name: string; description?: string }[] = [];
+        for (const [name, versionMap] of (this.registry as any).tools.entries()) {
+            for (const tool of versionMap.values()) {
+                result.push({
+                    name,
+                    description: tool.getDescriptor()?.metadata?.description
+                });
+            }
+        }
+        return result;
+    }
+
+    public async executeTool(
+        name: string,
+        args: any,
+        options?: { executionId?: string; taskId?: string; workspaceId?: string; sessionId?: string }
+    ): Promise<any> {
+        const execId = options?.executionId || `exec_${Date.now()}`;
+        const taskId = options?.taskId || `task_${Date.now()}`;
         const context = createInitialContext(
-            `exec_${Date.now()}`, 
-            `task_${Date.now()}`,
+            execId, 
+            taskId,
             {
                scope: {
                   permissions: [],
@@ -79,6 +133,12 @@ export class ExecutionIntegrationService {
                }
             }
         );
+        if (options?.workspaceId) {
+            context.workspaceId = options.workspaceId;
+        }
+        if (options?.sessionId) {
+            context.sessionId = options.sessionId;
+        }
         
         const result = await this.pipeline.execute(name, args, context);
         
@@ -163,5 +223,82 @@ export class ExecutionIntegrationService {
             return { status: "error", error: (result.error as any)?.message || String(result.error) };
         }
         return result.data;
+    }
+
+    public getLearningEngine(): RuleBasedLearningEngine {
+        return this.learningEngine;
+    }
+
+    public getPromotionService(): PromotionService {
+        return this.promotionService;
+    }
+
+    /**
+     * Plan-Level Learning Observation:
+     * Passive observation hook for completed/failed multi-step plan executions.
+     * Evaluates whether durable plan-level knowledge exists via RuleBasedLearningEngine,
+     * and dispatches approved candidates through the single canonical DefaultPromotionService.
+     */
+    public async observePlanExecution(
+        observation: PlanLifecycleObservation
+    ): Promise<PromotionResult[]> {
+        if (!AgentFeatureFlags.USE_LEARNING) {
+            return [];
+        }
+
+        try {
+            const learningResult = await this.learningEngine.learnFromPlan(observation);
+            ExecutionIntegrationService.learningLogs.push(learningResult);
+
+            if (
+                learningResult.decision === LearningDecision.DISCARD ||
+                learningResult.knowledgePromotions.length === 0
+            ) {
+                return [];
+            }
+
+            console.log(`[PlanLearning] Generated plan decision for plan ${observation.planId}: ${learningResult.decision} (${learningResult.knowledgePromotions.length} candidate(s))`);
+
+            // M05: Append to durable experience store
+            await ExecutionIntegrationService.experienceStore.append({
+                sessionId: observation.workspaceId || observation.sessionId || 'unknown_session',
+                taskId: observation.executionId,
+                type: 'LEARNING',
+                payload: learningResult as unknown as Record<string, unknown>,
+                metadata: {
+                    success: observation.finalOutcome === 'COMPLETED',
+                    durationMs: observation.durationMs,
+                    errorType: observation.error ? 'PLAN_FAILURE' : undefined
+                }
+            }).catch(e => console.error("[PlanLearning] ExperienceStore error:", e));
+
+            // Canonical Knowledge Promotion Boundary
+            if (AgentFeatureFlags.USE_KNOWLEDGE_PROMOTION) {
+                const promotionResults = await this.promotionService.processLearningResult(learningResult, {
+                    sessionId: observation.workspaceId || observation.sessionId || 'unknown_session',
+                    taskId: observation.executionId,
+                    executionId: observation.executionId,
+                    toolName: 'PlanExecutionService',
+                    overallScore: observation.finalOutcome === 'COMPLETED' ? 95 : 40,
+                    detectedMistakes: observation.failedStepIds.length > 0
+                        ? observation.failedStepIds.map(s => `Step ${s} failed`)
+                        : undefined,
+                    potentialImprovements: observation.repairedStepIds.length > 0
+                        ? observation.repairedStepIds.map(s => `Repaired step ${s} via replanning`)
+                        : undefined,
+                    durationMs: observation.durationMs,
+                    metadata: {
+                        planId: observation.planId,
+                        executionId: observation.executionId,
+                        isPlanLevel: true
+                    }
+                });
+                console.log(`[PlanLearning] Processed ${promotionResults.length} promotion candidates for plan ${observation.planId}`);
+                return promotionResults;
+            }
+        } catch (err) {
+            console.error("[PlanLearning] Failed to process plan learning:", err);
+        }
+        return [];
     }
 }

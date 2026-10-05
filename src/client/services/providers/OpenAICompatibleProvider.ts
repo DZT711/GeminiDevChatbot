@@ -1,6 +1,5 @@
-import { apiClient } from '../../services/apiClient.js';
-import { storageService } from '../../services/storageService.js';
-import { ProviderInterface, ModelInformation, ChatGenerateConfig } from "./ProviderInterface";
+import { storageService } from '../storageService';
+import type { ProviderInterface, ModelInformation, ChatGenerateConfig } from "./ProviderInterface";
 
 export class OpenAICompatibleProvider implements ProviderInterface {
   name: string;

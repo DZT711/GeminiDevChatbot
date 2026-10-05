@@ -5,7 +5,7 @@ import { ExecutionResult } from './ExecutionResult';
  * Represents the execution lifecycle management operations.
  */
 export interface ExecutionLifecycle {
-  createExecution(taskId?: string): ExecutionContext;
+  createExecution(taskId?: string, executionId?: string): ExecutionContext;
   startExecution(executionId: string): Promise<void>;
   pauseExecution(executionId: string, reason?: string): Promise<void>;
   resumeExecution(executionId: string): Promise<void>;

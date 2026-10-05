@@ -24,6 +24,7 @@ export interface ExecutionScope {
 
 export interface ExecutionContext {
   executionId: string;
+  sessionId?: string;
   taskId?: string;
   parentTaskId?: string;
   workspaceId?: string;
@@ -84,6 +85,7 @@ export function createInitialContext(
     createSnapshot: function(this: ExecutionContext): ExecutionSnapshot {
       return {
         executionId: this.executionId,
+        sessionId: this.sessionId,
         taskId: this.taskId,
         parentTaskId: this.parentTaskId,
         workspaceId: this.workspaceId,

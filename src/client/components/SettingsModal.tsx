@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "motion/react";
-import { Copy, Plus, Save, Settings2, Trash2, X, Github, Sun, Palette, Terminal, Bot, Database, AlertTriangle, FileText, Shield, Paperclip, RotateCcw, Loader2 } from "lucide-react";
+import { Copy, Plus, Save, Settings2, Trash2, X, Github, Sun, Palette, Terminal, Bot, Database, AlertTriangle, FileText, Shield, Paperclip, RotateCcw, Loader2, Sigma } from "lucide-react";
 import { storageService } from '../services/storageService';
 import { handleCopyFullChat } from "../hooks/useChatSessions";
+import { useMathRendering } from '@/lib/mathUtils';
 
 export function SettingsModal(props: any) {
   const {
@@ -25,6 +26,7 @@ export function SettingsModal(props: any) {
 
   const [proposalFilter, setProposalFilter] = useState<'ALL' | 'PENDING' | 'APPROVED' | 'REJECTED'>('ALL');
   const isAdmin = user?.role?.toUpperCase() === 'ADMIN' || user?.email === 'nguyensihuynsh711@gmail.com';
+  const [isMathEnabled, setIsMathEnabled] = useMathRendering();
 
   const allProposals = knowledgeProposals || [];
   const filteredProposals = allProposals.filter((prop: any) => {
@@ -35,6 +37,13 @@ export function SettingsModal(props: any) {
   const pendingCount = allProposals.filter((p: any) => p.status === 'PENDING').length;
   const approvedCount = allProposals.filter((p: any) => p.status === 'APPROVED').length;
   const rejectedCount = allProposals.filter((p: any) => p.status === 'REJECTED').length;
+
+  const settingsTabs = [
+    { id: "general", label: "System Config" },
+    { id: "profile", label: "Profile" },
+    { id: "context", label: "Context" },
+    { id: "theme", label: "Theme" },
+  ];
 
   return (
     <>
@@ -91,38 +100,74 @@ export function SettingsModal(props: any) {
                   theme === "light" ? "border-slate-100" : "border-border-dim",
                 )}
               >
-                {["general", "profile", "context", "theme"].map(
-                  (tab) => (
-                    <button
-                      key={tab}
-                      onClick={() => setSettingsTab(tab as any)}
-                      className={cn(
-                        "pb-4 text-[10px] whitespace-nowrap font-bold uppercase tracking-widest transition-all",
-                        settingsTab === tab
-                          ? theme === "light"
-                            ? "border-b-2 border-cyan-500 text-slate-900"
-                            : "border-b-2 border-cyan-500 text-white"
-                          : theme === "light"
-                            ? "text-slate-400 hover:text-slate-600"
-                            : "text-zinc-500 hover:text-zinc-300",
-                      )}
-                    >
-                      {tab}
-                    </button>
-                  ),
+                {settingsTabs.map(
+                  (tab) => {
+                    const isTabActive = settingsTab === tab.id || (tab.id === "general" && (settingsTab === "system" || settingsTab === "system config"));
+                    return (
+                      <button
+                        key={tab.id}
+                        onClick={() => setSettingsTab(tab.id as any)}
+                        className={cn(
+                          "pb-4 text-[10px] whitespace-nowrap font-bold uppercase tracking-widest transition-all cursor-pointer",
+                          isTabActive
+                            ? theme === "light"
+                              ? "border-b-2 border-cyan-500 text-slate-900"
+                              : "border-b-2 border-cyan-500 text-white"
+                            : theme === "light"
+                              ? "text-slate-400 hover:text-slate-600"
+                              : "text-zinc-500 hover:text-zinc-300",
+                        )}
+                      >
+                        {tab.label}
+                      </button>
+                    );
+                  }
                 )}
               </div>
 
               <div className="space-y-6">
-                {settingsTab === "general" && (
+                {(settingsTab === "general" || settingsTab === "system" || settingsTab === "system config") && (
                   <div className="space-y-6">
                     <div className="flex items-center justify-between">
                       <label className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
-                        General Configuration
+                        System Configuration
                       </label>
                     </div>
 
                     <div className="space-y-4">
+                      {/* Math Formatting Toggle */}
+                      <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
+                        <div className="pr-4">
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                              <Sigma size={13} className="text-teal-400" />
+                              LaTeX Math Input & Output (KaTeX)
+                            </p>
+                            <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-teal-500/10 text-teal-300 border border-teal-500/30 uppercase font-bold">
+                              Default: Enabled
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-zinc-500 mt-1">
+                            Always parses and typesets mathematical notation, Greek symbols, and LaTeX formulas (inline $...$ and block $$...$$) across chat and workspace.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setIsMathEnabled(!isMathEnabled)}
+                          className={cn(
+                            "relative w-10 h-5 rounded-full transition-colors shrink-0 cursor-pointer",
+                            isMathEnabled ? "bg-teal-500" : "bg-zinc-700",
+                          )}
+                          title={isMathEnabled ? "Disable LaTeX Math Rendering" : "Enable LaTeX Math Rendering"}
+                        >
+                          <div
+                            className={cn(
+                              "absolute top-1 bg-white w-3 h-3 rounded-full transition-transform",
+                              isMathEnabled ? "left-6" : "left-1",
+                            )}
+                          />
+                        </button>
+                      </div>
                       {/* Input Box Toggle */}
                       <div className="flex items-center justify-between p-3 border border-zinc-800 rounded-xl bg-black/20">
                         <div>

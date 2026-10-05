@@ -1,5 +1,5 @@
 import { OpenAICompatibleProvider } from "./OpenAICompatibleProvider";
-import { ChatGenerateConfig } from "./ProviderInterface";
+import type { ChatGenerateConfig } from "./ProviderInterface";
 
 export class GithubProvider extends OpenAICompatibleProvider {
   constructor(name: string, baseUrl: string) {

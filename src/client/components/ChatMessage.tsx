@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import { preprocessMath, katexOptions, useMathRendering } from '@/lib/mathUtils';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { motion, AnimatePresence } from 'motion/react';
@@ -11,6 +14,7 @@ import { Attachment } from '@/services/chatSessionManager';
 import { CodePreview } from './CodePreview';
 import { ThinkingProcessDrawer } from './ThinkingProcessDrawer';
 import { PlanningResultCard } from './planning/PlanningResultCard';
+import { AgentChatSkeleton } from './AgentChatSkeleton';
 
 const FilePreview = ({ attachment }: { attachment: Attachment }) => {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -98,9 +102,11 @@ interface ChatMessageProps {
   id?: string;
   rating?: number;
   onRate?: (rating: number) => void;
+  thinkingContent?: string;
+  thoughtDurationSeconds?: number;
 }
 
-export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, isFallback, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false, userName, userAvatarUrl, id, rating = 0, onRate }) => {
+export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme = 'midnight', modelName, isFallback, imageUrl, videoUrl, onEdit, onRevert, attachments, history = [], isLatest = false, isLoading = false, userName, userAvatarUrl, id, rating = 0, onRate, thinkingContent, thoughtDurationSeconds }) => {
   const isUser = role === 'user';
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState(content);
@@ -108,6 +114,14 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
   const [msgCopied, setMsgCopied] = useState(false);
   
   const [displayedContent, setDisplayedContent] = React.useState(content);
+  const [isMathEnabled] = useMathRendering();
+
+  const activeRemarkPlugins = React.useMemo(() => isMathEnabled ? [remarkGfm, remarkMath] : [remarkGfm], [isMathEnabled]);
+  const activeRehypePlugins = React.useMemo(() => isMathEnabled ? [[rehypeKatex, katexOptions]] : [], [isMathEnabled]);
+
+  React.useEffect(() => {
+    setEditValue(content);
+  }, [content]);
 
   React.useEffect(() => {
     if (!isLatest || isUser) {
@@ -450,11 +464,16 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                   <div key={vIdx} className="group/ver p-2 bg-[#0d0d0f] rounded border border-zinc-800/50 hover:border-zinc-700 transition-all">
                     <div className="text-[11px] text-zinc-500 line-clamp-2 italic mb-2">"{ver}"</div>
                     <button 
-                      onClick={() => {
+                      type="button"
+                      disabled={isLoading}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
                         onRevert?.(ver);
                         setShowHistoryModal(false);
                       }}
-                      className="text-[9px] font-bold uppercase text-amber-500/60 hover:text-amber-500 flex items-center gap-1 transition-all"
+                      className="text-[9px] font-bold uppercase text-amber-500/80 hover:text-amber-400 flex items-center gap-1.5 transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed px-2 py-1 rounded bg-amber-500/10 hover:bg-amber-500/20 border border-amber-500/30"
+                      title="Restore message to this state and regenerate response"
                     >
                       <RotateCcw size={10} /> Restore This State
                     </button>
@@ -530,16 +549,19 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
               </div>
             </div>
           ) : content.trim() === '' && isLoading && isLatest ? (
-            <div className="flex gap-1.5 p-4 items-center">
-              <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+            <div className="p-3">
+              <AgentChatSkeleton theme={theme} showCodeBlock={true} />
             </div>
           ) : (
             <div className="space-y-4">
-              {isLatest && !isUser && (
+              {!isUser && (isLatest || thinkingContent) && (
                 <div className="-mx-2 mb-4">
-                  <ThinkingProcessDrawer theme={theme} />
+                  <ThinkingProcessDrawer
+                    theme={theme}
+                    thinkingContent={thinkingContent}
+                    thoughtDurationSeconds={thoughtDurationSeconds}
+                    isStreaming={isLatest && isLoading}
+                  />
                 </div>
               )}
               {isUser && /^\/[a-zA-Z0-9_-]+/.test(displayedContent.trim()) ? (() => {
@@ -568,6 +590,10 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                       return theme === 'light'
                         ? "bg-amber-100 text-amber-800 border-amber-300 shadow-xs"
                         : "bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.2)]";
+                    case '/math':
+                      return theme === 'light'
+                        ? "bg-teal-100 text-teal-800 border-teal-300 shadow-xs"
+                        : "bg-teal-500/20 text-teal-300 border-teal-500/40 shadow-[0_0_12px_rgba(20,184,166,0.2)]";
                     default:
                       return theme === 'light'
                         ? "bg-cyan-100 text-cyan-800 border-cyan-300 shadow-xs"
@@ -585,22 +611,33 @@ export const ChatMessage: React.FC<ChatMessageProps> = ({ role, content, theme =
                         <span>{cmd}</span>
                       </span>
                       <span className={cn("text-[10px] font-mono tracking-wider uppercase opacity-70", theme === 'light' ? "text-slate-600" : "text-zinc-400")}>
-                        {cmd === '/goal' ? 'Goal Decomposition' : cmd === '/plan' ? 'Architecture Plan' : cmd === '/rag' ? 'Memory Query' : 'Slash Command'}
+                        {cmd === '/goal' ? 'Goal Decomposition' : cmd === '/plan' ? 'Architecture Plan' : cmd === '/rag' ? 'Memory Query' : cmd === '/math' ? 'Mathematical Formulation' : 'Slash Command'}
                       </span>
                     </div>
                     {rest && (
-                      <div className={cn("font-mono text-sm leading-relaxed whitespace-pre-wrap break-words", theme === 'light' ? "text-slate-800" : "text-zinc-200")}>
-                        {rest}
+                      <div className={cn("text-sm leading-relaxed break-words", theme === 'light' ? "text-slate-800" : "text-zinc-200")}>
+                        {cmd === '/math' ? (
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[[rehypeKatex, katexOptions]]}
+                            components={markdownComponents as any}
+                          >
+                            {preprocessMath(rest)}
+                          </ReactMarkdown>
+                        ) : (
+                          <div className="font-mono whitespace-pre-wrap">{rest}</div>
+                        )}
                       </div>
                     )}
                   </div>
                 );
               })() : (
                 <ReactMarkdown
-                  remarkPlugins={[remarkGfm]}
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[[rehypeKatex, katexOptions]]}
                   components={markdownComponents as any}
                 >
-                  {displayedContent + (isLoading && isLatest ? ' ▍' : '')}
+                  {preprocessMath(displayedContent + (isLoading && isLatest ? ' ▍' : ''))}
                 </ReactMarkdown>
               )}
               {attachments && attachments.length > 0 && (

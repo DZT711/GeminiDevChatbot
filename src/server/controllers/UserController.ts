@@ -47,6 +47,15 @@ router.get('/user/state', async (req, res) => {
           videoUrl: m.videoUrl,
           attachments: m.attachments,
           rating: m.rating,
+          interactionType: m.interactionType || 'UNKNOWN',
+          messageRole: m.messageRole || (m.role === 'model' ? 'ASSISTANT' : m.role === 'user' ? 'USER' : 'UNKNOWN'),
+          messageKind: m.messageKind || 'UNKNOWN',
+          responseCode: m.responseCode || 'UNKNOWN',
+          surface: m.surface || 'UNKNOWN',
+          executionId: m.executionId,
+          planId: m.planId,
+          toolCallId: m.toolCallId,
+          parentMessageId: m.parentMessageId,
           createdAt: new Date(m.createdAt).getTime(),
         })).sort((a, b) => a.createdAt - b.createdAt)
       }));
@@ -165,6 +174,15 @@ router.put('/user/state', async (req, res) => {
               videoUrl?: string;
               attachments?: unknown;
               rating?: number;
+              interactionType?: string;
+              messageRole?: string;
+              messageKind?: string;
+              responseCode?: string;
+              surface?: string;
+              executionId?: string;
+              planId?: string;
+              toolCallId?: string;
+              parentMessageId?: string;
               createdAt?: string | number | Date;
             }, idx: number) => {
               let msgId = m.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -174,6 +192,23 @@ router.put('/user/state', async (req, res) => {
               seenMessageIds.add(msgId);
 
               const role = (m.role && validRoles.has(m.role)) ? (m.role as 'user' | 'model' | 'system' | 'tool') : 'user';
+              const rawInteractionType = m.interactionType;
+              const interactionType = (rawInteractionType === 'AGENT' || rawInteractionType === 'CHAT')
+                ? rawInteractionType
+                : (s.workspaceId || m.executionId || m.surface === 'AGENT') ? 'AGENT' : 'CHAT';
+              const isAgent = interactionType === 'AGENT';
+              const messageRole = m.messageRole || (role === 'model' ? 'ASSISTANT' : role === 'system' ? 'SYSTEM' : 'USER');
+              const messageKind = m.messageKind || (messageRole === 'USER' ? 'USER_INPUT' : isAgent ? 'AGENT_RESPONSE' : 'CHAT_RESPONSE');
+              let responseCode = m.responseCode || (messageRole === 'USER' ? 'USER_INPUT' : isAgent ? 'AGENT_FINAL' : 'CHAT_FINAL');
+
+              // Enforce constraint compatibility
+              if (interactionType === 'CHAT' && (responseCode === 'AGENT_FINAL' || responseCode === 'AGENT_ERROR' || responseCode === 'AGENT_TOOL_RESULT' || responseCode === 'AGENT_PLAN_UPDATE')) {
+                responseCode = responseCode === 'AGENT_ERROR' ? 'CHAT_ERROR' : 'CHAT_FINAL';
+              } else if (interactionType === 'AGENT' && (responseCode === 'CHAT_FINAL' || responseCode === 'CHAT_ERROR')) {
+                responseCode = responseCode === 'CHAT_ERROR' ? 'AGENT_ERROR' : 'AGENT_FINAL';
+              }
+
+              const surface = m.surface || (isAgent ? 'AGENT' : 'CHAT');
 
               return {
                 id: msgId,
@@ -185,6 +220,15 @@ router.put('/user/state', async (req, res) => {
                 videoUrl: m.videoUrl,
                 attachments: m.attachments || [],
                 rating: typeof m.rating === 'number' ? m.rating : 0,
+                interactionType,
+                messageRole,
+                messageKind,
+                responseCode,
+                surface,
+                executionId: m.executionId || null,
+                planId: m.planId || null,
+                toolCallId: m.toolCallId || null,
+                parentMessageId: m.parentMessageId || null,
                 createdAt: m.createdAt ? new Date(m.createdAt) : new Date(),
               };
             });
@@ -201,6 +245,15 @@ router.put('/user/state', async (req, res) => {
                   videoUrl: sql`excluded.video_url`,
                   attachments: sql`excluded.attachments`,
                   rating: sql`excluded.rating`,
+                  interactionType: sql`COALESCE(NULLIF(excluded.interaction_type, 'UNKNOWN'), messages.interaction_type, excluded.interaction_type)`,
+                  messageRole: sql`COALESCE(NULLIF(excluded.message_role, 'UNKNOWN'), messages.message_role, excluded.message_role)`,
+                  messageKind: sql`COALESCE(NULLIF(excluded.message_kind, 'UNKNOWN'), messages.message_kind, excluded.message_kind)`,
+                  responseCode: sql`COALESCE(NULLIF(excluded.response_code, 'UNKNOWN'), messages.response_code, excluded.response_code)`,
+                  surface: sql`COALESCE(NULLIF(excluded.surface, 'UNKNOWN'), messages.surface, excluded.surface)`,
+                  executionId: sql`COALESCE(excluded.execution_id, messages.execution_id)`,
+                  planId: sql`COALESCE(excluded.plan_id, messages.plan_id)`,
+                  toolCallId: sql`COALESCE(excluded.tool_call_id, messages.tool_call_id)`,
+                  parentMessageId: sql`COALESCE(excluded.parent_message_id, messages.parent_message_id)`,
                   createdAt: sql`excluded.created_at`,
                 }
               });

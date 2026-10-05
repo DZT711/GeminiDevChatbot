@@ -355,20 +355,58 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
     const chatModel = model || DEFAULT_CHAT_MODEL;
     let finalModelUsed = chatModel;
 
-    // Convert history parts into the model input parts and adapt tool calls across model switches
-    let formattedContents = adaptContentsForModelSwitch(
-      history.map((h: any, idx: number) => {
-        if (idx === history.length - 1 && h.role === 'user') {
-          const parts = h.parts.map((p: any, pIdx: number) => {
-            if (pIdx === 0 && p.text) return { text: cleanPrompt };
+    const promptText = (cleanPrompt || prompt || '').trim();
+
+    // Sanitize history and filter out completely empty turns
+    const rawHistory: any[] = Array.isArray(history) ? history : [];
+    const sanitizedHistory = rawHistory.filter((h: any) => {
+      if (!h || !Array.isArray(h.parts) || h.parts.length === 0) return false;
+      return h.parts.some((p: any) => {
+        if (p.text && typeof p.text === 'string' && p.text.trim().length > 0) return true;
+        if (p.functionCall || p.functionResponse || p.thought) return true;
+        return false;
+      });
+    });
+
+    const lastTurn = sanitizedHistory[sanitizedHistory.length - 1];
+    let historyWithUserTurn: any[];
+
+    if (lastTurn && lastTurn.role === 'user') {
+      historyWithUserTurn = sanitizedHistory.map((h: any, idx: number) => {
+        if (idx === sanitizedHistory.length - 1) {
+          let replaced = false;
+          const parts = h.parts.map((p: any) => {
+            if (!replaced && typeof p.text === 'string') {
+              replaced = true;
+              return { ...p, text: promptText || p.text || 'Hello' };
+            }
             return p;
           });
+          if (!replaced) {
+            parts.unshift({ text: promptText || 'Hello' });
+          }
           return { role: h.role, parts, modelUsed: h.modelUsed || h.modelName };
         }
         return h;
-      }),
-      chatModel
-    );
+      });
+    } else {
+      historyWithUserTurn = [
+        ...sanitizedHistory,
+        {
+          role: 'user',
+          parts: [{ text: promptText || 'Hello' }]
+        }
+      ];
+    }
+
+    // Convert history parts into the model input parts and adapt tool calls across model switches
+    let formattedContents = adaptContentsForModelSwitch(historyWithUserTurn, chatModel);
+    if (!Array.isArray(formattedContents) || formattedContents.length === 0) {
+      formattedContents = [{
+        role: 'user',
+        parts: [{ text: promptText || 'Hello' }]
+      }];
+    }
 
     const Type = di.llmService.getTypeEnum();
     const aiInstance = di.llmService.getClient(apiKey, customBaseUrl, provider);
@@ -582,7 +620,8 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
             }
           }
 
-          const needsFallback = isQuotaExceeded || isModelNotFound || isUnavailable || isThoughtSignatureError;
+          const isIncompleteJson = errorMsg.includes('Incomplete JSON segment at the end');
+          const needsFallback = isQuotaExceeded || isModelNotFound || isUnavailable || isThoughtSignatureError || isIncompleteJson;
           const normalizedModel = finalModelUsed.replace('models/', '');
           
           const isOpenRouterUpstreamError = loopProvider === 'openrouter' && (errorMsg.includes('API key not valid') || errorMsg.includes('400') && errorMsg.includes('type.googleapis.com'));
@@ -644,7 +683,8 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
       const toolResponses: any[] = [];
       let latestThoughtSignature: string | undefined = undefined;
 
-      for await (const chunk of responseStream) {
+      try {
+        for await (const chunk of responseStream) {
         if (chunk.usageMetadata) {
           lastUsageMetadata = chunk.usageMetadata;
         }
@@ -918,6 +958,19 @@ Always provide runnable code blocks/examples with Markdown syntax.`;
         if (chunk.text) {
           sendEvent('text', chunk.text);
           autoSave_aiOutputText += chunk.text;
+        }
+      }
+      } catch (streamIterErr: unknown) {
+        const iterErrStr = streamIterErr instanceof Error ? streamIterErr.message : String(streamIterErr);
+        if (iterErrStr.includes('Incomplete JSON segment at the end')) {
+          console.warn('[CHAT] Handled trailing Incomplete JSON segment in stream consumption.');
+          if (!autoSave_aiOutputText.trim() && allFunctionCallsInStream.length === 0) {
+            const fallbackMsg = 'The AI stream connection closed unexpectedly before returning complete content. Please retry your request.';
+            sendEvent('text', fallbackMsg);
+            autoSave_aiOutputText += fallbackMsg;
+          }
+        } else {
+          throw streamIterErr;
         }
       }
 

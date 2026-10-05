@@ -1,0 +1,27 @@
+{:meta/version 1
+
+ ;; Default home page when opening the graph
+ :default-home {:page "contents"}
+
+ ;; Enable tooltip preview on hover
+ :ui/enable-tooltip? true
+
+ ;; Prefer page reference syntax
+ :ui/show-brackets? true
+
+ ;; Display full blocks when referencing
+ :ui/show-full-blocks? false
+
+ ;; Date format for journals
+ :journal/page-title-format "yyyy_MM_dd"
+
+ ;; Disable accent marks in search
+ :feature/enable-search-remove-accents? true
+
+ ;; Pre-defined query views
+ :query/views
+ {:pprint (fn [r] [:pre.code (pprint r)])}
+
+ ;; Bullet indentation
+ :export/bullet-indentation :two-spaces
+}

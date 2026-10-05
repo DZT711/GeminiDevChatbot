@@ -6,9 +6,24 @@ import { ContextIntegrationService } from './context/ContextIntegrationService.j
 import { ContextBuilderAdapter } from './context/ContextBuilderAdapter.js';
 import { PromptContextMapper } from './context/PromptContextMapper.js';
 import { ExecutionIntegrationService } from './execution/ExecutionIntegrationService.js';
-import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL, FLASH_3_8_CHAT_MODEL, isThoughtSignatureModel, getThinkingConfigForModel } from '../../agent/agent.config.js';
+import { formatInteractivePlanContextPrompt } from '../../../agent/context/InteractivePlanContext.js';
+import { BrainIntegrationBridge } from '../brain/BrainIntegrationBridge.js';
+import { DEFAULT_CHAT_MODEL, FALLBACK_CHAT_MODEL, PRO_CHAT_MODEL, FLASH_3_8_CHAT_MODEL, isThoughtSignatureModel, getThinkingConfigForModel } from '../../../agent/agent.config.js';
 import { di } from '../../di.js';
 import { appendSystemLog } from '../../logInterceptor.js';
+import { AgentRuntime } from '../../../agent/runtime/AgentRuntime.js';
+import { activeCommandRegistry } from '../../workspace/activeCommandRegistry.js';
+
+export interface ActiveAgentExecution {
+    executionId: string;
+    sessionId?: string;
+    workspaceId?: string;
+    userId: string;
+    abortController: AbortController;
+    cancelled: boolean;
+    runtime: AgentRuntime;
+    startedAt?: number;
+}
 
 export function sanitizeModel(model?: string, provider?: string): string {
     if (provider === 'openrouter') {
@@ -22,6 +37,13 @@ export function sanitizeModel(model?: string, provider?: string): string {
     // 2. Remove batch / test / free / preview suffixes if present
     clean = clean.replace(/:(batch|free)$/i, '');
     clean = clean.replace(/\s*\((TEST|BETA|FREE)\)$/i, '');
+
+    // 3. Remap discontinued or deprecated model versions to active models
+    if (clean === 'gemini-2.5-pro' || clean === 'gemini-2.0-pro-exp-02-05' || clean === 'gemini-2.0-pro') {
+        clean = PRO_CHAT_MODEL;
+    } else if (clean === 'gemini-2.5-flash' || clean === 'gemini-2.0-flash' || clean === 'gemini-2.0-flash-exp') {
+        clean = DEFAULT_CHAT_MODEL;
+    }
 
     return clean || DEFAULT_CHAT_MODEL;
 }
@@ -62,7 +84,7 @@ export function adaptContentsForModelSwitch(contents: any[], targetModel?: strin
                     newParts.push(part);
                 }
             }
-            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: 'Acknowledged.' }] };
         } else if (turn.role === 'user') {
             const newParts: any[] = [];
             for (const part of turn.parts) {
@@ -79,7 +101,7 @@ export function adaptContentsForModelSwitch(contents: any[], targetModel?: strin
                     newParts.push(part);
                 }
             }
-            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: 'Please proceed.' }] };
         }
         return turn;
     });
@@ -100,7 +122,7 @@ export function sanitizeAllToolTurnsToText(contents: any[]): any[] {
                     newParts.push(part);
                 }
             }
-            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: 'Acknowledged.' }] };
         } else if (turn.role === 'user') {
             const newParts: any[] = [];
             for (const part of turn.parts) {
@@ -113,18 +135,93 @@ export function sanitizeAllToolTurnsToText(contents: any[]): any[] {
                     newParts.push(part);
                 }
             }
-            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: '' }] };
+            return { role: turn.role, parts: newParts.length > 0 ? newParts : [{ text: 'Please proceed.' }] };
         }
         return turn;
     });
 }
 
 export class AgentIntegrationService {
+    public static activeExecutions: Map<string, ActiveAgentExecution> = new Map();
+
+    /**
+     * Authoritatively stops/cancels an active agent execution by executionId, sessionId, or workspaceId.
+     */
+    public static stopExecution(identifier: { executionId?: string; sessionId?: string; workspaceId?: string }): boolean {
+        let stopped = false;
+        for (const [key, active] of AgentIntegrationService.activeExecutions.entries()) {
+            if (
+                (identifier.executionId && active.executionId === identifier.executionId) ||
+                (identifier.sessionId && active.sessionId === identifier.sessionId) ||
+                (identifier.workspaceId && active.workspaceId === identifier.workspaceId)
+            ) {
+                active.cancelled = true;
+                active.abortController.abort();
+                active.runtime.cancelExecution(active.executionId, 'Execution stopped by user').catch(() => {});
+
+                // Authoritatively abort any terminal command bound to this execution or session
+                activeCommandRegistry.abort(active.executionId);
+                if (active.sessionId) {
+                    activeCommandRegistry.abort(active.sessionId);
+                }
+
+                if (active.sessionId) {
+                    di.agentSessionService.setStatus(active.sessionId, 'PAUSED', active.userId).catch(() => {});
+                    di.agentSessionService.emitSessionEvent({
+                        type: 'session_status_changed',
+                        sessionId: active.sessionId,
+                        workspaceId: active.workspaceId,
+                        timestamp: Date.now(),
+                        data: {
+                            previousStatus: 'BUSY',
+                            newStatus: 'PAUSED',
+                            reason: 'User stopped execution'
+                        }
+                    });
+                    di.agentSessionService.emitSessionEvent({
+                        type: 'terminal_event',
+                        sessionId: active.sessionId,
+                        executionId: active.executionId,
+                        workspaceId: active.workspaceId,
+                        timestamp: Date.now(),
+                        data: {
+                            type: 'terminal_exit',
+                            action: 'stop',
+                            executionId: active.executionId,
+                            exitCode: 130,
+                            isAborted: true,
+                            reason: 'User stopped execution'
+                        }
+                    });
+                }
+                AgentIntegrationService.activeExecutions.delete(key);
+                stopped = true;
+            }
+        }
+        return stopped;
+    }
+
     /**
      * Entry point for the new Agent Runtime pipeline.
      */
     async handleRequest(request: AgentRequest, res: any): Promise<void> {
+        const executionId = `exec_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        const abortController = new AbortController();
+        const runtime = new AgentRuntime();
+        runtime.createExecution(request.sessionId, executionId);
+        const activeExecution: ActiveAgentExecution = {
+            executionId,
+            sessionId: request.sessionId,
+            workspaceId: request.workspaceId,
+            userId: request.userId,
+            abortController,
+            cancelled: false,
+            runtime
+        };
+        AgentIntegrationService.activeExecutions.set(executionId, activeExecution);
+
         const sendEvent = (type: any, data: any) => {
+            if (activeExecution.cancelled) return;
             if (type === 'end') {
                 AgentAdapter.handleAgentResponse(res, { type: 'end', data: {} });
             } else {
@@ -132,7 +229,11 @@ export class AgentIntegrationService {
             }
         };
 
+        let activeModel = sanitizeModel(request.model || request.rawModel, request.provider);
+        let accumulatedFinalText = '';
+
         try {
+            await runtime.startExecution(executionId);
             const baseSystemPrompt = `You are GeminiDevChatbot, an elite AI Software Engineering Assistant explicitly customized for the development, maintenance, and optimization of this repository.
 
 ### CORE OPERATING RULES
@@ -182,18 +283,59 @@ export class AgentIntegrationService {
                 }
             }
 
+            // Enrich prompt with active workspace and editor context (M06-03)
+            if (request.codingContext || request.workspaceId) {
+                const codingCtx = request.codingContext;
+                let contextNote = `\n\n### Interactive Workspace Context`;
+                if (request.workspaceId) {
+                    contextNote += `\n- Active Workspace ID: ${request.workspaceId}`;
+                }
+                if (codingCtx?.currentFile) {
+                    contextNote += `\n- Currently Active File in Editor: ${codingCtx.currentFile}`;
+                }
+                if (codingCtx?.selectedCode) {
+                    contextNote += `\n- Current User Selection in Editor:\n\`\`\`\n${codingCtx.selectedCode}\n\`\`\``;
+                } else if (typeof codingCtx?.selection === 'string') {
+                    contextNote += `\n- Current User Selection in Editor:\n\`\`\`\n${codingCtx.selection}\n\`\`\``;
+                } else if (codingCtx?.selection && typeof codingCtx.selection === 'object' && codingCtx.selection.text) {
+                    contextNote += `\n- Current User Selection in Editor (Lines ${codingCtx.selection.startLine ?? '?'}-${codingCtx.selection.endLine ?? '?'}):\n\`\`\`\n${codingCtx.selection.text}\n\`\`\``;
+                }
+                contextNote += `\nYou have access to interactive workspace coding tools (view_file, create_file, edit_file, delete_file, list_dir, run_command) to inspect, edit, create, and verify code inside the user's workspace.
+When the user asks to run, test, or execute any shell/terminal command, script, or check version/environment (e.g. "Run npm test", "Chạy npm --version", "node -v", "npm run build", "git status", "ls", etc.), you MUST call the 'run_command' tool with the exact command line.
+DO NOT merely answer with speculative or assumed textual output without running the tool. Running the command via 'run_command' streams the live process output directly into the user's Workspace Terminal in real-time.`;
+                finalSystemPrompt += contextNote;
+            }
+
+            // Enrich prompt with active plan context (M06-06)
+            if (request.codingContext?.planContext) {
+                finalSystemPrompt += `\n\n${formatInteractivePlanContextPrompt(request.codingContext.planContext)}`;
+            }
+
+            // Enrich prompt with compact Notion Cloud Brain context if enabled
+            if (AgentFeatureFlags.USE_NOTION_BRAIN_LEARNING) {
+                const activeFiles = request.codingContext?.currentFile ? [request.codingContext.currentFile] : [];
+                const brainContextStr = await BrainIntegrationBridge.getBrainContextForPrompt(cleanPrompt, activeFiles);
+                if (brainContextStr) {
+                    finalSystemPrompt += brainContextStr;
+                }
+            }
+
             // 3. Execution Pipeline Setup
             let execIntegration: ExecutionIntegrationService | undefined;
             if (AgentFeatureFlags.USE_EXECUTION_PIPELINE) {
                 execIntegration = new ExecutionIntegrationService();
-                await execIntegration.registerProductionTools({ id: request.userId }, sendEvent);
+                await execIntegration.registerProductionTools(
+                    { id: request.userId, sessionId: request.sessionId, executionId },
+                    sendEvent,
+                    request.workspaceId
+                );
             }
 
             // 4. Set up LLM client
             const Type = di.llmService.getTypeEnum();
             const aiInstance = di.llmService.getClient(request.apiKey, request.customBaseUrl, request.provider);
             const originalRequestedModel = request.rawModel || request.model || DEFAULT_CHAT_MODEL;
-            let activeModel = sanitizeModel(request.model || request.rawModel, request.provider);
+            activeModel = sanitizeModel(request.model || request.rawModel, request.provider);
             let hasEmittedInitialNormalization = false;
 
             if (activeModel !== originalRequestedModel) {
@@ -205,7 +347,44 @@ export class AgentIntegrationService {
 
             appendSystemLog('AGENT_STREAM_INIT', `Starting agent response generation for model '${activeModel}' (userId: ${request.userId || 'anon'})`);
 
-            const proposeKnowledgeTool = {
+            if (request.sessionId) {
+                try {
+                    await di.agentSessionService.getOrCreateSession(request.sessionId, request.userId, {
+                        workspaceId: request.workspaceId,
+                        activeModel: { modelId: activeModel, provider: request.provider }
+                    });
+                    await di.agentSessionService.associateExecution(request.sessionId, executionId, request.userId);
+                    await di.agentSessionService.setStatus(request.sessionId, 'BUSY', request.userId);
+                } catch (sessionErr) {
+                    console.warn('[AgentIntegrationService] Session association notice:', sessionErr);
+                }
+
+                // Canonical persistence of user message
+                try {
+                    const isAgent = (request.interactionType === 'AGENT') || Boolean(request.workspaceId);
+                    const userMsgId = request.userMessageId || `user-${executionId}`;
+                    await di.conversationMessageService.saveMessage({
+                        id: userMsgId,
+                        sessionId: request.sessionId,
+                        userId: request.userId,
+                        role: 'user',
+                        messageRole: 'USER',
+                        interactionType: request.interactionType || (isAgent ? 'AGENT' : 'CHAT'),
+                        messageKind: 'USER_INPUT',
+                        responseCode: 'USER_INPUT',
+                        surface: request.surface || (isAgent ? 'AGENT' : 'CHAT'),
+                        content: request.cleanPrompt || request.prompt,
+                        modelUsed: activeModel,
+                        executionId: executionId,
+                        planId: request.codingContext?.planContext?.planId,
+                        parentMessageId: request.parentMessageId
+                    });
+                } catch (userMsgErr) {
+                    console.warn('[AgentIntegrationService] User message persistence notice:', userMsgErr);
+                }
+            }
+
+            const proposeKnowledgeTool: any = {
                 functionDeclarations: [
                     {
                         name: 'proposeKnowledge',
@@ -250,28 +429,165 @@ export class AgentIntegrationService {
                 ]
             };
 
-            let formattedContents = adaptContentsForModelSwitch(
-                request.history.map((h: any, idx: number) => {
-                    if (idx === request.history.length - 1 && h.role === 'user') {
-                        const parts = h.parts.map((p: any, pIdx: number) => {
-                            if (pIdx === 0 && p.text) return { text: cleanPrompt };
+            // Add workspace coding tools if in workspace context
+            if (request.workspaceId || request.codingContext) {
+                proposeKnowledgeTool.functionDeclarations.push(
+                    {
+                        name: 'view_file',
+                        description: 'Read the contents of a file in the workspace.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                filePath: { type: Type.STRING, description: 'Path of the file to read' },
+                                TargetFile: { type: Type.STRING, description: 'Alternative alias for filePath' }
+                            },
+                            required: ['filePath']
+                        }
+                    },
+                    {
+                        name: 'create_file',
+                        description: 'Create a new file with specified content in the workspace.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                TargetFile: { type: Type.STRING, description: 'Path of the file to create' },
+                                Content: { type: Type.STRING, description: 'Full content of the new file' }
+                            },
+                            required: ['TargetFile', 'Content']
+                        }
+                    },
+                    {
+                        name: 'edit_file',
+                        description: 'Edit or replace content in an existing file in the workspace.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                TargetFile: { type: Type.STRING, description: 'Path of the file to edit' },
+                                TargetContent: { type: Type.STRING, description: 'The exact string snippet to replace' },
+                                ReplacementContent: { type: Type.STRING, description: 'The replacement string' },
+                                Content: { type: Type.STRING, description: 'Optional: full replacement content' }
+                            },
+                            required: ['TargetFile']
+                        }
+                    },
+                    {
+                        name: 'delete_file',
+                        description: 'Delete a file from the workspace.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                TargetFile: { type: Type.STRING, description: 'Path of the file to delete' }
+                            },
+                            required: ['TargetFile']
+                        }
+                    },
+                    {
+                        name: 'list_dir',
+                        description: 'List entries in a directory of the workspace.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                DirectoryPath: { type: Type.STRING, description: 'Optional directory path to list' }
+                            }
+                        }
+                    },
+                    {
+                        name: 'run_command',
+                        description: 'Execute a terminal command or script in the workspace sandbox.',
+                        parameters: {
+                            type: Type.OBJECT,
+                            properties: {
+                                CommandLine: { type: Type.STRING, description: 'Command line string to run' },
+                                Cwd: { type: Type.STRING, description: 'Optional working directory' }
+                            },
+                            required: ['CommandLine']
+                        }
+                    }
+                );
+            }
+
+            const promptText = (cleanPrompt || request.prompt || '').trim();
+
+            // Sanitize history and filter out completely empty turns
+            const rawHistory: any[] = Array.isArray(request.history) ? request.history : [];
+            const sanitizedHistory = rawHistory.filter((h: any) => {
+                if (!h || !Array.isArray(h.parts) || h.parts.length === 0) return false;
+                return h.parts.some((p: any) => {
+                    if (p.text && typeof p.text === 'string' && p.text.trim().length > 0) return true;
+                    if (p.functionCall || p.functionResponse || p.thought) return true;
+                    return false;
+                });
+            });
+
+            const lastTurn = sanitizedHistory[sanitizedHistory.length - 1];
+            let historyWithUserTurn: any[];
+
+            if (lastTurn && lastTurn.role === 'user') {
+                // Ensure the final user turn carries the prompt text
+                historyWithUserTurn = sanitizedHistory.map((h: any, idx: number) => {
+                    if (idx === sanitizedHistory.length - 1) {
+                        let replaced = false;
+                        const parts = h.parts.map((p: any) => {
+                            if (!replaced && typeof p.text === 'string') {
+                                replaced = true;
+                                return { ...p, text: promptText || p.text || 'Hello' };
+                            }
                             return p;
                         });
+                        if (!replaced) {
+                            parts.unshift({ text: promptText || 'Hello' });
+                        }
                         return { role: h.role, parts, modelUsed: h.modelUsed || h.modelName };
                     }
                     return h;
-                }),
-                activeModel
+                });
+            } else {
+                // History does not end in a user turn or is empty; append the user prompt
+                historyWithUserTurn = [
+                    ...sanitizedHistory,
+                    {
+                        role: 'user',
+                        parts: [{ text: promptText || 'Hello' }]
+                    }
+                ];
+            }
+
+            let formattedContents = adaptContentsForModelSwitch(historyWithUserTurn, activeModel);
+
+            // Invariant: contents and parts must never be empty
+            formattedContents = (Array.isArray(formattedContents) ? formattedContents : []).filter(
+                (turn: any) => Array.isArray(turn?.parts) && turn.parts.length > 0
             );
+            if (formattedContents.length === 0) {
+                formattedContents = [{
+                    role: 'user',
+                    parts: [{ text: promptText || 'Hello' }]
+                }];
+            }
 
             let toolLoops = 0;
             let lastUsageMetadata: any = null;
 
-            while (toolLoops < 5) {
+            while (toolLoops < 10) {
+                if (activeExecution.cancelled || abortController.signal.aborted) {
+                    sendEvent('status', { message: 'Execution cancelled by user.' });
+                    break;
+                }
                 const config: any = {
                     systemInstruction: finalSystemPrompt,
                     tools: [proposeKnowledgeTool],
                 };
+
+                // Ensure non-empty parts on every turn before streaming
+                const safeContents = formattedContents.filter(
+                    (turn: any) => Array.isArray(turn?.parts) && turn.parts.length > 0
+                );
+                if (safeContents.length === 0) {
+                    safeContents.push({
+                        role: 'user',
+                        parts: [{ text: promptText || 'Hello' }]
+                    });
+                }
 
                 const modelsToTry = [
                     activeModel,
@@ -295,11 +611,20 @@ export class AgentIntegrationService {
                             delete callConfig.thinkingConfig;
                         }
 
-                        responseStream = await aiInstance.models.generateContentStream({
+                        const initialStream = await aiInstance.models.generateContentStream({
                             model: candidateModel,
-                            contents: formattedContents,
+                            contents: safeContents,
                             config: callConfig
                         });
+                        const iterator = initialStream[Symbol.asyncIterator]();
+                        const firstResult = await iterator.next();
+                        const firstChunk = !firstResult.done ? firstResult.value : null;
+
+                        async function* wrappedStream() {
+                            if (firstChunk) yield firstChunk;
+                            for await (const chunk of iterator) yield chunk;
+                        }
+                        responseStream = wrappedStream();
                         activeModel = candidateModel;
 
                         if (activeModel !== originalRequestedModel) {
@@ -337,11 +662,20 @@ export class AgentIntegrationService {
                                     delete callConfig.thinkingConfig;
                                 }
 
-                                responseStream = await aiInstance.models.generateContentStream({
+                                const retryStream = await aiInstance.models.generateContentStream({
                                     model: candidateModel,
                                     contents: formattedContents,
                                     config: callConfig
                                 });
+                                const rIter = retryStream[Symbol.asyncIterator]();
+                                const rRes = await rIter.next();
+                                const rChunk = !rRes.done ? rRes.value : null;
+
+                                async function* wrappedRetryStream() {
+                                    if (rChunk) yield rChunk;
+                                    for await (const chunk of rIter) yield chunk;
+                                }
+                                responseStream = wrappedRetryStream();
                                 activeModel = candidateModel;
                                 break;
                             } catch (retryErr: any) {
@@ -352,6 +686,8 @@ export class AgentIntegrationService {
                         const isRecoverable = errText.includes('404') || errText.includes('503') || errText.includes('429') || 
                                               errText.includes('Not Found') || errText.includes('UNAVAILABLE') || 
                                               errText.includes('RESOURCE_EXHAUSTED') || errText.includes('Quota exceeded') ||
+                                              errText.includes('no longer available') || errText.includes('contents are required') ||
+                                              errText.includes('Incomplete JSON segment') ||
                                               isThoughtSigError;
                         const nextModel = uniqueModels[mIdx + 1];
                         const failureReason = errText.includes('404') || errText.includes('Not Found')
@@ -389,77 +725,143 @@ export class AgentIntegrationService {
                 let currentThoughtText = '';
                 let latestThoughtSignature: string | undefined = undefined;
 
-                for await (const chunk of responseStream) {
-                    if (chunk.usageMetadata) {
-                        lastUsageMetadata = chunk.usageMetadata;
-                    }
-
-                    const candidate = chunk.candidates?.[0];
-                    const rawParts = (candidate?.content?.parts as Array<Record<string, unknown>> | undefined) || [];
-
-                    for (const part of rawParts) {
-                        const sig = (part.thoughtSignature as string | undefined) ||
-                                    (part.thought_signature as string | undefined) ||
-                                    ((part.functionCall as Record<string, unknown> | undefined)?.thoughtSignature as string | undefined) ||
-                                    ((part.functionCall as Record<string, unknown> | undefined)?.thought_signature as string | undefined);
-                        if (sig) {
-                            latestThoughtSignature = sig;
+                try {
+                    for await (const chunk of responseStream) {
+                        if (chunk.usageMetadata) {
+                            lastUsageMetadata = chunk.usageMetadata;
                         }
 
-                        if (part.thought === true && typeof part.text === 'string') {
-                            currentThoughtText += part.text;
-                            sendEvent('thinking', part.text);
-                        }
+                        const candidate = chunk.candidates?.[0];
+                        const rawParts = (candidate?.content?.parts as Array<Record<string, unknown>> | undefined) || [];
 
-                        if (part.functionCall && typeof (part.functionCall as { name?: string }).name === 'string') {
-                            loopNeedsToolExecution = true;
-                            const fc = part.functionCall as { name: string; args?: Record<string, unknown> };
-                            currentFunctionCalls.push(fc);
+                        for (const part of rawParts) {
+                            const sig = (part.thoughtSignature as string | undefined) ||
+                                        (part.thought_signature as string | undefined) ||
+                                        ((part.functionCall as Record<string, unknown> | undefined)?.thoughtSignature as string | undefined) ||
+                                        ((part.functionCall as Record<string, unknown> | undefined)?.thought_signature as string | undefined);
+                            if (sig) {
+                                latestThoughtSignature = sig;
+                            }
 
-                            const partSig = sig || latestThoughtSignature;
-                            const preservedPart = {
-                                functionCall: fc,
-                                ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
-                            };
-                            currentFunctionCallParts.push(preservedPart);
-                        }
-                    }
+                            if (part.thought === true && typeof part.text === 'string') {
+                                currentThoughtText += part.text;
+                                sendEvent('thinking', part.text);
+                            }
 
-                    // Fallback to chunk.functionCalls helper getter if parts array didn't capture it
-                    if (chunk.functionCalls && chunk.functionCalls.length > 0) {
-                        loopNeedsToolExecution = true;
-                        for (const fc of chunk.functionCalls as Array<{ name: string; args?: Record<string, unknown> }>) {
-                            const alreadyCaptured = currentFunctionCalls.some(
-                                existing => existing.name === fc.name && JSON.stringify(existing.args) === JSON.stringify(fc.args)
-                            );
-                            if (!alreadyCaptured) {
+                            if (part.functionCall && typeof (part.functionCall as { name?: string }).name === 'string') {
+                                loopNeedsToolExecution = true;
+                                const fc = part.functionCall as { name: string; args?: Record<string, unknown> };
                                 currentFunctionCalls.push(fc);
-                                const sig = ((fc as Record<string, unknown>).thoughtSignature as string | undefined) ||
-                                            ((fc as Record<string, unknown>).thought_signature as string | undefined) ||
-                                            latestThoughtSignature;
+
+                                const partSig = sig || latestThoughtSignature;
                                 const preservedPart = {
                                     functionCall: fc,
-                                    ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+                                    ...(partSig ? { thoughtSignature: partSig, thought_signature: partSig } : {})
                                 };
                                 currentFunctionCallParts.push(preservedPart);
                             }
                         }
-                    }
 
-                    if (chunk.text) {
-                        currentModelText += chunk.text;
-                        sendEvent('text', chunk.text);
+                        // Fallback to chunk.functionCalls helper getter if parts array didn't capture it
+                        if (chunk.functionCalls && chunk.functionCalls.length > 0) {
+                            loopNeedsToolExecution = true;
+                            for (const fc of chunk.functionCalls as Array<{ name: string; args?: Record<string, unknown> }>) {
+                                const alreadyCaptured = currentFunctionCalls.some(
+                                    existing => existing.name === fc.name && JSON.stringify(existing.args) === JSON.stringify(fc.args)
+                                );
+                                if (!alreadyCaptured) {
+                                    currentFunctionCalls.push(fc);
+                                    const sig = ((fc as Record<string, unknown>).thoughtSignature as string | undefined) ||
+                                                ((fc as Record<string, unknown>).thought_signature as string | undefined) ||
+                                                latestThoughtSignature;
+                                    const preservedPart = {
+                                        functionCall: fc,
+                                        ...(sig ? { thoughtSignature: sig, thought_signature: sig } : {})
+                                    };
+                                    currentFunctionCallParts.push(preservedPart);
+                                }
+                            }
+                        }
+
+                        if (chunk.text) {
+                            currentModelText += chunk.text;
+                            sendEvent('text', chunk.text);
+                        }
+                    }
+                } catch (streamIterErr: unknown) {
+                    const iterErrStr = streamIterErr instanceof Error ? streamIterErr.message : String(streamIterErr);
+                    const isIncompleteJson = iterErrStr.includes('Incomplete JSON segment at the end');
+
+                    if (isIncompleteJson) {
+                        console.warn(`[AgentRuntime] Handled trailing SSE stream completion artifact (${iterErrStr}).`);
+                        // If model already produced text, thoughts, or function calls, treat stream as successfully completed
+                        if (currentModelText.trim().length > 0 || currentThoughtText.trim().length > 0 || currentFunctionCalls.length > 0) {
+                            console.log(`[AgentRuntime] Preserving generated output (${currentModelText.length} text chars, ${currentThoughtText.length} thought chars) prior to trailing SSE delimiter artifact.`);
+                        } else {
+                            // If stream broke before generating anything, provide user-visible message rather than crashing
+                            console.warn(`[AgentRuntime] Incomplete JSON encountered before any tokens received.`);
+                            currentModelText = 'The AI model stream connection closed unexpectedly before returning tokens. Please retry your prompt or switch to another model.';
+                            sendEvent('text', currentModelText);
+                        }
+                    } else {
+                        // If partial content was produced, preserve it and continue cleanly
+                        if (currentModelText.trim().length > 0 || currentThoughtText.trim().length > 0 || currentFunctionCalls.length > 0) {
+                            console.warn(`[AgentRuntime] Stream iteration interrupted (${iterErrStr}), preserving generated output.`);
+                        } else {
+                            throw streamIterErr;
+                        }
                     }
                 }
 
                 if (loopNeedsToolExecution) {
                     const toolResponseParts: any[] = [];
                     for (const fc of currentFunctionCalls) {
+                        if (activeExecution.cancelled || abortController.signal.aborted) {
+                            sendEvent('status', { message: 'Tool execution cancelled by user.' });
+                            break;
+                        }
                         appendSystemLog('AGENT_TOOL_CALL', `Agent invoked tool '${fc.name}'`, fc.args);
+                        if (request.sessionId) {
+                            di.agentSessionService.emitSessionEvent({
+                                type: 'tool_activity',
+                                sessionId: request.sessionId,
+                                workspaceId: request.workspaceId,
+                                timestamp: Date.now(),
+                                data: {
+                                    phase: 'call',
+                                    tool: fc.name,
+                                    args: fc.args
+                                }
+                            });
+                        }
                         if (execIntegration) {
                             try {
-                                const result = await execIntegration.executeTool(fc.name, fc.args);
+                                const result = await execIntegration.executeTool(fc.name, fc.args, {
+                                    executionId,
+                                    workspaceId: request.workspaceId,
+                                    sessionId: request.sessionId
+                                });
                                 appendSystemLog('AGENT_TOOL_SUCCESS', `Tool '${fc.name}' completed execution`);
+                                sendEvent('system_event', {
+                                    type: 'workspace_file_changed',
+                                    tool: fc.name,
+                                    workspaceId: request.workspaceId,
+                                    sessionId: request.sessionId
+                                });
+                                if (request.sessionId) {
+                                    di.agentSessionService.emitSessionEvent({
+                                        type: 'tool_activity',
+                                        sessionId: request.sessionId,
+                                        workspaceId: request.workspaceId,
+                                        timestamp: Date.now(),
+                                        data: {
+                                            phase: 'result',
+                                            tool: fc.name,
+                                            success: true,
+                                            result
+                                        }
+                                    });
+                                }
                                 toolResponseParts.push({
                                     functionResponse: {
                                         name: fc.name,
@@ -469,6 +871,20 @@ export class AgentIntegrationService {
                             } catch (err: any) {
                                 const errorMessage = err?.message || String(err) || "Tool execution error";
                                 appendSystemLog('AGENT_TOOL_ERROR', `Tool '${fc.name}' failed: ${errorMessage}`);
+                                if (request.sessionId) {
+                                    di.agentSessionService.emitSessionEvent({
+                                        type: 'tool_activity',
+                                        sessionId: request.sessionId,
+                                        workspaceId: request.workspaceId,
+                                        timestamp: Date.now(),
+                                        data: {
+                                            phase: 'result',
+                                            tool: fc.name,
+                                            success: false,
+                                            error: errorMessage
+                                        }
+                                    });
+                                }
                                 toolResponseParts.push({
                                     functionResponse: {
                                         name: fc.name,
@@ -496,6 +912,7 @@ export class AgentIntegrationService {
                         });
                     }
                     if (currentModelText) {
+                        accumulatedFinalText = currentModelText;
                         modelTurnParts.push({ text: currentModelText });
                     }
                     for (const fcp of currentFunctionCallParts) {
@@ -510,17 +927,22 @@ export class AgentIntegrationService {
                         modelTurnParts.push(partObj);
                     }
 
-                    formattedContents.push({
-                        role: 'model',
-                        parts: modelTurnParts
-                    });
-                    formattedContents.push({
-                        role: 'user',
-                        parts: toolResponseParts
-                    });
+                    if (modelTurnParts.length > 0) {
+                        formattedContents.push({
+                            role: 'model',
+                            parts: modelTurnParts
+                        });
+                    }
+                    if (toolResponseParts.length > 0) {
+                        formattedContents.push({
+                            role: 'user',
+                            parts: toolResponseParts
+                        });
+                    }
                     toolLoops++;
                 } else {
                     if (currentModelText) {
+                        accumulatedFinalText = currentModelText;
                         formattedContents.push({
                             role: 'model',
                             parts: [{ text: currentModelText }]
@@ -543,14 +965,63 @@ export class AgentIntegrationService {
                 });
             }
 
+            // Canonical persistence of assistant final message (ONE durable DB record)
+            if (request.sessionId && !activeExecution.cancelled) {
+                try {
+                    const asstMsgId = request.assistantMessageId || `asst-${executionId}`;
+                    const isAgent = (request.interactionType === 'AGENT') || Boolean(request.workspaceId);
+                    const savedMessage = await di.conversationMessageService.saveMessage({
+                        id: asstMsgId,
+                        sessionId: request.sessionId,
+                        userId: request.userId,
+                        role: 'model',
+                        messageRole: 'ASSISTANT',
+                        interactionType: request.interactionType || (isAgent ? 'AGENT' : 'CHAT'),
+                        messageKind: isAgent ? 'AGENT_RESPONSE' : 'CHAT_RESPONSE',
+                        responseCode: isAgent ? 'AGENT_FINAL' : 'CHAT_FINAL',
+                        surface: request.surface || (isAgent ? 'AGENT' : 'CHAT'),
+                        content: accumulatedFinalText,
+                        modelUsed: activeModel,
+                        executionId: executionId,
+                        planId: request.codingContext?.planContext?.planId,
+                        parentMessageId: request.userMessageId || `user-${executionId}`
+                    });
+                    sendEvent('message_saved', savedMessage);
+                } catch (saveErr) {
+                    console.warn('[AgentIntegrationService] Assistant message persistence notice:', saveErr);
+                }
+            }
+
+            if (request.sessionId && !activeExecution.cancelled) {
+                try {
+                    await di.agentSessionService.setStatus(request.sessionId, 'IDLE', request.userId);
+                } catch (statusErr) {
+                    console.warn('[AgentIntegrationService] Failed to set IDLE status:', statusErr);
+                }
+            }
+
             AgentAdapter.handleAgentResponse(res, { type: 'end', data: {} });
         } catch (e: any) {
-            console.error('[AgentRuntime ERROR]:', e);
             const errStr = e?.message || String(e) || '';
+            const isIncompleteJson = errStr.includes('Incomplete JSON segment at the end');
+            if (isIncompleteJson) {
+                console.warn('[AgentRuntime] Handled stream completion error gracefully:', errStr);
+            } else {
+                console.error('[AgentRuntime ERROR]:', e);
+            }
+            if (request.sessionId && !activeExecution.cancelled) {
+                try {
+                    await di.agentSessionService.setStatus(request.sessionId, 'ERROR', request.userId);
+                } catch (statusErr) {
+                    console.warn('[AgentIntegrationService] Failed to set ERROR status:', statusErr);
+                }
+            }
             const is503 = (errStr.includes('503') || errStr.includes('UNAVAILABLE') || errStr.includes('RESOURCE_EXHAUSTED')) && !errStr.includes('No such file') && !errStr.includes('ENOENT');
             let friendlyError = e.message || 'An unexpected error occurred in backend chat pipeline.';
             if (is503) {
                 friendlyError = 'AI Model cluster is currently experiencing extremely high demand. We cascaded through all fallback models but they are currently unavailable. Please try again shortly.';
+            } else if (isIncompleteJson) {
+                friendlyError = 'The model streaming connection closed prematurely or encountered a network drop. Please retry your request.';
             } else if (typeof friendlyError === 'string' && friendlyError.includes('Missing Authentication header')) {
                 friendlyError = "API Error (401): Missing Authentication header. If you are using Google Gemini natively, please ensure your Custom Base URL in Key Settings is empty. If you are using OpenRouter, ensure your key is valid and Provider is set to OpenRouter.";
             } else if (typeof friendlyError === 'string' && friendlyError.includes('User not found')) {
@@ -558,9 +1029,41 @@ export class AgentIntegrationService {
             } else if (typeof friendlyError === 'string' && friendlyError.includes('API key not valid')) {
                 friendlyError = "API Error (400): Google Gemini API key not valid. Please ensure your API key is correct in Settings.";
             }
+
+            // Canonical persistence of error assistant message
+            if (request.sessionId && !activeExecution.cancelled) {
+                try {
+                    const asstMsgId = request.assistantMessageId || `asst-${executionId}`;
+                    const isAgent = (request.interactionType === 'AGENT') || Boolean(request.workspaceId);
+                    const savedError = await di.conversationMessageService.saveMessage({
+                        id: asstMsgId,
+                        sessionId: request.sessionId,
+                        userId: request.userId,
+                        role: 'model',
+                        messageRole: 'ASSISTANT',
+                        interactionType: request.interactionType || (isAgent ? 'AGENT' : 'CHAT'),
+                        messageKind: 'ERROR',
+                        responseCode: isAgent ? 'AGENT_ERROR' : 'CHAT_ERROR',
+                        surface: request.surface || (isAgent ? 'AGENT' : 'CHAT'),
+                        content: friendlyError,
+                        modelUsed: activeModel,
+                        executionId: executionId,
+                        planId: request.codingContext?.planContext?.planId,
+                        parentMessageId: request.userMessageId || `user-${executionId}`
+                    });
+                    sendEvent('message_saved', savedError);
+                } catch (saveErr) {
+                    console.warn('[AgentIntegrationService] Error message persistence notice:', saveErr);
+                }
+            }
+
             sendEvent('error', friendlyError);
             AgentAdapter.handleAgentResponse(res, { type: 'end', data: {} });
         } finally {
+            AgentIntegrationService.activeExecutions.delete(executionId);
+            if (!activeExecution.cancelled) {
+                await runtime.completeExecution(executionId).catch(() => {});
+            }
             res.end();
         }
     }

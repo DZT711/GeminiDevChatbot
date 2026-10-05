@@ -1,8 +1,20 @@
+import * as fs from 'fs';
+import * as path from 'path';
+import { exec, spawn } from 'child_process';
 import { Tool } from '../../../../agent/tools/Tool.js';
 import { ToolDescriptor } from '../../../../agent/tools/ToolDescriptor.js';
 import { ToolLifecycleState } from '../../../../agent/tools/ToolLifecycle.js';
 import { ExecutionContext } from '../../../../agent/runtime/ExecutionContext.js';
 import { txWithUser } from '../../../controllers/utils.js';
+import { globalWorkspaceService } from '../../workspace/WorkspaceService.js';
+import { activeCommandRegistry } from '../../../workspace/activeCommandRegistry.js';
+import { di } from '../../../di.js';
+import { TerminalEventData } from '../../../../agent/session/AgentSessionEvents.js';
+
+function isLocalPath(p?: string): boolean {
+    if (!p) return false;
+    return path.isAbsolute(p) || p.startsWith('.') || fs.existsSync(p);
+}
 
 export class BaseToolAdapter implements Tool {
     constructor(private descriptor: ToolDescriptor, private executor: (input: any, context: ExecutionContext) => Promise<any>) {}
@@ -14,7 +26,7 @@ export class BaseToolAdapter implements Tool {
 }
 
 export class ToolExecutionAdapter {
-    constructor(private payload: any, private sendEvent: (type: string, data: any) => void) {}
+    constructor(private payload: any = {}, private sendEvent: (type: string, data: any) => void = () => {}) {}
 
     createProposeKnowledgeTool(): Tool {
         const descriptor: ToolDescriptor = {
@@ -264,5 +276,814 @@ export class ToolExecutionAdapter {
                 return { status: "error", error: errorMsg };
             }
         });
+    }
+
+    createViewFileTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'view_file', version: '1.0.0', description: 'Read a file from workspace' },
+            schema: { inputSchema: { type: 'object', properties: { filePath: { type: 'string' }, TargetFile: { type: 'string' }, AbsolutePath: { type: 'string' }, StartLine: { type: 'number' }, EndLine: { type: 'number' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const targetPath = args?.filePath || args?.TargetFile || args?.AbsolutePath || args?.path;
+            if (!targetPath) {
+                return { status: "error", error: "Missing filePath or TargetFile parameter" };
+            }
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            this.sendEvent('status', { message: `📖 Reading file: ${targetPath}` });
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const resolvedPath = path.isAbsolute(targetPath) ? targetPath : path.resolve(wsId!, targetPath);
+                    if (!fs.existsSync(resolvedPath)) {
+                        return { status: "error", error: `File not found: ${targetPath}`, exists: false, content: "" };
+                    }
+                    let content = fs.readFileSync(resolvedPath, 'utf-8');
+                    const stat = fs.statSync(resolvedPath);
+                    if (args?.StartLine !== undefined || args?.EndLine !== undefined) {
+                        const lines = content.split('\n');
+                        const start = Math.max(1, args.StartLine ?? 1);
+                        const end = args.EndLine ? Math.min(lines.length, args.EndLine) : lines.length;
+                        content = lines.slice(start - 1, end).join('\n');
+                    }
+                    return {
+                        status: "success",
+                        path: targetPath,
+                        name: path.basename(resolvedPath),
+                        content,
+                        size: stat.size,
+                        exists: true
+                    };
+                } catch (err: any) {
+                    return { status: "error", error: err.message, exists: false, content: "" };
+                }
+            }
+
+            try {
+                const file = await globalWorkspaceService.readFile(userId, wsId, targetPath);
+                let content = file.content;
+                if (args?.StartLine !== undefined || args?.EndLine !== undefined) {
+                    const lines = content.split('\n');
+                    const start = Math.max(1, args.StartLine ?? 1);
+                    const end = args.EndLine ? Math.min(lines.length, args.EndLine) : lines.length;
+                    content = lines.slice(start - 1, end).join('\n');
+                }
+                return {
+                    status: "success",
+                    path: file.path,
+                    name: file.name,
+                    content,
+                    size: file.size,
+                    language: file.language,
+                    exists: true
+                };
+            } catch (err: any) {
+                return { status: "error", error: err.message, exists: false, content: "" };
+            }
+        });
+    }
+
+    createCreateFileTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'create_file', version: '1.0.0', description: 'Create a new file in workspace' },
+            schema: { inputSchema: { type: 'object', properties: { TargetFile: { type: 'string' }, filePath: { type: 'string' }, Content: { type: 'string' }, content: { type: 'string' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const targetPath = args?.TargetFile || args?.filePath || args?.path;
+            if (!targetPath) {
+                return { status: "error", error: "Missing TargetFile or filePath parameter" };
+            }
+            const content = args?.Content ?? args?.content ?? "";
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            this.sendEvent('status', { message: `📝 Creating file: ${targetPath}` });
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const resolvedPath = path.isAbsolute(targetPath) ? targetPath : path.resolve(wsId!, targetPath);
+                    fs.mkdirSync(path.dirname(resolvedPath), { recursive: true });
+                    fs.writeFileSync(resolvedPath, String(content), 'utf-8');
+                    const stat = fs.statSync(resolvedPath);
+
+                    const effSessionId = this.payload?.sessionId || context?.sessionId;
+                    const effExecutionId = this.payload?.executionId || context?.executionId;
+                    if (effSessionId && wsId) {
+                        try {
+                            await di.changeSetService.recordFileMutation({
+                                sessionId: effSessionId,
+                                workspaceId: wsId,
+                                executionId: effExecutionId,
+                                path: targetPath,
+                                operation: 'CREATE',
+                                beforeContent: '',
+                                afterContent: String(content)
+                            });
+                        } catch (e) {
+                            console.warn('[ToolExecutionAdapter] Failed to record changeSet for create_file:', e);
+                        }
+                    }
+
+                    return {
+                        status: "success",
+                        path: targetPath,
+                        size: stat.size,
+                        created: true
+                    };
+                } catch (err: any) {
+                    return { status: "error", error: err.message };
+                }
+            }
+
+            try {
+                const saved = await globalWorkspaceService.writeFile(
+                    userId,
+                    wsId,
+                    targetPath,
+                    String(content),
+                    'AGENT',
+                    { taskId: context.taskId, executionId: context.executionId }
+                );
+
+                const effSessionId = this.payload?.sessionId || context?.sessionId;
+                const effExecutionId = this.payload?.executionId || context?.executionId;
+                if (effSessionId && wsId) {
+                    try {
+                        await di.changeSetService.recordFileMutation({
+                            sessionId: effSessionId,
+                            workspaceId: wsId,
+                            executionId: effExecutionId,
+                            path: targetPath,
+                            operation: 'CREATE',
+                            beforeContent: '',
+                            afterContent: String(content)
+                        });
+                    } catch (e) {
+                        console.warn('[ToolExecutionAdapter] Failed to record changeSet for create_file:', e);
+                    }
+                }
+
+                return {
+                    status: "success",
+                    path: saved.path,
+                    size: saved.size,
+                    created: true
+                };
+            } catch (err: any) {
+                return { status: "error", error: err.message };
+            }
+        });
+    }
+
+    createEditFileTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'edit_file', version: '1.0.0', description: 'Edit or modify a file in workspace' },
+            schema: { inputSchema: { type: 'object', properties: { TargetFile: { type: 'string' }, filePath: { type: 'string' }, TargetContent: { type: 'string' }, ReplacementContent: { type: 'string' }, Content: { type: 'string' }, instruction: { type: 'string' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const targetPath = args?.TargetFile || args?.filePath || args?.path;
+            if (!targetPath) {
+                return { status: "error", error: "Missing TargetFile or filePath parameter" };
+            }
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            this.sendEvent('status', { message: `✏️ Editing file: ${targetPath}` });
+
+            const targetContent = args?.TargetContent ?? args?.targetContent;
+            const replacementContent = args?.ReplacementContent ?? args?.replacementContent;
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const resolvedPath = path.isAbsolute(targetPath) ? targetPath : path.resolve(wsId!, targetPath);
+                    if (!fs.existsSync(resolvedPath)) {
+                        return { status: "error", error: `File not found: ${targetPath}` };
+                    }
+                    const beforeContent = fs.readFileSync(resolvedPath, 'utf-8');
+                    let content = beforeContent;
+                    if (targetContent !== undefined && replacementContent !== undefined) {
+                        if (!content.includes(targetContent)) {
+                            return { status: "error", error: `TargetContent not found in file: ${targetPath}` };
+                        }
+                        content = content.replace(targetContent, replacementContent);
+                    } else if (args?.Content !== undefined || args?.content !== undefined) {
+                        content = String(args?.Content ?? args?.content);
+                    }
+                    fs.writeFileSync(resolvedPath, content, 'utf-8');
+                    const stat = fs.statSync(resolvedPath);
+
+                    const effSessionId = this.payload?.sessionId || context?.sessionId;
+                    const effExecutionId = this.payload?.executionId || context?.executionId;
+                    if (effSessionId && wsId) {
+                        try {
+                            await di.changeSetService.recordFileMutation({
+                                sessionId: effSessionId,
+                                workspaceId: wsId,
+                                executionId: effExecutionId,
+                                path: targetPath,
+                                operation: 'MODIFY',
+                                beforeContent,
+                                afterContent: content,
+                                metadata: { instruction: args?.instruction }
+                            });
+                        } catch (e) {
+                            console.warn('[ToolExecutionAdapter] Failed to record changeSet for edit_file:', e);
+                        }
+                    }
+
+                    return {
+                        status: "success",
+                        path: targetPath,
+                        modified: true,
+                        size: stat.size
+                    };
+                } catch (err: any) {
+                    return { status: "error", error: err.message };
+                }
+            }
+
+            try {
+                const existing = await globalWorkspaceService.readFile(userId, wsId, targetPath);
+                const beforeContent = existing.content;
+                let newContent = existing.content;
+
+                if (targetContent !== undefined && replacementContent !== undefined) {
+                    if (!newContent.includes(targetContent)) {
+                        return { status: "error", error: `TargetContent not found in file: ${targetPath}` };
+                    }
+                    newContent = newContent.replace(targetContent, replacementContent);
+                } else if (args?.Content !== undefined || args?.content !== undefined) {
+                    newContent = String(args?.Content ?? args?.content);
+                }
+
+                const saved = await globalWorkspaceService.writeFile(
+                    userId,
+                    wsId,
+                    targetPath,
+                    newContent,
+                    'AGENT',
+                    { taskId: context.taskId, executionId: context.executionId }
+                );
+
+                const effSessionId = this.payload?.sessionId || context?.sessionId;
+                const effExecutionId = this.payload?.executionId || context?.executionId;
+                if (effSessionId && wsId) {
+                    try {
+                        await di.changeSetService.recordFileMutation({
+                            sessionId: effSessionId,
+                            workspaceId: wsId,
+                            executionId: effExecutionId,
+                            path: targetPath,
+                            operation: 'MODIFY',
+                            beforeContent,
+                            afterContent: newContent,
+                            metadata: { instruction: args?.instruction }
+                        });
+                    } catch (e) {
+                        console.warn('[ToolExecutionAdapter] Failed to record changeSet for edit_file:', e);
+                    }
+                }
+
+                return {
+                    status: "success",
+                    path: saved.path,
+                    modified: true,
+                    size: saved.size
+                };
+            } catch (err: any) {
+                return { status: "error", error: err.message };
+            }
+        });
+    }
+
+    createDeleteFileTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'delete_file', version: '1.0.0', description: 'Delete a file in workspace' },
+            schema: { inputSchema: { type: 'object', properties: { TargetFile: { type: 'string' }, filePath: { type: 'string' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const targetPath = args?.TargetFile || args?.filePath || args?.path;
+            if (!targetPath) {
+                return { status: "error", error: "Missing TargetFile or filePath parameter" };
+            }
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            this.sendEvent('status', { message: `🗑️ Deleting file: ${targetPath}` });
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const resolvedPath = path.isAbsolute(targetPath) ? targetPath : path.resolve(wsId!, targetPath);
+                    let beforeContent = '';
+                    if (fs.existsSync(resolvedPath)) {
+                        beforeContent = fs.readFileSync(resolvedPath, 'utf-8');
+                        fs.unlinkSync(resolvedPath);
+                    }
+
+                    const effSessionId = this.payload?.sessionId || context?.sessionId;
+                    const effExecutionId = this.payload?.executionId || context?.executionId;
+                    if (effSessionId && wsId) {
+                        try {
+                            await di.changeSetService.recordFileMutation({
+                                sessionId: effSessionId,
+                                workspaceId: wsId,
+                                executionId: effExecutionId,
+                                path: targetPath,
+                                operation: 'DELETE',
+                                beforeContent,
+                                afterContent: ''
+                            });
+                        } catch (e) {
+                            console.warn('[ToolExecutionAdapter] Failed to record changeSet for delete_file:', e);
+                        }
+                    }
+
+                    return {
+                        status: "success",
+                        path: targetPath,
+                        deleted: true
+                    };
+                } catch (err: any) {
+                    return { status: "error", error: err.message };
+                }
+            }
+
+            try {
+                let beforeContent = '';
+                try {
+                    const ex = await globalWorkspaceService.readFile(userId, wsId, targetPath);
+                    beforeContent = ex.content;
+                } catch {}
+
+                const res = await globalWorkspaceService.deleteFile(userId, wsId, targetPath, 'AGENT');
+
+                const effSessionId = this.payload?.sessionId || context?.sessionId;
+                const effExecutionId = this.payload?.executionId || context?.executionId;
+                if (effSessionId && wsId) {
+                    try {
+                        await di.changeSetService.recordFileMutation({
+                            sessionId: effSessionId,
+                            workspaceId: wsId,
+                            executionId: effExecutionId,
+                            path: targetPath,
+                            operation: 'DELETE',
+                            beforeContent,
+                            afterContent: ''
+                        });
+                    } catch (e) {
+                        console.warn('[ToolExecutionAdapter] Failed to record changeSet for delete_file:', e);
+                    }
+                }
+
+                return {
+                    status: "success",
+                    path: res.path,
+                    deleted: true
+                };
+            } catch (err: any) {
+                return { status: "error", error: err.message };
+            }
+        });
+    }
+
+    createListDirTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'list_dir', version: '1.0.0', description: 'List files in workspace directory' },
+            schema: { inputSchema: { type: 'object', properties: { DirectoryPath: { type: 'string' }, dirPath: { type: 'string' }, path: { type: 'string' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const dirPath = args?.DirectoryPath || args?.dirPath || args?.path || '.';
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            this.sendEvent('status', { message: `📁 Listing directory: ${dirPath || '/'}` });
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const resolvedDir = path.isAbsolute(dirPath) ? dirPath : path.resolve(wsId!, dirPath);
+                    if (!fs.existsSync(resolvedDir)) {
+                        return { status: "error", error: `Directory not found: ${dirPath}` };
+                    }
+                    const dirents = fs.readdirSync(resolvedDir, { withFileTypes: true });
+                    const entries = dirents.map(d => {
+                        const full = path.join(resolvedDir, d.name);
+                        let size = 0;
+                        try { size = fs.statSync(full).size; } catch {}
+                        return {
+                            name: d.name,
+                            path: path.relative(wsId!, full),
+                            isDirectory: d.isDirectory(),
+                            size
+                        };
+                    });
+                    return {
+                        status: "success",
+                        path: dirPath,
+                        entries,
+                        total: entries.length
+                    };
+                } catch (err: any) {
+                    return { status: "error", error: err.message };
+                }
+            }
+
+            try {
+                const listing = await globalWorkspaceService.listFiles(userId, wsId, dirPath);
+                return {
+                    status: "success",
+                    path: listing.path,
+                    entries: listing.entries,
+                    total: listing.total
+                };
+            } catch (err: any) {
+                return { status: "error", error: err.message };
+            }
+        });
+    }
+
+    createRunCommandTool(workspaceId?: string): Tool {
+        const descriptor: ToolDescriptor = {
+            metadata: { name: 'run_command', version: '1.0.0', description: 'Execute a terminal command in workspace' },
+            schema: { inputSchema: { type: 'object', properties: { CommandLine: { type: 'string' }, command: { type: 'string' }, Cwd: { type: 'string' }, cwd: { type: 'string' } } } },
+            permissions: [],
+            capabilities: []
+        };
+        return new BaseToolAdapter(descriptor, async (args: any, context: ExecutionContext) => {
+            const command = args?.CommandLine || args?.command;
+            if (!command) {
+                return { status: "error", error: "Missing CommandLine or command parameter" };
+            }
+            const wsId = workspaceId || context.workspaceId || context.workspaceRef?.id;
+            const userId = this.payload?.id || 'default_user';
+            const cwd = args?.Cwd || args?.cwd;
+            const timeoutMs = args?.WaitMsBeforeAsync || args?.timeoutMs || 30000;
+            const executionId = context.executionId || (context as any)?.id || (this.payload as any)?.executionId;
+            const sessionId = (context as any)?.sessionId || (this.payload as any)?.sessionId;
+
+            this.sendEvent('status', { message: `💻 Running command: ${command}` });
+
+            const emitTerminal = (data: TerminalEventData): void => {
+                if (sessionId) {
+                    try {
+                        di.agentSessionService.emitSessionEvent({
+                            type: 'terminal_event',
+                            sessionId,
+                            executionId,
+                            workspaceId: wsId,
+                            timestamp: Date.now(),
+                            data: {
+                                ...data,
+                                command,
+                                executionId
+                            }
+                        });
+                    } catch {
+                        // Ignore event emission failures
+                    }
+                }
+            };
+
+            // 1. Emit terminal_started event
+            emitTerminal({
+                type: 'terminal_started',
+                command,
+                cwd: cwd || wsId,
+                executionId
+            });
+
+            const startTime = Date.now();
+
+            if (isLocalPath(wsId)) {
+                try {
+                    const execCwd = cwd ? (path.isAbsolute(cwd) ? cwd : path.resolve(wsId!, cwd)) : wsId;
+                    const res = await new Promise<{ stdout: string; stderr: string; exitCode: number; isAborted?: boolean; isTimeout?: boolean }>((resolve) => {
+                        let stdout = '';
+                        let stderr = '';
+                        let resolved = false;
+
+                        const child = spawn('bash', ['-c', command], {
+                            cwd: execCwd,
+                            detached: true
+                        });
+
+                        const procKey = executionId || `cmd_local_${Date.now()}`;
+                        activeCommandRegistry.register({
+                            sessionId: procKey,
+                            executionId,
+                            workspaceId: wsId,
+                            child,
+                            startedAt: Date.now(),
+                            sendInput: (input: string) => {
+                                if (child.stdin && child.stdin.writable) {
+                                    child.stdin.write(input.endsWith('\n') ? input : `${input}\n`);
+                                    return true;
+                                }
+                                return false;
+                            },
+                            abort: () => {
+                                try {
+                                    if (child.pid) process.kill(-child.pid, 'SIGINT');
+                                    else child.kill('SIGINT');
+                                    setTimeout(() => {
+                                        try {
+                                            if (child.pid && !child.killed) process.kill(-child.pid, 'SIGKILL');
+                                        } catch {
+                                            // ignore
+                                        }
+                                    }, 1000);
+                                    return true;
+                                } catch {
+                                    return false;
+                                }
+                            }
+                        });
+
+                        let isTimedOut = false;
+                        const finishProc = (code: number | null, sig: string | null): void => {
+                            if (resolved) return;
+                            resolved = true;
+                            activeCommandRegistry.unregister(procKey);
+                            let finalExitCode = code ?? 0;
+                            let finalAborted = false;
+                            let finalTimeout = false;
+                            if (isTimedOut || code === 124) {
+                                finalExitCode = 124;
+                                finalTimeout = true;
+                                if (!stderr.includes('timed out')) {
+                                    stderr += (stderr ? '\n' : '') + 'Command timed out (exceeded time limit)';
+                                }
+                            } else if (sig === 'SIGINT' || sig === 'SIGTERM' || code === 130) {
+                                finalExitCode = 130;
+                                finalAborted = true;
+                            }
+                            resolve({
+                                stdout,
+                                stderr,
+                                exitCode: finalExitCode,
+                                isAborted: finalAborted,
+                                isTimeout: finalTimeout
+                            });
+                        };
+
+                        child.stdout?.on('data', (chunk) => {
+                            const text = chunk.toString();
+                            stdout += text;
+                            emitTerminal({
+                                type: 'terminal_output',
+                                stream: 'stdout',
+                                chunk: text,
+                                line: text
+                            });
+                        });
+
+                        child.stderr?.on('data', (chunk) => {
+                            const text = chunk.toString();
+                            stderr += text;
+                            emitTerminal({
+                                type: 'terminal_output',
+                                stream: 'stderr',
+                                chunk: text,
+                                line: text
+                            });
+                        });
+
+                        child.on('close', (code, sig) => finishProc(code, sig));
+                        child.on('error', (err) => {
+                            stderr += `\nError: ${err.message}\n`;
+                            finishProc(1, null);
+                        });
+
+                        if (timeoutMs > 0) {
+                            setTimeout(() => {
+                                if (!resolved) {
+                                    isTimedOut = true;
+                                    try {
+                                        if (child.pid) process.kill(-child.pid, 'SIGTERM');
+                                    } catch {
+                                        // ignore
+                                    }
+                                }
+                            }, timeoutMs);
+                        }
+                    });
+
+                    const durationMs = Date.now() - startTime;
+                    const isSuccess = res.exitCode === 0;
+
+                    emitTerminal({
+                        type: isSuccess ? 'terminal_exit' : 'terminal_error',
+                        exitCode: res.exitCode,
+                        stdout: res.stdout,
+                        stderr: res.stderr,
+                        durationMs,
+                        isAborted: res.exitCode === 130 || res.isAborted,
+                        isTimeout: res.exitCode === 124 || res.isTimeout,
+                        error: isSuccess ? undefined : (res.stderr || `Command exited with code ${res.exitCode}`)
+                    });
+
+                    return {
+                        status: isSuccess ? "success" : "error",
+                        exitCode: res.exitCode,
+                        stdout: res.stdout,
+                        stderr: res.stderr,
+                        isAborted: res.exitCode === 130 || res.isAborted,
+                        isTimeout: res.exitCode === 124 || res.isTimeout,
+                        error: isSuccess ? undefined : (res.stderr || `Command exited with code ${res.exitCode}`)
+                    };
+                } catch (err: any) {
+                    emitTerminal({
+                        type: 'terminal_error',
+                        exitCode: 1,
+                        error: err.message,
+                        stderr: err.message
+                    });
+                    return { status: "error", error: err.message, exitCode: 1, stdout: '', stderr: err.message };
+                }
+            }
+
+            try {
+                const res = await globalWorkspaceService.runCommand(userId, wsId, command, {
+                    cwd,
+                    timeoutMs,
+                    sessionId: executionId || sessionId,
+                    onStdout: (chunk: string) => {
+                        emitTerminal({
+                            type: 'terminal_output',
+                            stream: 'stdout',
+                            chunk,
+                            line: chunk
+                        });
+                    },
+                    onStderr: (chunk: string) => {
+                        emitTerminal({
+                            type: 'terminal_output',
+                            stream: 'stderr',
+                            chunk,
+                            line: chunk
+                        });
+                    }
+                });
+
+                const durationMs = Date.now() - startTime;
+                const isSuccess = res.exitCode === 0;
+                const isAborted = res.exitCode === 130 || (res as any).isAborted;
+                const isTimeout = res.exitCode === 124 || (res as any).isTimeout;
+
+                emitTerminal({
+                    type: isSuccess ? 'terminal_exit' : 'terminal_error',
+                    exitCode: res.exitCode,
+                    stdout: res.stdout,
+                    stderr: res.stderr,
+                    durationMs,
+                    isAborted,
+                    isTimeout,
+                    error: isSuccess ? undefined : (res.stderr || `Command exited with code ${res.exitCode}`)
+                });
+
+                return {
+                    status: isSuccess ? "success" : "error",
+                    exitCode: res.exitCode,
+                    stdout: res.stdout,
+                    stderr: res.stderr,
+                    isAborted,
+                    isTimeout,
+                    error: isSuccess ? undefined : (res.stderr || `Command exited with code ${res.exitCode}`)
+                };
+            } catch (err: any) {
+                emitTerminal({
+                    type: 'terminal_error',
+                    exitCode: 1,
+                    error: err.message,
+                    stderr: err.message
+                });
+                return { status: "error", error: err.message, exitCode: 1, stdout: '', stderr: err.message };
+            }
+        });
+    }
+
+    public async executeTool(
+        name: string,
+        args: any,
+        workspaceDirOrId?: string,
+        context?: any
+    ): Promise<{ success: boolean; output?: any; error?: string }> {
+        const wsId = workspaceDirOrId || (typeof this.payload === 'string' ? this.payload : this.payload?.workspaceId);
+        const dummyContext: ExecutionContext = context || {
+            executionId: (this.payload as any)?.executionId || `exec_${Date.now()}`,
+            sessionId: (this.payload as any)?.sessionId,
+            taskId: `task_${Date.now()}`,
+            workspaceId: wsId,
+            scope: { permissions: [], allowedTools: ['*'] }
+        };
+        if (!dummyContext.workspaceId) {
+            dummyContext.workspaceId = wsId;
+        }
+        if (!(dummyContext as any).sessionId && (this.payload as any)?.sessionId) {
+            (dummyContext as any).sessionId = (this.payload as any).sessionId;
+        }
+
+        // Notify tool call phase
+        this.sendEvent('tool_activity', {
+            phase: 'call',
+            tool: name,
+            args
+        });
+        if (this.payload && typeof this.payload.emitSessionEvent === 'function') {
+            this.payload.emitSessionEvent({
+                type: 'tool_activity',
+                sessionId: this.payload.sessionId || 'active_session',
+                workspaceId: wsId,
+                timestamp: Date.now(),
+                data: {
+                    phase: 'call',
+                    tool: name,
+                    args
+                }
+            });
+        }
+
+        let tool: Tool;
+        switch (name) {
+            case 'view_file':
+            case 'read_file':
+                tool = this.createViewFileTool(wsId);
+                break;
+            case 'create_file':
+                tool = this.createCreateFileTool(wsId);
+                break;
+            case 'edit_file':
+                tool = this.createEditFileTool(wsId);
+                break;
+            case 'delete_file':
+                tool = this.createDeleteFileTool(wsId);
+                break;
+            case 'list_dir':
+                tool = this.createListDirTool(wsId);
+                break;
+            case 'run_command':
+                tool = this.createRunCommandTool(wsId);
+                break;
+            case 'execute_code':
+                tool = this.createExecuteCodeTool();
+                break;
+            case 'proposeKnowledge':
+                tool = this.createProposeKnowledgeTool();
+                break;
+            case 'read_github_repo':
+                tool = this.createReadGithubRepoTool();
+                break;
+            default:
+                throw new Error(`Unknown tool: ${name}`);
+        }
+
+        const rawResult: any = await tool.execute(dummyContext, args);
+        const hasExitError = rawResult?.exitCode !== undefined && rawResult.exitCode !== 0;
+        const isSuccess = rawResult?.status !== 'error' && !rawResult?.error && !hasExitError;
+        let output: any = rawResult;
+        if (name === 'view_file' || name === 'read_file') {
+            output = rawResult?.content !== undefined ? rawResult.content : rawResult;
+        } else if (name === 'list_dir') {
+            output = rawResult?.entries !== undefined ? rawResult.entries : rawResult;
+        } else if (name === 'run_command') {
+            output = rawResult?.stdout || rawResult?.stderr || rawResult;
+        }
+
+        const failureError = isSuccess ? undefined : (rawResult?.error || rawResult?.stderr || (hasExitError ? `Command failed with exit code ${rawResult.exitCode}` : undefined));
+
+        // Notify tool result phase
+        this.sendEvent('tool_activity', {
+            phase: 'result',
+            tool: name,
+            success: isSuccess,
+            result: output,
+            error: failureError
+        });
+        if (this.payload && typeof this.payload.emitSessionEvent === 'function') {
+            this.payload.emitSessionEvent({
+                type: 'tool_activity',
+                sessionId: this.payload.sessionId || 'active_session',
+                workspaceId: wsId,
+                timestamp: Date.now(),
+                data: {
+                    phase: 'result',
+                    tool: name,
+                    success: isSuccess,
+                    result: output,
+                    error: failureError
+                }
+            });
+        }
+
+        return {
+            success: isSuccess,
+            output,
+            error: failureError
+        };
     }
 }

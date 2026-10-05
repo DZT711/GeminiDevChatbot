@@ -5,6 +5,8 @@ import { globalWorkspaceService, FileProvenanceRecord } from '../services/worksp
 import { GoalPlanningResult } from '../services/agentIntegration/planning/GoalPlanningTypes.js';
 import { PlanExecutionApproval } from '../services/agentIntegration/planning/PlanExecutionService.js';
 import { formatAgentError } from '../utils/agentErrorFormatter.js';
+import { AgentIntegrationService } from '../services/agentIntegration/AgentIntegrationService.js';
+import { di } from '../di.js';
 
 export const router = express.Router();
 
@@ -408,12 +410,13 @@ router.post('/workspace/command/abort', async (req, res) => {
 router.post('/workspace/execute', async (req, res) => {
   try {
     const userId = await resolveUserId(req);
-    const { planningResult, approval, workspaceId, apiKey, model } = req.body as {
+    const { planningResult, approval, workspaceId, apiKey, model, sessionId } = req.body as {
       planningResult: GoalPlanningResult;
       approval: PlanExecutionApproval;
       workspaceId?: string;
       apiKey?: string;
       model?: string;
+      sessionId?: string;
     };
 
     if (!planningResult || !planningResult.plan) {
@@ -431,7 +434,8 @@ router.post('/workspace/execute', async (req, res) => {
       approval,
       workspaceId,
       apiKey,
-      model
+      model,
+      sessionId
     });
 
     const diagnosis = !summary.success && summary.error ? formatAgentError(summary.error) : undefined;
@@ -458,14 +462,40 @@ router.post('/workspace/execute', async (req, res) => {
 router.post('/workspace/stop', async (req, res) => {
   try {
     const userId = await resolveUserId(req);
-    const { executionId } = req.body;
+    const { executionId, sessionId, workspaceId } = req.body;
 
-    if (!executionId) {
-      return res.status(400).json({ error: 'executionId is required' });
+    if (!executionId && !sessionId && !workspaceId) {
+      return res.status(400).json({ error: 'executionId, sessionId, or workspaceId is required' });
     }
 
-    const stopped = globalWorkspaceService.stopExecution(userId, executionId);
-    res.json({ success: stopped, executionId, message: stopped ? 'Execution aborted' : 'Execution not active' });
+    // 1. Authoritatively stop on running AgentRuntime / Interactive Coding Loop
+    const runtimeStopped = AgentIntegrationService.stopExecution({ executionId, sessionId, workspaceId });
+
+    // 2. Stop plan execution if running in globalWorkspaceService
+    let wsStopped = false;
+    if (executionId) {
+      wsStopped = globalWorkspaceService.stopExecution(userId, executionId);
+    }
+
+    // 3. Update session status to PAUSED and emit terminal event if sessionId or workspaceId given
+    if (sessionId) {
+      await di.agentSessionService.cancelSession(sessionId, userId, 'Execution stopped by user');
+    } else if (workspaceId) {
+      const activeSession = await di.agentSessionService.findSessionByWorkspace(workspaceId, userId);
+      if (activeSession) {
+        await di.agentSessionService.cancelSession(activeSession.sessionId, userId, 'Execution stopped by user');
+      }
+    }
+
+    const stopped = runtimeStopped || wsStopped;
+    res.json({
+      success: true,
+      stopped,
+      executionId,
+      sessionId,
+      workspaceId,
+      message: stopped ? 'Execution aborted' : 'Stop signal processed'
+    });
   } catch (err: any) {
     console.error('[WorkspaceController] Error stopping execution:', err);
     res.status(500).json({ error: err.message || 'Failed to stop execution' });
@@ -544,5 +574,95 @@ router.get('/workspace/audit', async (req, res) => {
   } catch (err: any) {
     console.error('[WorkspaceController] Error getting audit logs:', err);
     res.status(500).json({ error: err.message || 'Failed to retrieve audit log' });
+  }
+});
+
+/**
+ * GET /api/workspace/changesets
+ * List change sets filtered by sessionId or workspaceId
+ */
+router.get('/workspace/changesets', async (req, res) => {
+  try {
+    const sessionId = req.query.sessionId as string | undefined;
+    const workspaceId = req.query.workspaceId as string | undefined;
+
+    let changeSets: any[] = [];
+    if (sessionId) {
+      changeSets = di.changeSetService.getChangeSetsBySession(sessionId);
+    } else if (workspaceId) {
+      changeSets = di.changeSetService.getChangeSetsByWorkspace(workspaceId);
+    }
+    res.json({ changeSets });
+  } catch (err: any) {
+    console.error('[WorkspaceController] Error getting changesets:', err);
+    res.status(500).json({ error: err.message || 'Failed to retrieve changesets' });
+  }
+});
+
+/**
+ * GET /api/workspace/changeset/:id
+ * Retrieve a specific change set
+ */
+router.get('/workspace/changeset/:id', async (req, res) => {
+  try {
+    const changeSetId = req.params.id;
+    const changeSet = di.changeSetService.getChangeSet(changeSetId);
+    if (!changeSet) {
+      return res.status(404).json({ error: 'ChangeSet not found' });
+    }
+    res.json({ changeSet });
+  } catch (err: any) {
+    console.error('[WorkspaceController] Error getting changeset:', err);
+    res.status(500).json({ error: err.message || 'Failed to retrieve changeset' });
+  }
+});
+
+/**
+ * POST /api/workspace/changeset/:id/apply
+ * Apply a proposed change set authoritatively
+ */
+router.post('/workspace/changeset/:id/apply', async (req, res) => {
+  try {
+    const changeSetId = req.params.id;
+    const userId = await resolveUserId(req);
+    const { sessionId, workspaceId } = req.body || {};
+
+    const applied = await di.changeSetService.applyChangeSet(changeSetId, {
+      userId,
+      sessionId,
+      workspaceId,
+      workspaceService: globalWorkspaceService
+    });
+
+    res.json({ success: true, changeSet: applied });
+  } catch (err: any) {
+    console.error('[WorkspaceController] Error applying changeset:', err);
+    const statusCode = err.message?.includes('Conflict') ? 409 : err.message?.includes('mismatch') ? 403 : 400;
+    res.status(statusCode).json({ error: err.message || 'Failed to apply changeset' });
+  }
+});
+
+/**
+ * POST /api/workspace/changeset/:id/reject
+ * Reject a proposed change set and restore baseline state
+ */
+router.post('/workspace/changeset/:id/reject', async (req, res) => {
+  try {
+    const changeSetId = req.params.id;
+    const userId = await resolveUserId(req);
+    const { sessionId, workspaceId } = req.body || {};
+
+    const rejected = await di.changeSetService.rejectChangeSet(changeSetId, {
+      userId,
+      sessionId,
+      workspaceId,
+      workspaceService: globalWorkspaceService
+    });
+
+    res.json({ success: true, changeSet: rejected });
+  } catch (err: any) {
+    console.error('[WorkspaceController] Error rejecting changeset:', err);
+    const statusCode = err.message?.includes('mismatch') ? 403 : 400;
+    res.status(statusCode).json({ error: err.message || 'Failed to reject changeset' });
   }
 });

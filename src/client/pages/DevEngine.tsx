@@ -14,7 +14,7 @@ import { SettingsModal } from "../components/SettingsModal";
 import { WorkspaceLoadingSkeleton } from "../components/WorkspaceLoadingSkeleton";
 import { apiClient } from '../services/apiClient.js';
 import { storageService } from '../services/storageService.js';
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { TransparencyDashboard } from "../components/TransparencyDashboard";
 import { transparencyLogger } from "../utils/transparencyLogger";
 import { findSkillSuggestions } from "../utils/skillMatcher";
@@ -43,6 +43,7 @@ import {
   MessageSquare,
   Sparkles,
   Database,
+  Sigma,
   Cloud,
   Shield,
   X,
@@ -248,17 +249,15 @@ export default function DevEngine() {
     showHistory, setShowHistory,
   } = useUIState();
   const [activeWorkspacePlan, setActiveWorkspacePlan] = useState<any>(null);
+  const [activeAgentHandoff, setActiveAgentHandoff] = useState<any>(null);
 
+  // Auto-collapse sidebar when entering workspace view to expand workspace canvas
   useEffect(() => {
-    const handleOpenWorkspace = (e: any) => {
-      if (e?.detail?.planResult) {
-        setActiveWorkspacePlan(e.detail.planResult);
-      }
-      setView("workspace");
-    };
-    window.addEventListener("open-workspace", handleOpenWorkspace);
-    return () => window.removeEventListener("open-workspace", handleOpenWorkspace);
-  }, [setView]);
+    if (view === "workspace") {
+      setIsSidebarCollapsed(true);
+    }
+  }, [view, setIsSidebarCollapsed]);
+
   const {
     input, setInput,
     isInputMaximized, setIsInputMaximized,
@@ -277,8 +276,85 @@ export default function DevEngine() {
     adminCliInput, setAdminCliInput,
     isStateLoaded, setIsStateLoaded,
   } = useAdmin();
-  const { loadSession, createNewSession, saveCurrentSession, deleteSession, handleTogglePinSession } = useChatSessions({ sessions, setSessions, currentSessionId, setCurrentSessionId, setMessages, setView, setShowHistory });
+  const { loadSession: baseLoadSession, createNewSession: baseCreateNewSession, saveCurrentSession, deleteSession, handleTogglePinSession } = useChatSessions({ sessions, setSessions, currentSessionId, setCurrentSessionId, setMessages, setView, setShowHistory });
+
+  const createNewSession = useCallback((): void => {
+    setActiveAgentHandoff(null);
+    setActiveWorkspacePlan(null);
+    baseCreateNewSession();
+  }, [baseCreateNewSession]);
+
+  const handleClearHandoff = useCallback((): void => {
+    setActiveAgentHandoff(null);
+  }, []);
+
+  const loadSession = useCallback((session: any): void => {
+    setActiveAgentHandoff(null);
+    setActiveWorkspacePlan(null);
+    baseLoadSession(session);
+  }, [baseLoadSession]);
   const { apiKeyWarning, setApiKeyWarning } = useValidation(apiKeys);
+
+  const handleContinueInChat = useCallback((e?: any): void => {
+    const handoff = e?.detail?.handoff || (e && e.sessionId ? e : null);
+    if (handoff) {
+      setActiveAgentHandoff(null);
+      if (handoff.sessionId) {
+        setCurrentSessionId(handoff.sessionId);
+      }
+      if (handoff.recentMessages && handoff.recentMessages.length > 0) {
+        const chatMessages: Message[] = handoff.recentMessages
+          .filter((m: any) => m && typeof m.content === 'string' && m.content.trim().length > 0)
+          .map((m: any) => ({
+            id: m.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+            role: (m.role === 'model' || m.role === 'assistant') ? ('model' as const) : ('user' as const),
+            content: m.content
+          }));
+        if (chatMessages.length > 0) {
+          setMessages(chatMessages);
+          saveCurrentSession(chatMessages, handoff.sessionId);
+        }
+      }
+    }
+    setView("chat");
+  }, [saveCurrentSession, setCurrentSessionId, setMessages, setView]);
+
+  useEffect(() => {
+    const handleOpenWorkspace = (e: any) => {
+      if (e?.detail?.planResult) {
+        setActiveWorkspacePlan(e.detail.planResult);
+      }
+      setView("workspace");
+    };
+    const handleOpenAgent = (e: any) => {
+      if (e?.detail?.handoff) {
+        setActiveAgentHandoff(e.detail.handoff);
+      }
+      setView("workspace");
+    };
+    const handleExecutionResult = (e: any) => {
+      if (e?.detail?.success) {
+        setActiveWorkspacePlan(null);
+      }
+    };
+    window.addEventListener("open-workspace", handleOpenWorkspace);
+    window.addEventListener("open-agent", handleOpenAgent);
+    window.addEventListener("continue-in-chat", handleContinueInChat);
+    window.addEventListener("agent:execution-result", handleExecutionResult);
+    return () => {
+      window.removeEventListener("open-workspace", handleOpenWorkspace);
+      window.removeEventListener("open-agent", handleOpenAgent);
+      window.removeEventListener("continue-in-chat", handleContinueInChat);
+      window.removeEventListener("agent:execution-result", handleExecutionResult);
+    };
+  }, [setView, handleContinueInChat]);
+
+  // Auto-collapse sidebar when entering workspace to maximize workspace view space
+  useEffect(() => {
+    if (view === "workspace") {
+      setIsSidebarCollapsed(true);
+    }
+  }, [view, setIsSidebarCollapsed]);
 
         
   // Session Edit States
@@ -930,6 +1006,12 @@ export default function DevEngine() {
         icon: <Brain size={14} className="text-amber-400" />,
       },
       {
+        cmd: "/math",
+        syntax: "/math <formula/topic>",
+        description: "Formulate, typeset, or derive math equations via KaTeX.",
+        icon: <Sigma size={14} className="text-teal-400" />,
+      },
+      {
         cmd: "/compact",
         syntax: "/compact",
         description: "Toggle automatic context memory compaction.",
@@ -988,6 +1070,8 @@ export default function DevEngine() {
     } else if (cmd === "/deep") {
       setThinkingMode((prev) => (prev === "none" ? "low" : "none"));
       setInput("");
+    } else if (cmd === "/math" || cmd.startsWith("/math")) {
+      setInput("/math ");
     } else if (cmd === "/compact") {
       setIsAutoCompact?.((prev) => !prev);
       setInput("");
@@ -1000,7 +1084,7 @@ export default function DevEngine() {
         {
           id: `help-${Date.now()}`,
           role: "model",
-          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/plan <objective>\` — Generates structured implementation plans, phased execution strategies, and verification milestones.\n- \`/goal <objective>\` — Decomposes complex engineering objectives into validated Directed Task Graphs.\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/image <prompt>\` — Invokes generation of developer-focused visual mockups.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/skills\` — Expands the neural skills drawer.\n- \`/search\` — Toggles real-time Google search grounding.\n- \`/deep\` — Toggles deep reasoning mode.\n- \`/compact\` — Toggles automatic context compaction.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
+          content: `### 🤖 DevGenie AI Command Console Guide\n\nWelcome to your specialized AI developer terminal. We support the following native command integrations:\n\n- \`/plan <objective>\` — Generates structured implementation plans, phased execution strategies, and verification milestones.\n- \`/goal <objective>\` — Decomposes complex engineering objectives into validated Directed Task Graphs.\n- \`/rag <query>\` — Performs deep semantic similarity searches on local vector indexes.\n- \`/math <formula/topic>\` — Formulates, derives, and analyzes mathematical equations with native KaTeX rendering.\n- \`/image <prompt>\` — Invokes generation of developer-focused visual mockups.\n- \`/video <prompt>\` — Creates high-fidelity motion graphics to visualize dynamic elements.\n- \`/refine\` — Polishes simple text inputs into highly contextual developer-oriented prompts.\n- \`/skills\` — Expands the neural skills drawer.\n- \`/search\` — Toggles real-time Google search grounding.\n- \`/deep\` — Toggles deep reasoning mode.\n- \`/compact\` — Toggles automatic context compaction.\n- \`/clear\` — Resets the current thread's states, memory context, and active files.\n\n*Press Tab or Enter to auto-complete commands while typing.*`,
         },
       ]);
       setInput("");
@@ -1288,6 +1372,13 @@ export default function DevEngine() {
             theme={theme === "light" ? "light" : "dark"}
             user={user}
             currentPlanResult={activeWorkspacePlan}
+            onClearPlan={() => {
+              setActiveWorkspacePlan(null);
+              setActiveAgentHandoff(null);
+            }}
+            initialHandoff={activeAgentHandoff}
+            onClearHandoff={handleClearHandoff}
+            onContinueInChat={handleContinueInChat}
           />
         ) : view === "admin-debug" && user?.role === "ADMIN" ? (
           <AdminDebugView {...propsToPass} />

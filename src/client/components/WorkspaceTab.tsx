@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FolderCode,
+  Folder,
   Terminal,
-  Activity,
   History,
   RefreshCw,
   Plus,
@@ -13,15 +13,20 @@ import {
   ChevronUp,
   ChevronDown,
   RotateCcw,
-  GripHorizontal
+  GripHorizontal,
+  Bot,
+  GitCommit
 } from 'lucide-react';
 import { FileExplorer } from './workspace/FileExplorer.js';
 import { CodeEditor } from './workspace/CodeEditor.js';
-import { AgentTimeline } from './workspace/AgentTimeline.js';
 import { WorkspaceTerminal } from './workspace/WorkspaceTerminal.js';
 import { AuditLogViewer } from './workspace/AuditLogViewer.js';
+import { ChangeSetReview } from './workspace/ChangeSetReview.js';
 import { WorkspaceConnectingScreen } from './workspace/WorkspaceConnectingScreen.js';
+import { AgentPanel } from './workspace/AgentPanel.js';
 import { workspaceService } from '../services/workspaceService.js';
+import { agentSessionService } from '../services/agentSessionService.js';
+import type { ChangeSet } from '../../agent/changes/ChangeSetTypes.js';
 import type { 
   WorkspaceSummary, 
   WorkspaceDirectoryEntry, 
@@ -37,27 +42,61 @@ interface WorkspaceTabProps {
   theme?: 'light' | 'dark';
   user?: any;
   currentPlanResult?: GoalPlanningResult | null;
+  onClearPlan?: () => void;
+  initialHandoff?: any;
+  onClearHandoff?: () => void;
+  onContinueInChat?: (handoff: any) => void;
 }
 
 export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   theme = 'dark',
   user,
-  currentPlanResult = null
+  currentPlanResult = null,
+  onClearPlan,
+  initialHandoff,
+  onClearHandoff,
+  onContinueInChat
 }) => {
   const [workspace, setWorkspace] = useState<WorkspaceSummary | null>(null);
   const [entries, setEntries] = useState<WorkspaceDirectoryEntry[]>([]);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
   const [activeFile, setActiveFile] = useState<WorkspaceFileMeta | null>(null);
   const [openFiles, setOpenFiles] = useState<WorkspaceFileMeta[]>([]);
-  const [bottomTab, setBottomTab] = useState<'timeline' | 'terminal' | 'audit'>('timeline');
+  const [bottomTab, setBottomTab] = useState<'terminal' | 'audit' | 'changes'>('terminal');
+  const [changeSets, setChangeSets] = useState<ChangeSet[]>([]);
   const [planningResult, setPlanningResult] = useState<GoalPlanningResult | null>(currentPlanResult);
   const [executionEvents, setExecutionEvents] = useState<PlanExecutionProgressEvent[]>([]);
   const [isExecuting, setIsExecuting] = useState<boolean>(false);
   const [isRunningCode, setIsRunningCode] = useState<boolean>(false);
   const [terminalExternalCmd, setTerminalExternalCmd] = useState<string | null>(null);
+  const [agentSessionId, setAgentSessionId] = useState<string | null>(initialHandoff?.sessionId || null);
+
+  const handleSessionResolved = useCallback((session: { sessionId: string }) => {
+    setAgentSessionId((prev) => (prev === session.sessionId ? prev : session.sessionId));
+  }, []);
   const [auditLogs, setAuditLogs] = useState<FileProvenanceRecord[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isInitialConnecting, setIsInitialConnecting] = useState<boolean>(true);
+
+  const activeFilePathRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeFilePathRef.current = activeFilePath;
+  }, [activeFilePath]);
+
+  // Active Plan Context for Interactive Agent Panel (M06-06)
+  const activePlanContext = React.useMemo(() => {
+    if (!planningResult) return undefined;
+    const activePlan = planningResult.repairedPlan || planningResult.plan;
+    if (!activePlan) return undefined;
+    return {
+      goalId: planningResult.goal?.id || 'goal-default',
+      planId: activePlan.id,
+      goalSummary: planningResult.goal?.description || (planningResult.goal as any)?.objective,
+      workspaceId: workspace?.id,
+      sessionId: agentSessionId || undefined,
+      completedTasks: executionEvents.filter((e) => e.status === 'COMPLETED' && e.taskId).map((e) => e.taskId as string)
+    };
+  }, [planningResult, workspace?.id, agentSessionId, executionEvents]);
 
   // Dynamic Terminal / Bottom Panel Height & Resizing
   const [bottomHeight, setBottomHeight] = useState<number>(() => {
@@ -73,7 +112,18 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   const [isDraggingBottom, setIsDraggingBottom] = useState<boolean>(false);
   const [isBottomCollapsed, setIsBottomCollapsed] = useState<boolean>(false);
   const [isBottomMaximized, setIsBottomMaximized] = useState<boolean>(false);
+  const [isFileExplorerCollapsed, setIsFileExplorerCollapsed] = useState<boolean>(false);
+  const [isAgentPanelCollapsed, setIsAgentPanelCollapsed] = useState<boolean>(false);
+  const [activeTerminalExecutionId, setActiveTerminalExecutionId] = useState<string | null>(null);
   const preMaximizeHeightRef = useRef<number>(280);
+
+  const handleViewInTerminal = (executionId?: string) => {
+    setIsBottomCollapsed(false);
+    setBottomTab('terminal');
+    if (executionId) {
+      setActiveTerminalExecutionId(executionId);
+    }
+  };
 
   const eventSourceUnsub = useRef<(() => void) | null>(null);
 
@@ -137,13 +187,18 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     } catch {}
   };
 
-  // Sync incoming planning result prop
+  // Sync incoming planning result and handoff props
   useEffect(() => {
-    if (currentPlanResult) {
-      setPlanningResult(currentPlanResult);
-      setBottomTab('timeline');
-    }
+    setPlanningResult(currentPlanResult || null);
   }, [currentPlanResult]);
+
+  useEffect(() => {
+    if (!initialHandoff) {
+      setAgentSessionId(null);
+    } else if (initialHandoff.sessionId) {
+      setAgentSessionId(initialHandoff.sessionId);
+    }
+  }, [initialHandoff]);
 
   const showNotification = (type: 'success' | 'error', message: string) => {
     window.dispatchEvent(
@@ -184,6 +239,18 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
       const logs = await workspaceService.getAuditLogs(wsData.workspace.id);
       setAuditLogs(logs);
+
+      // Refresh current active file content if open
+      const currPath = activeFilePathRef.current;
+      if (currPath) {
+        try {
+          const fresh = await workspaceService.readFile(currPath, wsData.workspace.id);
+          setActiveFile(fresh);
+          setOpenFiles((prev) => prev.map((f) => (f.path.replace(/\/+/g, '/') === currPath ? fresh : f)));
+        } catch {
+          // File may have been deleted or renamed
+        }
+      }
     } catch (err: any) {
       console.error('Failed to load workspace', err);
       showNotification('error', err.message || 'Failed to load workspace');
@@ -198,6 +265,101 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
   useEffect(() => {
     loadWorkspaceData();
   }, [loadWorkspaceData]);
+
+  const loadChangeSets = useCallback(async () => {
+    if (!workspace?.id) return;
+    try {
+      const list = await workspaceService.getChangeSets(agentSessionId || undefined, workspace.id);
+      setChangeSets(list);
+    } catch (err) {
+      console.warn('[WorkspaceTab] Could not load changesets:', err);
+    }
+  }, [workspace?.id, agentSessionId]);
+
+  useEffect(() => {
+    if (!workspace?.id) return;
+    loadChangeSets();
+  }, [workspace?.id, loadChangeSets]);
+
+  useEffect(() => {
+    if (!agentSessionId) return;
+    const unsub = agentSessionService.subscribeSessionEvents(agentSessionId, (event) => {
+      if (
+        event.type.startsWith('change_set_') ||
+        event.type === 'tool_activity' ||
+        event.type === 'terminal_event' ||
+        event.type === 'task_completed' ||
+        event.type === 'plan_completed'
+      ) {
+        loadChangeSets();
+        loadWorkspaceData();
+      }
+
+      // Sync activeTerminalExecutionId without force-opening or stealing tab focus
+      if (event.type === 'terminal_event') {
+        const data = event.data as {
+          type?: string;
+          command?: string;
+          executionId?: string;
+        } | undefined;
+
+        if (data?.type === 'terminal_started') {
+          const isCorrectSession = event.sessionId === agentSessionId;
+          const isCorrectWorkspace = !workspace?.id || !event.workspaceId || event.workspaceId === workspace.id;
+
+          if (isCorrectSession && isCorrectWorkspace) {
+            const execId = data.executionId || event.executionId;
+            if (execId) {
+              setActiveTerminalExecutionId(execId);
+            }
+          }
+        }
+      }
+    });
+    return () => {
+      unsub();
+    };
+  }, [agentSessionId, workspace?.id, loadChangeSets, loadWorkspaceData]);
+
+  // Global window event listener to auto refresh workspace whenever any component/agent signals file changes
+  useEffect(() => {
+    const handleWorkspaceRefresh = () => {
+      loadWorkspaceData();
+      loadChangeSets();
+    };
+    window.addEventListener('workspace:refresh', handleWorkspaceRefresh);
+    window.addEventListener('workspace-refresh', handleWorkspaceRefresh);
+    return () => {
+      window.removeEventListener('workspace:refresh', handleWorkspaceRefresh);
+      window.removeEventListener('workspace-refresh', handleWorkspaceRefresh);
+    };
+  }, [loadWorkspaceData, loadChangeSets]);
+
+  const handleApplyChangeSet = async (changeSetId: string) => {
+    if (!workspace?.id) return;
+    try {
+      const updated = await workspaceService.applyChangeSet(changeSetId, agentSessionId || undefined, workspace.id);
+      setChangeSets((prev) => prev.map((c) => (c.changeSetId === changeSetId ? updated : c)));
+      await loadWorkspaceData();
+      showNotification('success', `ChangeSet ${changeSetId} applied successfully.`);
+    } catch (err: any) {
+      showNotification('error', `Failed to apply ChangeSet: ${err.message}`);
+      throw err;
+    }
+  };
+
+  const handleRejectChangeSet = async (changeSetId: string) => {
+    if (!workspace?.id) return;
+    try {
+      const updated = await workspaceService.rejectChangeSet(changeSetId, agentSessionId || undefined, workspace.id);
+      setChangeSets((prev) => prev.map((c) => (c.changeSetId === changeSetId ? updated : c)));
+      await loadWorkspaceData();
+      showNotification('success', `ChangeSet ${changeSetId} rejected and rolled back.`);
+    } catch (err: any) {
+      showNotification('error', `Failed to reject ChangeSet: ${err.message}`);
+      throw err;
+    }
+  };
 
   const handleSelectFile = async (filePath: string) => {
     try {
@@ -409,14 +571,20 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     if (isBottomCollapsed) {
       setIsBottomCollapsed(false);
     }
-    const pathLower = file.path.toLowerCase();
-    let cmd = `python3 "${file.path}"`;
+
+    // Strip leading '/workspace/', 'workspace/', or leading '/' so the command executes with the relative path inside current working directory
+    const normalizedFilePath = file.path
+      .replace(/^(\/)?workspace\//, '')
+      .replace(/^\/+/, '');
+
+    const pathLower = normalizedFilePath.toLowerCase();
+    let cmd = `python3 "${normalizedFilePath}"`;
     if (pathLower.endsWith('.js') || pathLower.endsWith('.mjs')) {
-      cmd = `node "${file.path}"`;
+      cmd = `node "${normalizedFilePath}"`;
     } else if (pathLower.endsWith('.ts')) {
-      cmd = `node -r ts-node/register "${file.path}" || node "${file.path}"`;
+      cmd = `node -r ts-node/register "${normalizedFilePath}" || node "${normalizedFilePath}"`;
     } else if (pathLower.endsWith('.sh') || pathLower.endsWith('.bash')) {
-      cmd = `bash "${file.path}"`;
+      cmd = `bash "${normalizedFilePath}"`;
     }
     setBottomTab('terminal');
     setTerminalExternalCmd(cmd);
@@ -432,7 +600,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
     }
     setIsExecuting(true);
     setExecutionEvents([]);
-    setBottomTab('timeline');
 
     try {
       // Execute plan with approval
@@ -443,9 +610,21 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         maxRiskLevelConfirmed: 'HIGH'
       };
 
-      const result = await workspaceService.executePlan(planToExecute, approval, workspace?.id);
+      const result = await workspaceService.executePlan(
+        planToExecute,
+        approval,
+        workspace?.id,
+        undefined,
+        undefined,
+        agentSessionId || undefined
+      );
 
       const isSuccess = Boolean(result.success && result.summary?.success);
+      setPlanningResult(null);
+      if (onClearPlan) {
+        onClearPlan();
+      }
+
       if (isSuccess) {
         showNotification('success', 'Plan execution completed successfully!');
         window.dispatchEvent(new CustomEvent('agent:execution-result', {
@@ -510,6 +689,13 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
   const isDark = theme === 'dark';
 
+  // Collect all workspace file paths for context picker
+  const allWorkspaceFilePaths = React.useMemo(() => {
+    return entries
+      .filter((item) => !item.isDirectory)
+      .map((item) => item.path);
+  }, [entries]);
+
   if (isInitialConnecting) {
     return (
       <WorkspaceConnectingScreen
@@ -562,6 +748,38 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
         <div className="flex items-center gap-2">
           <button
             type="button"
+            onClick={() => setIsFileExplorerCollapsed((prev) => !prev)}
+            className={`px-2.5 py-1.5 rounded border transition-colors flex items-center gap-1.5 text-xs font-semibold ${
+              !isFileExplorerCollapsed
+                ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40'
+                : isDark
+                ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-400'
+                : 'border-slate-300 hover:bg-slate-200 text-slate-600'
+            }`}
+            title={isFileExplorerCollapsed ? 'Show File Explorer' : 'Hide File Explorer'}
+          >
+            <Folder className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Files</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsAgentPanelCollapsed((prev) => !prev)}
+            className={`px-2.5 py-1.5 rounded border transition-colors flex items-center gap-1.5 text-xs font-semibold ${
+              !isAgentPanelCollapsed
+                ? 'bg-indigo-600/20 text-indigo-300 border-indigo-500/40'
+                : isDark
+                ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-400'
+                : 'border-slate-300 hover:bg-slate-200 text-slate-600'
+            }`}
+            title={isAgentPanelCollapsed ? 'Show Workspace Agent Panel' : 'Hide Workspace Agent Panel'}
+          >
+            <Bot className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">Agent</span>
+          </button>
+
+          <button
+            type="button"
             onClick={loadWorkspaceData}
             className={`p-1.5 rounded border transition-colors ${
               isDark ? 'border-zinc-700 hover:bg-zinc-800 text-zinc-300' : 'border-slate-300 hover:bg-slate-200 text-slate-700'
@@ -575,8 +793,8 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
 
       {/* Main Multi-Pane Layout */}
       <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
-        {/* Left: File Explorer (240px wide) */}
-        <div className="w-full md:w-60 shrink-0 h-48 md:h-full">
+        {/* Left: File Explorer */}
+        <div className={`${isFileExplorerCollapsed ? 'w-10' : 'w-full md:w-60'} shrink-0 h-48 md:h-full transition-all`}>
           <FileExplorer
             entries={entries}
             activeFilePath={activeFilePath}
@@ -589,6 +807,8 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
             onRefresh={loadWorkspaceData}
             isLoading={isLoading}
             theme={theme}
+            isCollapsed={isFileExplorerCollapsed}
+            onToggleCollapse={() => setIsFileExplorerCollapsed((prev) => !prev)}
           />
         </div>
 
@@ -644,23 +864,6 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setBottomTab('timeline');
-                    if (isBottomCollapsed) setIsBottomCollapsed(false);
-                  }}
-                  className={`flex items-center gap-1.5 px-3 h-full text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
-                    bottomTab === 'timeline'
-                      ? 'border-purple-500 text-purple-400 bg-zinc-950/60'
-                      : 'border-transparent text-zinc-400 hover:text-zinc-200'
-                  }`}
-                >
-                  <Activity className="w-3.5 h-3.5" />
-                  Agent Execution
-                  {isExecuting && <span className="w-2 h-2 rounded-full bg-purple-400 animate-ping" />}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
                     setBottomTab('terminal');
                     if (isBottomCollapsed) setIsBottomCollapsed(false);
                   }}
@@ -691,6 +894,27 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
                   {auditLogs.length > 0 && (
                     <span className="text-[10px] px-1 rounded-full bg-zinc-800 text-zinc-400 font-mono">
                       {auditLogs.length}
+                    </span>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBottomTab('changes');
+                    if (isBottomCollapsed) setIsBottomCollapsed(false);
+                  }}
+                  className={`flex items-center gap-1.5 px-3 h-full text-xs font-semibold border-b-2 transition-colors cursor-pointer ${
+                    bottomTab === 'changes'
+                      ? 'border-indigo-500 text-indigo-400 bg-zinc-950/60'
+                      : 'border-transparent text-zinc-400 hover:text-zinc-200'
+                  }`}
+                >
+                  <GitCommit className="w-3.5 h-3.5" />
+                  Diff & Review
+                  {changeSets.some((c) => c.status === 'PROPOSED' || c.status === 'CONFLICT') && (
+                    <span className="text-[10px] px-1 rounded-full bg-amber-900/80 text-amber-300 font-mono">
+                      {changeSets.filter((c) => c.status === 'PROPOSED' || c.status === 'CONFLICT').length}
                     </span>
                   )}
                 </button>
@@ -740,47 +964,92 @@ export const WorkspaceTab: React.FC<WorkspaceTabProps> = ({
             </div>
 
             {/* Bottom Tab Content */}
-            {!isBottomCollapsed && (
-              <div className="flex-1 overflow-hidden">
-                {bottomTab === 'timeline' && (
-                  <AgentTimeline
-                    planningResult={planningResult}
-                    activeExecutionId={workspace?.activeExecutionId}
-                    isExecuting={isExecuting}
-                    events={executionEvents}
-                    onExecutePlan={handleExecutePlan}
-                    onStopExecution={handleStopExecution}
-                    theme={theme}
-                  />
-                )}
-
-                {bottomTab === 'terminal' && (
-                  <WorkspaceTerminal
-                    workingDirectory={workspace?.workingDirectory || '/workspace'}
-                    onRunCommand={handleRunCommand}
-                    onSendCommandInput={(sessionId, input) => workspaceService.sendCommandInput(sessionId, input)}
-                    onAbortCommand={(sessionId) => workspaceService.abortCommand(sessionId)}
-                    files={entries}
-                    theme={theme}
-                    isAgentCoding={isExecuting}
-                    onToggleMaximize={handleToggleMaximizeBottom}
-                    isMaximized={isBottomMaximized}
-                    externalCommand={terminalExternalCmd}
-                    onClearExternalCommand={() => setTerminalExternalCmd(null)}
-                  />
-                )}
-
-                {bottomTab === 'audit' && (
-                  <AuditLogViewer
-                    logs={auditLogs}
-                    onSelectFileDiff={(filePath) => handleSelectFile(filePath)}
-                    theme={theme}
-                  />
-                )}
+            <div className={`flex-1 overflow-hidden ${isBottomCollapsed ? 'hidden' : ''}`}>
+              <div className={bottomTab === 'terminal' ? 'h-full flex flex-col' : 'hidden'}>
+                <WorkspaceTerminal
+                  workingDirectory={workspace?.workingDirectory || '/workspace'}
+                  onRunCommand={handleRunCommand}
+                  onSendCommandInput={(sessionId, input) => workspaceService.sendCommandInput(sessionId, input)}
+                  onAbortCommand={(sessionId) => workspaceService.abortCommand(sessionId)}
+                  files={entries}
+                  theme={theme}
+                  isAgentCoding={isExecuting}
+                  onToggleMaximize={handleToggleMaximizeBottom}
+                  isMaximized={isBottomMaximized}
+                  externalCommand={terminalExternalCmd}
+                  onClearExternalCommand={() => setTerminalExternalCmd(null)}
+                  sessionId={agentSessionId}
+                  workspaceId={workspace?.id}
+                  activeExecutionId={activeTerminalExecutionId}
+                  onClearActiveExecutionId={() => setActiveTerminalExecutionId(null)}
+                />
               </div>
-            )}
+
+              {bottomTab === 'audit' && (
+                <AuditLogViewer
+                  logs={auditLogs}
+                  onSelectFileDiff={(filePath) => handleSelectFile(filePath)}
+                  theme={theme}
+                />
+              )}
+
+              {bottomTab === 'changes' && (
+                <div className="h-full overflow-y-auto p-4 max-w-4xl mx-auto space-y-4 font-mono text-xs">
+                  {changeSets.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center p-8 text-center select-none text-zinc-500">
+                      <GitCommit className="w-10 h-10 mb-2 opacity-30 text-indigo-400" />
+                      <h4 className="text-xs font-semibold text-zinc-300 mb-1">No Pending Changes</h4>
+                      <p className="text-xs max-w-sm text-zinc-500">
+                        When the Agent proposes file edits, unified diffs will appear here and in the Agent Panel for your review before workspace application.
+                      </p>
+                    </div>
+                  ) : (
+                    changeSets.map((cs) => (
+                      <ChangeSetReview
+                        key={cs.changeSetId}
+                        changeSet={cs}
+                        onApply={handleApplyChangeSet}
+                        onReject={handleRejectChangeSet}
+                        onOpenFileDiff={(file) => handleSelectFile(file.path)}
+                        theme={theme}
+                      />
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </div>
         </div>
+
+        {/* Right Area: Workspace Agent Panel */}
+        <AgentPanel
+          workspaceId={workspace?.id}
+          workspaceName={workspace?.name}
+          theme={theme}
+          isCollapsed={isAgentPanelCollapsed}
+          onToggleCollapse={() => setIsAgentPanelCollapsed((prev) => !prev)}
+          onOpenFile={handleSelectFile}
+          onViewInTerminal={handleViewInTerminal}
+          currentFile={activeFilePath || undefined}
+          openFiles={openFiles.map((f) => f.path)}
+          allWorkspaceFiles={allWorkspaceFilePaths}
+          initialSessionId={initialHandoff?.sessionId || agentSessionId || undefined}
+          onSessionResolved={handleSessionResolved}
+          activePlanContext={activePlanContext}
+          initialHandoff={initialHandoff}
+          onClearHandoff={onClearHandoff}
+          onContinueInChat={onContinueInChat}
+          currentPlanResult={planningResult}
+          isExecutingPlan={isExecuting}
+          onExecutePlan={handleExecutePlan}
+          onRejectPlan={() => {
+            setPlanningResult(null);
+            if (onClearPlan) {
+              onClearPlan();
+            }
+          }}
+          onRefreshWorkspace={loadWorkspaceData}
+        />
       </div>
     </div>
   );

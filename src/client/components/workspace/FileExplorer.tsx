@@ -13,6 +13,7 @@ import {
   Bot,
   User,
   ChevronRight,
+  ChevronLeft,
   ChevronDown,
   Pencil,
   Check,
@@ -32,6 +33,8 @@ interface FileExplorerProps {
   onRefresh: () => void;
   isLoading?: boolean;
   theme?: 'light' | 'dark';
+  isCollapsed?: boolean;
+  onToggleCollapse?: () => void;
 }
 
 interface FlattenedTreeItem {
@@ -55,7 +58,9 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
   onDeleteDirectory,
   onRefresh,
   isLoading = false,
-  theme = 'dark'
+  theme = 'dark',
+  isCollapsed = false,
+  onToggleCollapse
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['/', 'src']));
@@ -281,6 +286,36 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
 
   const isDark = theme === 'dark';
 
+  if (isCollapsed) {
+    return (
+      <div
+        className={`w-10 h-full flex flex-col items-center py-3 border-r shrink-0 transition-all select-none ${
+          isDark ? 'bg-zinc-900/90 border-zinc-800 text-zinc-400' : 'bg-slate-100 border-slate-200 text-slate-600'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={onToggleCollapse}
+          className={`p-1.5 rounded transition-colors ${
+            isDark ? 'hover:bg-zinc-800 text-zinc-300' : 'hover:bg-slate-200 text-slate-700'
+          }`}
+          title="Expand File Explorer"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+        <div className="mt-4 flex flex-col items-center gap-4">
+          <Folder className="w-5 h-5 text-indigo-400" />
+          <span
+            className="text-[11px] font-bold uppercase tracking-wider -rotate-90 select-none whitespace-nowrap mt-8"
+            style={{ transformOrigin: 'center center' }}
+          >
+            Files
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`h-full flex flex-col select-none border-r ${
@@ -321,6 +356,18 @@ export const FileExplorer: React.FC<FileExplorerProps> = ({
           >
             <RefreshCw className="w-4 h-4" />
           </button>
+          {onToggleCollapse && (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              title="Collapse File Explorer"
+              className={`p-1.5 rounded transition-colors ${
+                isDark ? 'hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200' : 'hover:bg-slate-200 text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 

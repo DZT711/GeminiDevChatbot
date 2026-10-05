@@ -37,7 +37,14 @@ patch*.diff
 *.patch
 test*.ts
 test*.cjs
+test*.mjs
+test*.json
 test*.js
+sandbox/
+scratch/
+tmp/
+temp/
+*.tmp
 fix*.ts
 fix*.cjs
 fix*.js

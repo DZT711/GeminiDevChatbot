@@ -6,5 +6,6 @@ export const AgentFeatureFlags = {
     USE_REFLECTION: true,
     USE_LEARNING: true,
     USE_KNOWLEDGE_PROMOTION: true,
-    USE_GOAL_PLANNING: true
+    USE_GOAL_PLANNING: true,
+    USE_NOTION_BRAIN_LEARNING: true
 };

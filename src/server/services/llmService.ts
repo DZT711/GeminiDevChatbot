@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from '@google/genai';
 import OpenAI from 'openai';
+import { ensureGenAiStreamPatched } from '../utils/genAiStreamPatch.js';
 
 export class LLMService {
   public getTypeEnum() {
@@ -7,6 +8,7 @@ export class LLMService {
   }
 
   public getClient(apiKey: string, baseUrl?: string, provider?: string): any {
+    ensureGenAiStreamPatched();
     if (provider === 'openrouter' || provider === 'openai' || (baseUrl && baseUrl.includes('openrouter'))) {
       const openai = new OpenAI({
         apiKey,

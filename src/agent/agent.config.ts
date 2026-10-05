@@ -11,9 +11,23 @@ export const HYBRID_EXECUTION_MODELS: string[] = [
   DEFAULT_CHAT_MODEL,
   PRO_CHAT_MODEL,
   FALLBACK_CHAT_MODEL,
-  'gemini-2.5-flash',
-  'gemini-2.5-pro'
+  FLASH_3_8_CHAT_MODEL
 ];
+
+/**
+ * Normalizes legacy, discontinued, or aliased model IDs to active models.
+ */
+export function normalizeConfigModel(model?: string): string {
+  if (!model) return DEFAULT_CHAT_MODEL;
+  const clean = model.replace(/^(google\/|models\/)/i, '').trim();
+  if (clean === 'gemini-2.5-pro' || clean === 'gemini-2.0-pro-exp-02-05' || clean === 'gemini-2.0-pro') {
+    return PRO_CHAT_MODEL;
+  }
+  if (clean === 'gemini-2.5-flash' || clean === 'gemini-2.0-flash' || clean === 'gemini-2.0-flash-exp') {
+    return DEFAULT_CHAT_MODEL;
+  }
+  return clean || DEFAULT_CHAT_MODEL;
+}
 
 /**
  * Resolves an ordered list of candidate models for hybrid plan execution.
@@ -24,15 +38,14 @@ export const HYBRID_EXECUTION_MODELS: string[] = [
 export function resolveExecutionCandidateModels(userRequestedModel?: string): string[] {
   const requested = (userRequestedModel || '').trim();
   const isHybrid = !requested || requested.toLowerCase() === 'hybrid';
-  const primaryModel = !isHybrid ? requested : undefined;
+  const primaryModel = !isHybrid ? normalizeConfigModel(requested) : undefined;
 
   const candidates: string[] = [
     primaryModel,
     DEFAULT_CHAT_MODEL,
     PRO_CHAT_MODEL,
     FALLBACK_CHAT_MODEL,
-    'gemini-2.5-flash',
-    'gemini-2.5-pro'
+    FLASH_3_8_CHAT_MODEL
   ].filter((m): m is string => Boolean(m && m.trim() !== ''));
 
   return Array.from(new Set(candidates));

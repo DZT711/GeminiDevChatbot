@@ -20,6 +20,7 @@ export enum Provider {
   TOGETHER = "together",
   CEREBRAS = "cerebras",
   DEEPSEEK = "deepseek",
+  PERPLEXITY = "perplexity",
   MISTRAL = "mistral",
   OLLAMA = "ollama",
   HUGGINGFACE = "huggingface",

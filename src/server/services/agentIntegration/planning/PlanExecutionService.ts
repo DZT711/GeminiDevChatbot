@@ -16,6 +16,7 @@ import { PlanStep } from '../../../../agent/planner/PlanStep.js';
 import { Goal } from '../../../../agent/goal/GoalTypes.js';
 import { FailureClassifier } from '../../../../agent/replanning/FailureClassifier.js';
 import { ReplanningEngine } from '../../../../agent/replanning/ReplanningEngine.js';
+import { PlanLifecycleObservation, PlanReplanningEventRecord } from '../../../../agent/learning/LearningTypes.js';
 import { Tool } from '../../../../agent/tools/Tool.js';
 import { ToolDescriptor } from '../../../../agent/tools/ToolDescriptor.js';
 import { ToolLifecycleState } from '../../../../agent/tools/ToolLifecycle.js';
@@ -98,6 +99,7 @@ export interface PlanExecutionProgressEvent {
 export interface PlanExecutionOptions {
   planningResult: GoalPlanningResult;
   approval: PlanExecutionApproval;
+  sessionId?: string;
   userId?: string;
   apiKey?: string;
   model?: string;
@@ -109,12 +111,14 @@ export interface PlanExecutionOptions {
   onFileChanged?: (fileChange: { path: string; action: 'create' | 'edit' | 'delete'; actor: 'AGENT'; taskId?: string; executionId?: string; timestamp: number }) => void;
   sendEvent?: (type: string, data: unknown) => void;
   replanningEngine?: ReplanningEngine;
+  onPlanObservation?: (observation: PlanLifecycleObservation) => Promise<void> | void;
 }
 
 export interface PlanExecutionSummary {
   executionId: string;
   planId: string;
   goalId: string;
+  sessionId?: string;
   workspaceId?: string;
   success: boolean;
   status: 'COMPLETED' | 'FAILED' | 'ABORTED' | 'REJECTED_UNAPPROVED';
@@ -125,6 +129,7 @@ export interface PlanExecutionSummary {
   taskResults: Record<string, ToolResult>;
   durationMs: number;
   error?: string;
+  observation?: PlanLifecycleObservation;
 }
 
 export class PlanExecutionService {
@@ -138,6 +143,8 @@ export class PlanExecutionService {
   private currentApiKey?: string;
   private currentRequestedModel?: string;
   private activeExecutions: Map<string, { abortController: AbortController; cancelled: boolean }> = new Map();
+  private activePlanExecutions: Map<string, string> = new Map();
+  private activeSessionExecutions: Map<string, string> = new Map();
 
   constructor(workspaceProvider?: WorkspaceProvider, implementationStrategy?: ImplementationStrategy) {
     this.runtime = new AgentRuntime();
@@ -577,10 +584,55 @@ export class PlanExecutionService {
           const wsId = context.workspaceId || context.workspaceRef?.id || 'default_ws';
           const workspace = await this.workspaceProvider.getOrCreateWorkspace(wsId);
           const command = input?.CommandLine || input?.command || 'echo "workspace-ok"';
+          const sessionId = (context as any)?.sessionId;
+          const executionId = context.executionId;
+
+          if (sessionId) {
+            try {
+              di.agentSessionService.emitSessionEvent({
+                type: 'terminal_event',
+                sessionId,
+                executionId,
+                workspaceId: wsId,
+                timestamp: Date.now(),
+                data: {
+                  type: 'terminal_started',
+                  command,
+                  executionId
+                }
+              });
+            } catch {
+              // Non-blocking
+            }
+          }
+
           const result = await workspace.runCommand(command, {
             cwd: input?.Cwd || input?.cwd,
             timeoutMs: input?.WaitMsBeforeAsync || input?.timeoutMs
           });
+
+          if (sessionId) {
+            try {
+              di.agentSessionService.emitSessionEvent({
+                type: 'terminal_event',
+                sessionId,
+                executionId,
+                workspaceId: wsId,
+                timestamp: Date.now(),
+                data: {
+                  type: 'terminal_exit',
+                  command,
+                  exitCode: result.exitCode,
+                  stdout: result.stdout,
+                  stderr: result.stderr,
+                  executionId
+                }
+              });
+            } catch {
+              // Non-blocking
+            }
+          }
+
           return {
             status: result.exitCode === 0 ? 'success' : 'error',
             exitCode: result.exitCode,
@@ -675,19 +727,6 @@ export class PlanExecutionService {
       this.workspaceProvider = options.workspaceProvider;
     }
 
-    const emitProgress = (event: Omit<PlanExecutionProgressEvent, 'timestamp'>) => {
-      const fullEvent: PlanExecutionProgressEvent = {
-        ...event,
-        timestamp: Date.now()
-      };
-      if (onProgress) {
-        onProgress(fullEvent);
-      }
-      if (sendEvent) {
-        sendEvent('plan_execution_progress', fullEvent);
-      }
-    };
-
     // 1. Explicit Approval Gate
     if (!approval || !approval.confirmed) {
       return {
@@ -712,14 +751,286 @@ export class PlanExecutionService {
       throw new Error('Cannot execute plan: Goal or Plan is missing from PlanningResult.');
     }
 
+    const replanningEvents: PlanReplanningEventRecord[] = [];
+    const repairedStepIds: string[] = [];
+
+    const extractModifiedFiles = (): string[] => {
+      const modifiedFilesSet = new Set<string>();
+      for (const r of Object.values(taskResults)) {
+        const d = r?.data as { createdFiles?: string[]; modifiedFiles?: string[]; deletedFiles?: string[] } | undefined;
+        if (d) {
+          if (Array.isArray(d.createdFiles)) d.createdFiles.forEach((f: string) => modifiedFilesSet.add(f));
+          if (Array.isArray(d.modifiedFiles)) d.modifiedFiles.forEach((f: string) => modifiedFilesSet.add(f));
+          if (Array.isArray(d.deletedFiles)) d.deletedFiles.forEach((f: string) => modifiedFilesSet.add(f));
+        }
+      }
+      return Array.from(modifiedFilesSet);
+    };
+
+    const buildPlanObservation = (
+      outcome: 'COMPLETED' | 'FAILED' | 'ABORTED',
+      err?: string,
+      customBlocked?: string[]
+    ): PlanLifecycleObservation => {
+      return {
+        planId: plan.id,
+        goalId: goal.id,
+        goalDescription: goal.description || goal.rawPrompt,
+        executionId,
+        sessionId: options.sessionId,
+        workspaceId: workspaceRef?.id,
+        finalOutcome: outcome,
+        completedStepIds: [...completedTasks],
+        failedStepIds: [...failedTasks],
+        repairedStepIds: Array.from(new Set(repairedStepIds)),
+        replanningEvents: [...replanningEvents],
+        modifiedFiles: extractModifiedFiles(),
+        durationMs: Date.now() - startTime,
+        error: err
+      };
+    };
+
+    const emitObservationHook = async (obs: PlanLifecycleObservation): Promise<void> => {
+      if (options.onPlanObservation) {
+        try {
+          await options.onPlanObservation(obs);
+        } catch (obsErr) {
+          console.warn('[PlanExecutionService] Non-fatal error in onPlanObservation:', obsErr);
+        }
+      }
+    };
+
+    // Duplicate execution check (M06-06 Gate invariant)
+    if (this.activePlanExecutions.has(plan.id)) {
+      const existing = this.activePlanExecutions.get(plan.id);
+      throw new Error(`Duplicate execution rejected: Plan ${plan.id} is already actively running under execution ${existing}.`);
+    }
+
+    if (options.sessionId && this.activeSessionExecutions.has(options.sessionId)) {
+      const existing = this.activeSessionExecutions.get(options.sessionId);
+      throw new Error(`Duplicate execution rejected: Session ${options.sessionId} already has an active execution ${existing}.`);
+    }
+
+    // Workspace mismatch validation
+    const planWsId = (planningResult as any)?.workspaceId || (goal as any)?.workspaceId;
+    if (planWsId && options.workspaceId && planWsId !== options.workspaceId) {
+      throw new Error(`Workspace mismatch: Plan belongs to workspace ${planWsId}, cannot execute against ${options.workspaceId}`);
+    }
+
+    // Synchronously reserve execution slot before any async work
+    const executionContext = this.runtime.createExecution();
+    const executionId = executionContext.executionId;
+    const abortController = new AbortController();
+    this.activeExecutions.set(executionId, { abortController, cancelled: false });
+    this.activePlanExecutions.set(plan.id, executionId);
+    if (options.sessionId) {
+      this.activeSessionExecutions.set(options.sessionId, executionId);
+    }
+
     // 2. Resolve / Create Shared Execution Workspace
     const workspaceId = options.workspaceId || `ws_${goal.id}`;
-    const workspace = await this.workspaceProvider.getOrCreateWorkspace(workspaceId, {
-      id: workspaceId,
-      name: goal.title || goal.description,
-      workingDirectory: '/workspace'
-    });
+    let workspace;
+    try {
+      workspace = await this.workspaceProvider.getOrCreateWorkspace(workspaceId, {
+        id: workspaceId,
+        name: goal.title || goal.description,
+        workingDirectory: '/workspace'
+      });
+    } catch (wsErr) {
+      this.activeExecutions.delete(executionId);
+      this.activePlanExecutions.delete(plan.id);
+      if (options.sessionId) {
+        this.activeSessionExecutions.delete(options.sessionId);
+      }
+      throw wsErr;
+    }
     const workspaceRef = workspace.getRef();
+
+    // 4. Populate Runtime ExecutionContext with WorkspaceRef
+    executionContext.workspaceId = workspaceRef.id;
+    executionContext.workspaceRef = workspaceRef;
+    (executionContext as any).sessionId = options.sessionId;
+    executionContext.scope = {
+      permissions: [],
+      allowedTools: ['*']
+    };
+
+    // Associate execution and goal/plan with shared session if present
+    if (options.sessionId) {
+      try {
+        di.agentSessionService.associateExecution(options.sessionId, executionId, options.userId || this.currentUserId).catch(() => {});
+        di.agentSessionService.associateGoalAndPlan(options.sessionId, goal.id, plan.id, options.userId || this.currentUserId).catch(() => {});
+      } catch {
+        // Non-blocking
+      }
+    }
+
+    const emitSessionProgress = (event: PlanExecutionProgressEvent) => {
+      if (!options.sessionId) return;
+      try {
+        let sessionEventType: any = undefined;
+        let dataPayload: any = undefined;
+
+        switch (event.type) {
+          case 'execution_started':
+            sessionEventType = 'plan_execution_started';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              totalTasks: event.totalTasks,
+              completedTasks: 0
+            };
+            break;
+          case 'task_started':
+            sessionEventType = 'task_started';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: event.taskId,
+              stepId: event.stepId,
+              status: 'RUNNING',
+              totalTasks: event.totalTasks,
+              completedTasks: event.completedTasks
+            };
+            break;
+          case 'task_completed':
+            sessionEventType = 'task_completed';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: event.taskId,
+              stepId: event.stepId,
+              status: 'COMPLETED',
+              totalTasks: event.totalTasks,
+              completedTasks: event.completedTasks,
+              result: event.result
+            };
+            break;
+          case 'task_failed':
+            sessionEventType = 'task_failed';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: event.taskId,
+              stepId: event.stepId,
+              status: 'FAILED',
+              error: event.error
+            };
+            break;
+          case 'task_blocked':
+            sessionEventType = 'task_blocked';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: event.taskId,
+              status: 'BLOCKED',
+              error: event.error
+            };
+            break;
+          case 'replan_requested':
+            sessionEventType = 'plan_replanned';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: event.taskId,
+              status: 'REPLANNED',
+              replanned: true,
+              result: event.result
+            };
+            break;
+          case 'execution_completed':
+            sessionEventType = 'plan_completed';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              status: 'COMPLETED',
+              totalTasks: event.totalTasks,
+              completedTasks: event.completedTasks
+            };
+            break;
+          case 'execution_failed':
+          case 'execution_aborted':
+            sessionEventType = 'plan_failed';
+            dataPayload = {
+              goalId: goal.id,
+              planId: plan.id,
+              status: event.type === 'execution_aborted' ? 'ABORTED' : 'FAILED',
+              error: event.error
+            };
+            break;
+        }
+
+        if (sessionEventType) {
+          di.agentSessionService.emitSessionEvent({
+            type: sessionEventType,
+            sessionId: options.sessionId,
+            executionId: event.executionId,
+            workspaceId: workspaceRef.id,
+            goalId: goal.id,
+            planId: plan.id,
+            taskId: event.taskId,
+            timestamp: event.timestamp,
+            data: dataPayload
+          });
+        }
+      } catch {
+        // Non-blocking
+      }
+    };
+
+    const emitProgress = (event: Omit<PlanExecutionProgressEvent, 'timestamp'>) => {
+      const fullEvent: PlanExecutionProgressEvent = {
+        ...event,
+        timestamp: Date.now()
+      };
+      if (onProgress) {
+        onProgress(fullEvent);
+      }
+      if (sendEvent) {
+        sendEvent('plan_execution_progress', fullEvent);
+      }
+      emitSessionProgress(fullEvent);
+    };
+
+    const recordFileChangeProvenance = async (change: {
+      path: string;
+      action: 'create' | 'edit' | 'delete';
+      actor: 'AGENT';
+      taskId?: string;
+      executionId?: string;
+      timestamp: number;
+    }) => {
+      if (options.onFileChanged) {
+        options.onFileChanged(change);
+      }
+      if (options.sessionId) {
+        try {
+          const op = change.action === 'create' ? 'CREATE' : change.action === 'delete' ? 'DELETE' : 'MODIFY';
+          let fileContent = '';
+          try {
+            const f = await workspace.readFile(change.path);
+            fileContent = f.content;
+          } catch {}
+
+          await di.changeSetService.recordFileMutation({
+            sessionId: options.sessionId,
+            workspaceId: workspaceRef.id,
+            executionId: change.executionId || executionId,
+            path: change.path,
+            operation: op,
+            beforeContent: change.action === 'create' ? '' : undefined,
+            afterContent: change.action === 'delete' ? '' : fileContent,
+            metadata: {
+              goalId: goal.id,
+              planId: plan.id,
+              taskId: change.taskId
+            }
+          });
+        } catch {
+          // Non-blocking
+        }
+      }
+    };
 
     // Register production tools if tool payload and sendEvent are provided
     if (sendEvent) {
@@ -731,19 +1042,6 @@ export class PlanExecutionService {
     for (const step of plan.steps) {
       taskGraph.addTask(step, step.dependencies);
     }
-
-    // 4. Create Runtime ExecutionContext with WorkspaceRef
-    const executionContext = this.runtime.createExecution();
-    const executionId = executionContext.executionId;
-    executionContext.workspaceId = workspaceRef.id;
-    executionContext.workspaceRef = workspaceRef;
-    executionContext.scope = {
-      permissions: [],
-      allowedTools: ['*']
-    };
-
-    const abortController = new AbortController();
-    this.activeExecutions.set(executionId, { abortController, cancelled: false });
 
     await this.runtime.startExecution(executionId);
 
@@ -803,6 +1101,9 @@ export class PlanExecutionService {
           }
 
           const taskId = readyTask.id;
+          if (taskGraph.getTaskStatus(taskId) === TaskStatus.COMPLETED || completedTasks.includes(taskId)) {
+            continue;
+          }
           const step = plan.steps.find((s: PlanStep) => s.id === taskId);
           if (!step) {
             taskGraph.setTaskStatus(taskId, TaskStatus.SKIPPED);
@@ -829,21 +1130,23 @@ export class PlanExecutionService {
 
           // Determine if this step is a MODIFY / Implementation task
           const taskType = step.metadata?.taskType;
+          const stepTitle = (step.title || '').toLowerCase();
+          const stepDesc = (step.description || '').toLowerCase();
           const isModifyStep =
             taskType === 'MODIFY' ||
             taskType === 'EXECUTE' ||
             (!taskType && (
-              step.title.toLowerCase().includes('implement') ||
-              step.title.toLowerCase().includes('modify') ||
-              step.title.toLowerCase().includes('code') ||
-              step.title.toLowerCase().includes('build') ||
-              step.title.toLowerCase().includes('create') ||
-              step.title.toLowerCase().includes('generate') ||
-              step.description.toLowerCase().includes('implement') ||
-              step.description.toLowerCase().includes('modify') ||
-              step.description.toLowerCase().includes('code') ||
-              step.description.toLowerCase().includes('create file') ||
-              step.requiredTools.some(t => {
+              stepTitle.includes('implement') ||
+              stepTitle.includes('modify') ||
+              stepTitle.includes('code') ||
+              stepTitle.includes('build') ||
+              stepTitle.includes('create') ||
+              stepTitle.includes('generate') ||
+              stepDesc.includes('implement') ||
+              stepDesc.includes('modify') ||
+              stepDesc.includes('code') ||
+              stepDesc.includes('create file') ||
+              (step.requiredTools || []).some(t => {
                 const n = typeof t === 'string' ? t : t.name;
                 return n === 'create_file' || n === 'edit_file' || n === 'multi_edit_file' || n === 'batch_create_files';
               })
@@ -891,7 +1194,7 @@ export class PlanExecutionService {
                       error: pEvent.error
                     });
                   },
-                  onFileChanged: options.onFileChanged
+                  onFileChanged: recordFileChangeProvenance
                 });
                 break;
               } catch (implErr: unknown) {
@@ -945,7 +1248,7 @@ export class PlanExecutionService {
               const firstErr = implResult.errors?.[0];
               stepError = new Error(firstErr?.message || implResult.summary || 'Coding implementation failed');
             }
-          } else if (step.requiredTools.length === 0) {
+          } else if (!step.requiredTools || step.requiredTools.length === 0) {
             // Virtual/synthesis step without tool invocation
             taskResults[taskId] = {
               success: true,
@@ -1018,14 +1321,14 @@ export class PlanExecutionService {
                 });
 
                 // Track provenance for file mutations
-                if (options.onFileChanged && toolResult.success) {
+                if (toolResult.success) {
                   const targetPath = (toolInput as any).TargetFile || (toolInput as any).path || (toolInput as any).filePath || 'main.py';
                   if (toolName === 'create_file') {
-                    options.onFileChanged({ path: targetPath, action: 'create', actor: 'AGENT', taskId, executionId, timestamp: Date.now() });
+                    recordFileChangeProvenance({ path: targetPath, action: 'create', actor: 'AGENT', taskId, executionId, timestamp: Date.now() }).catch(() => {});
                   } else if (toolName === 'edit_file' || toolName === 'multi_edit_file') {
-                    options.onFileChanged({ path: targetPath, action: 'edit', actor: 'AGENT', taskId, executionId, timestamp: Date.now() });
+                    recordFileChangeProvenance({ path: targetPath, action: 'edit', actor: 'AGENT', taskId, executionId, timestamp: Date.now() }).catch(() => {});
                   } else if (toolName === 'delete_file') {
-                    options.onFileChanged({ path: targetPath, action: 'delete', actor: 'AGENT', taskId, executionId, timestamp: Date.now() });
+                    recordFileChangeProvenance({ path: targetPath, action: 'delete', actor: 'AGENT', taskId, executionId, timestamp: Date.now() }).catch(() => {});
                   }
                 }
 
@@ -1139,6 +1442,14 @@ export class PlanExecutionService {
                 executionContext
               });
 
+              replanningEvents.push({
+                stepId: step.id,
+                failureCategory: classification.category,
+                action: replanDecision.action,
+                reason: replanDecision.reason,
+                recommendedAction: classification.recommendedAction
+              });
+
               if (replanDecision.action === 'ABORT') {
                 console.error(`[PlanExecutionService] Replanning aborted: ${replanDecision.reason}`);
                 await this.runtime.failExecution(executionId, stepError || new Error(replanDecision.reason));
@@ -1148,6 +1459,9 @@ export class PlanExecutionService {
                   planId: plan.id,
                   error: replanDecision.reason
                 });
+
+                const obs = buildPlanObservation('FAILED', replanDecision.reason);
+                await emitObservationHook(obs);
 
                 return {
                   executionId,
@@ -1164,12 +1478,14 @@ export class PlanExecutionService {
                     .map(([t]) => t),
                   taskResults,
                   durationMs: Date.now() - startTime,
-                  error: replanDecision.reason
+                  error: replanDecision.reason,
+                  observation: obs
                 };
               }
 
               if (replanDecision.action === 'REPLAN' || replanDecision.action === 'REPAIR') {
                 replanAttempts++;
+                repairedStepIds.push(step.id);
                 const revisedPlan = replanDecision.revision?.newPlan || replanDecision.repairedPlan;
                 if (revisedPlan) {
                   plan = revisedPlan;
@@ -1213,10 +1529,14 @@ export class PlanExecutionService {
           completedTasks: completedTasks.length
         });
 
+        const obs = buildPlanObservation('COMPLETED');
+        await emitObservationHook(obs);
+
         return {
           executionId,
           planId: plan.id,
           goalId: goal.id,
+          sessionId: options.sessionId,
           workspaceId: workspaceRef.id,
           success: true,
           status: 'COMPLETED',
@@ -1225,7 +1545,8 @@ export class PlanExecutionService {
           failedTasks: [],
           blockedTasks: [],
           taskResults,
-          durationMs: Date.now() - startTime
+          durationMs: Date.now() - startTime,
+          observation: obs
         };
       } else {
         const firstFailedId = failedTasks[0];
@@ -1246,10 +1567,14 @@ export class PlanExecutionService {
           error: failureReason
         });
 
+        const obs = buildPlanObservation('FAILED', failureReason, remainingBlocked);
+        await emitObservationHook(obs);
+
         return {
           executionId,
           planId: plan.id,
           goalId: goal.id,
+          sessionId: options.sessionId,
           workspaceId: workspaceRef.id,
           success: false,
           status: 'FAILED',
@@ -1259,7 +1584,8 @@ export class PlanExecutionService {
           blockedTasks: remainingBlocked,
           taskResults,
           durationMs: Date.now() - startTime,
-          error: failureReason
+          error: failureReason,
+          observation: obs
         };
       }
     } catch (err: unknown) {
@@ -1274,11 +1600,36 @@ export class PlanExecutionService {
         error: `${diag.title}: ${diag.message}`
       });
 
+      const failedObs: PlanLifecycleObservation = {
+        planId: plan.id,
+        goalId: goal.id,
+        goalDescription: goal.description || goal.rawPrompt,
+        executionId,
+        sessionId: options.sessionId,
+        workspaceId: undefined,
+        finalOutcome: 'FAILED',
+        completedStepIds: [],
+        failedStepIds: [],
+        repairedStepIds: [],
+        replanningEvents: [],
+        modifiedFiles: [],
+        durationMs: Date.now() - startTime,
+        error: `${diag.title}: ${diag.message}`
+      };
+      if (options.onPlanObservation) {
+        try {
+          await options.onPlanObservation(failedObs);
+        } catch {
+          // ignore
+        }
+      }
+
       return {
         executionId,
         planId: plan.id,
         goalId: goal.id,
-        workspaceId: workspaceRef.id,
+        sessionId: options.sessionId,
+        workspaceId: undefined,
         success: false,
         status: 'FAILED',
         totalTasks: plan.steps.length,
@@ -1287,10 +1638,15 @@ export class PlanExecutionService {
         blockedTasks: [],
         taskResults,
         durationMs: Date.now() - startTime,
-        error: `${diag.title}: ${diag.message}`
+        error: `${diag.title}: ${diag.message}`,
+        observation: failedObs
       };
     } finally {
       this.activeExecutions.delete(executionId);
+      this.activePlanExecutions.delete(plan.id);
+      if (options.sessionId) {
+        this.activeSessionExecutions.delete(options.sessionId);
+      }
     }
   }
 
@@ -1307,6 +1663,16 @@ export class PlanExecutionService {
 
   public isExecutionActive(executionId: string): boolean {
     return this.activeExecutions.has(executionId);
+  }
+
+  public getActiveExecutionForPlan(planId: string): string | undefined {
+    const execId = this.activePlanExecutions.get(planId);
+    return execId && this.activeExecutions.has(execId) ? execId : undefined;
+  }
+
+  public getActiveExecutionForSession(sessionId: string): string | undefined {
+    const execId = this.activeSessionExecutions.get(sessionId);
+    return execId && this.activeExecutions.has(execId) ? execId : undefined;
   }
 
   public getToolRegistry(): DefaultToolRegistry {
